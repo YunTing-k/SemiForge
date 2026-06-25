@@ -3038,7 +3038,7 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
                 "A worker subagent converts raw CSV/XLSX files into standardized "
                 "*_train.xlsx format, then an automated verification runs. "
                 "This is a BLOCKING call — it returns the final result with ok and issues. "
-                "After success, call start_dg_tft_workflow with the returned output_dir as dataset_dir."
+                f"After success, call `{TOOL_NAME_START_WORKFLOW}` with the returned output_dir as dataset_dir."
             ),
             "parameters": {
                 "type": "object",
