@@ -897,22 +897,23 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ### 8.5.9 TODO
 
 ### P4.5-T1 实现 `data_preparer.py` 核心模块 + schema 扩展
-- [ ] 新建 `src/workflow/dg_tft/data_preparer.py`
-- [ ] 在 `schema.py` 中 `WorkflowRun` 新增 `prep_id: int | None = None` 字段
-- [ ] 实现 `PreparationTracker` 类（独立 `_next_prep_id` counter，存于 `workflow_man.preparation_tracker`）
-- [ ] 实现 `run_data_preparation(ctx, raw_dataset_dir, output_dir)` — 串联 worker → verifier → check
-- [ ] 实现 `_run_worker(ctx, raw_dir, output_dir)` — 启动 worker subagent
-  - [ ] worker prompt 模板按 8.5.8 格式设计（system context + input + step-by-step + constraints）
-  - [ ] worker 输出 `worker_report.json`
-- [ ] 实现 `_run_verifier(ctx, output_dir)` — 独立 LLM call + `report_verification` tool
-  - [ ] 构造 `report_verification` tool definition（schema 见 8.5.3）
-  - [ ] 实现 8.5.7 容错机制：tool_choice 可用 → 强制；不可用 → prompt 要求 + 3 次重试 → fallback 编程检查
-  - [ ] verifier prompt 模板：读取 output_dir 文件、调用 `report_verification` 输出结构化结果
-  - [ ] 从 tool_calls 中提取结构化结果，写入 `verifier_result.json`
-- [ ] 实现 `_check_output(output_dir)` — 程序化 CRITICAL/WARNING 判定（见 8.5.2）
-  - [ ] 判定逻辑：IV family 文件存在 + long sheet + 必须列 = CRITICAL；CV/I-t 缺失 = WARNING
-  - [ ] verifier 失败时 `_check_output()` 独立执行，不依赖 LLM 输出
-  - [ ] 写入 `manifest.json`
+- [x] 新建 `src/workflow/dg_tft/data_preparer.py`
+- [x] 在 `schema.py` 中 `WorkflowRun` 新增 `prep_id: int | None = None` 字段
+- [x] 实现 `PreparationTracker` 类（独立 `_next_prep_id` counter，存于 `workflow_man.preparation_tracker`）
+- [x] 实现 `run_data_preparation(ctx, raw_dataset_dir, output_dir)` — 串联 worker → verifier → check
+- [x] 实现 `_run_worker(ctx, raw_dir, output_dir)` — 启动 worker subagent
+  - [x] worker prompt 模板按 8.5.8 格式设计（system context + input + step-by-step + constraints）
+  - [x] worker 输出 `worker_report.json` + `file_mapping` (来源映射)
+- [x] 实现 `_run_verifier(ctx, output_dir)` — 独立 LLM call + 迷你 tool execution loop
+  - [x] 构造 `report_verification` tool definition（给 read_file/glob_file + report_verification）
+  - [x] 实现 容错机制：max_turns 内 loop glob_file→read_file→...→report_verification
+  - [x] verifier prompt 模板：列指示文件检查步骤
+  - [x] 从 tool_calls 中提取 report_verification 结果，写入 `verifier_result.json`
+- [x] 实现 `_check_output(output_dir)` — 程序化 CRITICAL/WARNING 判定
+  - [x] 判定逻辑：IV family 文件存在 + long sheet + 必须列 = CRITICAL；CV/I-t 缺失 = WARNING
+  - [x] verifier 失败时 `_check_output()` 独立执行，不依赖 LLM 输出
+  - [x] 写入 `manifest.json`
+- [x] 实现 `_write_file_manifest(output_dir, prep_id)` — 读取 worker_report 中的 file_mapping 生成 prep_file_manifest.json
 
 **依赖**
 - Phase 4 完成（SubAgent 基础设施、异步执行模式）。
@@ -923,25 +924,24 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P4.5-T2 新增 `prepare_dg_tft_dataset` agent tool
-- [ ] 在 `src/constants.py` 新增 `TOOL_NAME_PREPARE_DATASET`
-- [ ] 在 `src/tool/tool_def.py` 新增 `tool_prepare_dg_tft_dataset_def()` + `prepare_dg_tft_dataset()` handler
-  - [ ] handler 内部：创建 output_dir → 启动 background thread → 立即返回 prep_id
-  - [ ] background thread 调用 `run_data_preparation(ctx, raw_dir, output_dir)`
-- [ ] 在 `src/tool/tool_dispatch.py` 新增 dispatch 分支
+- [x] 在 `src/constants.py` 新增 `TOOL_NAME_PREPARE_DATASET`
+- [x] 在 `src/tool/tool_def.py` 新增 `tool_prepare_dg_tft_dataset_def()` + `prepare_dg_tft_dataset()` handler
+  - [x] handler 内部：创建 output_dir → 同步调用 `run_data_preparation`
+- [x] 在 `src/tool/tool_dispatch.py` 新增 dispatch 分支
 
 **依赖**
 - P4.5-T1。
 
 **验收标准**
-- 调用 tool 后立即返回 prep_id，后台可查询准备进度。
+- 调用 tool 后同步完成，返回 ok + issues。
 
 ---
 
 ### P4.5-T3 注册内建命令 + 更新 prompt 路由
-- [ ] 在 `src/utility/command.py` 将 preparation 结果并入 `/workflow_list` `/workflow_get` 展示
-- [ ] 在 `src/context/prompt.py` 新增：
-  - [ ] "识别用户提供原始数据目录时优先用 `prepare_dg_tft_dataset` 整理"的提示
-  - [ ] "整理完成后用 `start_dg_tft_workflow` 启动建模"的串联指引
+- [x] 在 `src/utility/command.py` 将 preparation 结果并入 `/workflow_list` `/workflow_get` 展示
+- [x] 在 `src/context/prompt.py` 新增：
+  - [x] "数据非*_train.xlsx 格式时先调 prepare_dg_tft_dataset"的提示
+  - [x] "整理完成后用 start_dg_tft_workflow 启动建模"的串联指引
 
 **依赖**
 - P4.5-T2。
@@ -952,10 +952,10 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P4.5-T4 测试
-- [ ] 测试 `_check_output()` 各项判定（正常/缺文件/缺 sheet/缺列/CV 缺失/I-t 缺失）
-- [ ] Mock verifier LLM response，测试结构化 tool call 提取
-- [ ] 测试 `run_data_preparation` 完整流程（mock subagent）
-- [ ] 测试 tool handler 异步行为
+- [x] 测试 `_check_output()` 各项判定（正常/缺文件/缺 sheet/缺列/CV 缺失/I-t 缺失）
+- [x] Mock verifier LLM response，测试结构化 tool call 提取
+- [x] 测试 `run_data_preparation` 完整流程（mock subagent）
+- [x] 测试 tool handler 同步行为
 
 **依赖**
 - P4.5-T1 ~ P4.5-T3。
@@ -1439,7 +1439,7 @@ orchestrator.py (阶段执行后)
 ### 第二优先级
 - [x] `P4-T5`
 - [x] `P4-T6`
-- [ ] `P4.5-T1` ~ `P4.5-T4`（数据整理与验证 — 解决原始数据格式不统一问题）
+- [x] `P4.5-T1` ~ `P4.5-T4`（数据整理与验证 — 解决原始数据格式不统一问题）
 - [ ] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
 - [ ] `P6-T1` ~ `P6-T2`（诊断基础：分类 + subagent hooks）
 - [ ] `P7-T1` ~ `P7-T5`（质量守卫核心 — 不依赖 P5/P6，可直接接在 Phase 3 后）
@@ -1475,10 +1475,10 @@ orchestrator.py (阶段执行后)
 这 11 项完成后，你就会拥有一版真正可用的第一代系统。
 
 **下一批建议优先：Phase 4.5**
-- [ ] `P4.5-T1` 实现 `data_preparer.py`（worker + verifier + check）
-- [ ] `P4.5-T2` 接入 `prepare_dg_tft_dataset` tool
-- [ ] `P4.5-T3` 命令 + prompt 路由更新
-- [ ] `P4.5-T4` 测试
+- [x] `P4.5-T1` 实现 `data_preparer.py`（worker + verifier + check）
+- [x] `P4.5-T2` 接入 `prepare_dg_tft_dataset` tool
+- [x] `P4.5-T3` 命令 + prompt 路由更新
+- [x] `P4.5-T4` 测试
 
 做完这一批后，系统即可接受任意格式的原始数据目录，自动整理为 `*_train.xlsx` 后再启动建模。
 
@@ -1673,6 +1673,18 @@ test/dg_tft_tools_test.py          # 28 tests（P4-T1~T6 全覆盖）
 - P4.5-T2 `prepare_dg_tft_dataset` agent tool
 - P4.5-T3 内建命令 + prompt 路由
 - P4.5-T4 测试
+
+### 2026-06-25 | Phase 4.5 完成 — 数据整理 + 双 Agent 验证
+
+**完成内容**
+- P4.5-T1 ~ T4 全部完成
+- `data_preparer.py`: worker subagent (处理原始 CSV/XLSX → *_train.xlsx) + verifier LLM call (迷你 tool loop, glob/read/report_verification) + `_check_output` (CRITICAL/WARNING 判定)
+- `prep_file_manifest.json`: 记录原始文件→输出文件的来源映射，去重信息
+- 前台同步执行 + console 进度输出
+- Prompt 模板参数化: 列名/表名等统一用模块级常量，消除硬编码和重复
+- 权限体系: 走 `clone_context` + `PERMISSION_PRESETS["worker"]` (含 BASH_INLINE_SCRIPT_LABEL)
+- Verifier 轮次耗尽前注入提醒消息
+- 195 tests PASS
 
 ---
 

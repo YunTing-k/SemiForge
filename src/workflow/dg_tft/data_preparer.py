@@ -30,6 +30,7 @@ sys_log = logging.getLogger("logger")
 _PREP_WORKER_REPORT_NAME = "worker_report.json"
 _PREP_VERIFIER_RESULT_NAME = "verifier_result.json"
 _PREP_MANIFEST_NAME = "manifest.json"
+_PREP_FILE_MANIFEST_NAME = "prep_file_manifest.json"
 
 # ── Data format constants (single source of truth) ──
 _PREP_REQUIRED_IV_COLUMNS = ("VD_V", "VBG_V", "VTG_V", "ID_A")
@@ -93,7 +94,21 @@ The output directory already exists. Write all output files into it.
 4. **I-t files** in `{raw_dir}/it/`:
    - Copy all files to `{output_dir}/it/`: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
 
-5. Write `{report_name}` in `{output_dir}` listing all processed files and any issues.
+5. Write `{report_name}` in `{output_dir}` with this exact format:
+```json
+{{
+  "files_processed": ["output_file1.xlsx", "output_file2.xlsx"],
+  "file_mapping": [
+    {{"source": "IDVBG VDS01V.csv", "output": "IDVBG_VDS0.1V_train.xlsx", "source_type": "csv", "rows": 5117, "duplicate_of": null}},
+    {{"source": "IDVBG_VDS0.1V.xlsx", "output": "IDVBG_VDS0.1V_train.xlsx", "source_type": "xlsx", "rows": 5117, "duplicate_of": null}}
+  ],
+  "iv_families": ["IDVBG", "IDVD", "IDVTG"],
+  "cv_found": true,
+  "it_found": true,
+  "issues": ["..."]
+}}
+```
+IMPORTANT: The `file_mapping` array MUST include every file processed. Set `duplicate_of` to the output filename if this source was skipped because another source already produced the same output. If no duplicate, set `duplicate_of` to null. Set `rows` to the actual row count written to the output file.
 
 **Each file should take ONE python -c command. After processing all files, write {report_name} and output a brief summary.**
 
@@ -270,6 +285,7 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     ok, issues = _check_output(output_dir)
     manifest = _build_manifest(output_dir, prep_id, ok, issues)
     _write_manifest(output_dir, manifest)
+    _write_file_manifest(output_dir, prep_id)
     ctx.workflow_man.preparation_tracker.update_prep(prep_id, ok, issues)
 
     if console and not getattr(ctx, "subagent_mute", False):
@@ -521,3 +537,46 @@ def _write_manifest(output_dir: str, manifest: dict[str, Any]) -> None:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
     except Exception as e:
         sys_log.error("Failed to write %s: %s", _PREP_MANIFEST_NAME, e)
+
+
+def _write_file_manifest(output_dir: str, prep_id: int) -> None:
+    """Read worker_report.json and produce a file provenance manifest.
+
+    Extracts the file_mapping array from the worker subagent's report
+    and enriches it with output directory metadata.
+    """
+    import datetime
+    worker_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
+    if not os.path.exists(worker_path):
+        sys_log.warning("No worker report found at %s, skipping file manifest", worker_path)
+        return
+
+    try:
+        with open(worker_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        sys_log.warning("Failed to read worker report for file manifest: %s", e)
+        return
+
+    file_mapping = report.get("file_mapping", [])
+    if not file_mapping:
+        sys_log.info("No file_mapping in worker report, scanning output directory instead")
+        output_files = sorted(Path(output_dir).glob("*_train.xlsx"))
+        file_mapping = [{"source": "unknown", "output": f.name, "source_type": "unknown"} for f in output_files]
+
+    manifest = {
+        "prep_id": prep_id,
+        "output_dir": str(Path(output_dir).resolve()),
+        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_outputs": len(file_mapping),
+        "duplicates": [m for m in file_mapping if m.get("duplicate_of")],
+        "files": file_mapping,
+    }
+
+    manifest_path = os.path.join(output_dir, _PREP_FILE_MANIFEST_NAME)
+    try:
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        sys_log.info("File manifest written: %d files, %d duplicates", len(file_mapping), len(manifest["duplicates"]))
+    except Exception as e:
+        sys_log.error("Failed to write %s: %s", _PREP_FILE_MANIFEST_NAME, e)
