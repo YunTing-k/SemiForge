@@ -431,9 +431,9 @@
 ## 7.2 TODO
 
 ### P3-T1 定义 workflow stage 顺序
-- [ ] 在 `stages.py` 中定义标准阶段列表；
-- [ ] 明确每个阶段的前置条件；
-- [ ] 明确 optional 阶段（迟滞、HSPICE 验证）。
+- [x] 在 `stages.py` 中定义标准阶段列表；
+- [x] 明确每个阶段的前置条件；
+- [x] 明确 optional 阶段（迟滞、HSPICE 验证）。
 
 **依赖**
 - Phase 2 完成。
@@ -444,14 +444,14 @@
 ---
 
 ### P3-T2 实现 `stage_runner.py` 的 subprocess 执行能力
-- [ ] 封装统一命令执行函数；
-- [ ] 支持超时；
-- [ ] 支持 stdout/stderr 捕获；
-- [ ] 支持阶段输出目录检查；
-- [ ] 返回 `StageResult`；
-- [ ] 所有阶段命令都必须通过 `resolve_modeling_python(ctx)` 取解释器；
-- [ ] 禁止在阶段命令构造中直接使用 `sys.executable`；
-- [ ] 在阶段日志中打印实际使用的建模解释器路径。
+- [x] 封装统一命令执行函数；
+- [x] 支持超时；
+- [x] 支持 stdout/stderr 捕获；
+- [x] 支持阶段输出目录检查；
+- [x] 返回 `StageResult`；
+- [x] 所有阶段命令都必须通过 `resolve_modeling_python(ctx)` 取解释器；
+- [x] 禁止在阶段命令构造中直接使用 `sys.executable`；
+- [x] 在阶段日志中打印实际使用的建模解释器路径。
 
 **依赖**
 - `P3-T1`。
@@ -462,9 +462,9 @@
 ---
 
 ### P3-T3 实现 `check-data` 阶段执行
-- [ ] 调用 `run_model.py check-data --config ...`；
-- [ ] 收集 `dataset_validation.json`；
-- [ ] 将结果写入 workflow run。
+- [x] 调用 `run_model.py check-data --config ...`；
+- [x] 收集 `dataset_validation.json`；
+- [x] 将结果写入 workflow run。
 
 **依赖**
 - `P3-T2`。
@@ -475,10 +475,10 @@
 ---
 
 ### P3-T4 实现 `fit-physical` 阶段执行
-- [ ] 调用 `fit-physical`；
-- [ ] 检查 `fitted_params.json`；
-- [ ] 校验关键产物是否存在；
-- [ ] 将输出目录登记到 artifacts。
+- [x] 调用 `fit-physical`；
+- [x] 检查 `fitted_params.json`；
+- [x] 校验关键产物是否存在；
+- [x] 将输出目录登记到 artifacts。
 
 **依赖**
 - `P3-T3`。
@@ -489,9 +489,9 @@
 ---
 
 ### P3-T5 实现 `train-base-pkan` 阶段执行
-- [ ] 调用 `train-base-pkan`；
-- [ ] 检查 `pkan_torch_model.pt`；
-- [ ] 挂接阶段 summary。
+- [x] 调用 `train-base-pkan`；
+- [x] 检查 `pkan_torch_model.pt`；
+- [x] 挂接阶段 summary。
 
 **依赖**
 - `P3-T4`。
@@ -502,10 +502,10 @@
 ---
 
 ### P3-T6 实现 `train-static` 阶段执行
-- [ ] 调用 `train-static`；
-- [ ] 检查静态模型产物；
-- [ ] 检查静态 Verilog-A 输出；
-- [ ] 读取关键精度结果。
+- [x] 调用 `train-static`；
+- [x] 检查静态模型产物；
+- [x] 检查静态 Verilog-A 输出；
+- [x] 读取关键精度结果。
 
 **依赖**
 - `P3-T5`。
@@ -516,10 +516,10 @@
 ---
 
 ### P3-T7 实现 `train-hysteresis` 条件执行
-- [ ] 仅当 `DatasetProfile.has_hysteresis == True` 时执行；
-- [ ] 调用 `train-hysteresis`；
-- [ ] 检查动态 bank / `.va` / `.inc` 产物；
-- [ ] 若关闭则记录 skip 原因。
+- [x] 仅当 `DatasetProfile.has_hysteresis == True` 时执行；
+- [x] 调用 `train-hysteresis`；
+- [x] 检查动态 bank / `.va` / `.inc` 产物；
+- [x] 若关闭则记录 skip 原因。
 
 **依赖**
 - `P3-T6`。
@@ -530,11 +530,11 @@
 ---
 
 ### P3-T8 实现 `orchestrator.py`
-- [ ] 串联全部阶段；
-- [ ] 支持阶段状态更新；
-- [ ] 支持失败即停；
-- [ ] 支持 optional 阶段 skip；
-- [ ] 支持最终状态收敛。
+- [x] 串联全部阶段；
+- [x] 支持阶段状态更新；
+- [x] 支持失败即停；
+- [x] 支持 optional 阶段 skip；
+- [x] 支持最终状态收敛。
 
 **依赖**
 - `P3-T3` ~ `P3-T7`。
@@ -545,10 +545,10 @@
 ---
 
 ### P3-T9 生成 run 工作目录结构
-- [ ] 约定输出根目录结构；
-- [ ] 创建 `runtime_config/`；
-- [ ] 创建 `artifacts/` 或 summary 文件位置；
-- [ ] 保证不同 run 相互隔离。
+- [x] 约定输出根目录结构；
+- [x] 创建 `runtime_config/`；
+- [x] 创建 `artifacts/` 或 summary 文件位置；
+- [x] 保证不同 run 相互隔离。
 
 **依赖**
 - `P3-T8`。
@@ -948,7 +948,7 @@
 - [x] `P0-T1` ~ `P0-T5`
 - [x] `P1-T1` ~ `P1-T6`
 - [x] `P2-T1` ~ `P2-T7`
-- [ ] `P3-T1` ~ `P3-T9`
+- [x] `P3-T1` ~ `P3-T9`
 - [ ] `P4-T1` ~ `P4-T3`
 
 这部分做完，就已经有“给路径即可全自动跑”的第一版闭环。
@@ -979,9 +979,9 @@
 - [x] `P1-T1` 新建 `src/workflow/dg_tft/` 骨架
 - [x] `P1-T2` 定义 `WorkflowRun / StageResult / DatasetProfile`
 - [x] `P1-T3` 实现 `WorkflowManager`
-- [ ] `P2-T6` 实现 `config_builder.py`
-- [ ] `P3-T2` 实现统一 `stage_runner.py`
-- [ ] `P3-T8` 实现 `orchestrator.py`
+- [x] `P2-T6` 实现 `config_builder.py`
+- [x] `P3-T2` 实现统一 `stage_runner.py`
+- [x] `P3-T8` 实现 `orchestrator.py`
 - [ ] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
 
 这 10 项完成后，你就会拥有一版真正可用的第一代系统。
@@ -1102,6 +1102,39 @@ test/
 
 ---
 
+### 2026-06-25 | Phase 3 完成 — subprocess 版全自动工作流
+
+**完成内容**
+- P3-T1：实现 `stages.py` — 定义 `StageDef` dataclass（name/action/required/depends_on/key_artifacts/expected_output_subdir/timeout/skip_if_profile_false），含 7 个标准阶段定义
+- P3-T2：`stage_runner.py` 已有完整 subprocess 执行能力（P1 完成，Phase 3 验证通过）
+- P3-T3~P3-T7：通过 `orchestrator.py` 串联所有阶段执行（check-data → fit-physical → train-base-pkan → train-static → [train-hysteresis]），含产物校验和 artifacts 挂载
+- P3-T8：实现 `orchestrator.py` — `run_workflow()` 主函数，支持顺序执行、fail-fast、条件 skip（hysteresis）、resume（已完成阶段跳过）、artifact 自动挂载
+- P3-T9：工作目录结构由 `config_builder.py` 管理（Phase 2 完成）
+
+**新增文件清单**
+
+```
+src/workflow/dg_tft/
+  stages.py              # 阶段定义（StageDef dataclass + get_stages/get_stage_by_name）
+  orchestrator.py        # 工作流编排器（run_workflow + helpers）
+
+test/
+  dg_tft_orchestrator_test.py   # 32 tests（14 stage defs + 12 helpers + 6 orchestrator）
+```
+
+**修改文件清单**
+
+| 文件 | 修改内容 |
+|------|---------|
+| `src/workflow/dg_tft/schema.py` | `WorkflowRun.to_dict()` 改用手动 dict 构造替代 `asdict()`，避免 deepcopy 序列化兼容性问题 |
+| `doc/DG_TFT_Agent全自动建模开发TODO.md` | Phase 3 打勾 + 补充开发日志与经验 |
+
+**测试统计**
+- Phase 3 新增：32 tests
+- 累计全部：135 tests (18 + 24 + 13 + 14 + 24 + 10 + 32)
+
+---
+
 ## 18. 经验总结与注意事项
 
 ### 18.1 Python 模块双重导入陷阱
@@ -1151,8 +1184,8 @@ test/
 
 运行命令：
 ```bash
-# 全部 DG-TFT 测试（103 tests）
-python -m unittest test.dg_tft_schema_test test.dg_tft_manager_test test.dg_tft_stage_runner_test test.dg_tft_integration_test test.dg_tft_inspector_test test.dg_tft_builder_test -v
+# 全部 DG-TFT 测试（135 tests）
+python -m unittest discover -s test -p "dg_tft_*_test.py" -v
 ```
 
 后续 Phase 开发建议：每个新模块同步编写对应测试文件，保持 TDD 节奏。
@@ -1173,8 +1206,24 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 
 当 `parent.iterdir()` 可能抛出 `FileNotFoundError`（模拟环境中路径不存在）或 `PermissionError` 时，用 try/except 兜底。
 
-### 18.8 下一步 Phase 3 关键点
+### 18.8 Phase 3 经验：orchestrator 设计要点
 
-1. 实现 `stages.py`（标准阶段列表 + 前置条件）和 `orchestrator.py`（串联全部阶段、失败即停、条件跳过）
-2. `stage_runner.py` 已有 `run_stage` 基础，需补充产物收集（检查输出目录、解析 metrics）
-3. 打通 `check-data → fit-physical → train-base-pkan → train-static → [train-hysteresis]` 的 subprocess 闭环
+1. **阶段定义与执行分离**：`stages.py` 定义静态阶段元数据（名称/产物/超时/跳转条件），`orchestrator.py` 负责动态执行逻辑。这样阶段顺序可配置，测试可独立验证阶段定义完整性。
+2. **Resume 能力**：通过 `_stage_done()` 检查 `run.stage_results` 中已有阶段结果，已完成的阶段自动跳过，支持断点续传。
+3. **条件 skip 两层过滤**：`get_stages(profile)` 在阶段列表构建阶段过滤掉不需要的阶段（如无 hysteresis 数据则移除 `TRAIN_HYSTERESIS`）；`orchestrator` 中另有 `skip_if_profile_false` 检查作为第二道防线。
+4. **Fail-fast vs optional**：`required=True` 的阶段失败立即停止整个 run 并标记 FAILED；`required=False` 的阶段失败记录 warning 后继续。
+5. **mock 测试的签名陷阱**：使用 `unittest.mock.patch` 替换 `run_stage()` 时，mock 函数的第一个参数是 `ctx`（AgentContext），而非 `action`。签名应为 `(self, ctx, action, *args, **kwargs)`。
+
+### 18.9 `asdict` 序列化兼容性问题
+
+`dataclasses.asdict()` 内部使用 `copy.deepcopy()` 递归转换所有字段。当 `WorkflowRun` 包含复杂嵌套结构（如含被 mock 对象污染的字段）时，`deepcopy` 可能因 `TypeError: cannot pickle '_thread.lock' object` 失败。
+
+**修复方案**：`WorkflowRun.to_dict()` 改用手动 dict 构造，逐字段赋值，避免 `asdict` 的 deepcopy 行为。`StageResult` 同样使用 `getattr` + 手动 dict 构造。
+
+### 18.10 下一步 Phase 4 关键点
+
+1. 新增 workflow tool schema（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`）在 `src/tool/tool_def.py`
+2. 实现工具 handler，调用 `workflow_man` 和 `orchestrator`
+3. 注册 dispatch 分支
+4. 增加 `/workflow_list`、`/workflow_get`、`/workflow_report` 内建命令
+5. 优化 prompt 路由（识别"全自动建模"请求 → 优先走 workflow tool）

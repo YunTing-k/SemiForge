@@ -111,16 +111,44 @@ class WorkflowRun:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        raw = asdict(self)
+        raw = {
+            "run_id": self.run_id,
+            "workflow_type": self.workflow_type,
+            "dataset_dir": self.dataset_dir,
+            "hysteresis_dir": self.hysteresis_dir,
+            "output_root": self.output_root,
+            "status": self.status.value,
+            "current_stage": self.current_stage,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "hspice_available": self.hspice_available,
+            "temperature_enabled": self.temperature_enabled,
+            "hysteresis_enabled": self.hysteresis_enabled,
+            "artifacts": dict(self.artifacts),
+            "metrics": dict(self.metrics),
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "stage_results": {},
+            "extra": dict(self.extra),
+        }
         stage_dict = {}
         for k, v in self.stage_results.items():
             if hasattr(v, "__dataclass_fields__"):
-                stage_dict[k] = asdict(v)
+                stage_dict[k] = {
+                    "ok": getattr(v, "ok", False),
+                    "stage": getattr(v, "stage", ""),
+                    "summary": getattr(v, "summary", ""),
+                    "outputs": dict(getattr(v, "outputs", {})),
+                    "metrics": dict(getattr(v, "metrics", {})),
+                    "warnings": list(getattr(v, "warnings", [])),
+                    "error": getattr(v, "error", None),
+                    "skipped": getattr(v, "skipped", False),
+                    "skip_reason": getattr(v, "skip_reason", ""),
+                }
             elif isinstance(v, dict):
                 stage_dict[k] = v
             else:
                 stage_dict[k] = v
-        raw["status"] = self.status.value
         raw["stage_results"] = stage_dict
         return raw
 
