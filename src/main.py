@@ -122,8 +122,8 @@ if __name__ == '__main__':
     ctx.mcp_router.reg_all_tools_sync(console=console)
 
     """add read-only paths"""
-    ctx.system_read_only_paths.append(Path(os.getcwd()) / "session")
-    ctx.system_read_only_paths.append(Path(os.getcwd()) / "log")
+    ctx.system_read_only_paths.append(Path(os.getcwd()) / SESSION_PATH)
+    ctx.system_read_only_paths.append(Path(os.getcwd()) / LOG_PATH)
     if ctx.agent_configs.get("SIMULATOR_PATH"):
         ctx.system_read_only_paths.append(Path(ctx.agent_configs["SIMULATOR_PATH"]))
 

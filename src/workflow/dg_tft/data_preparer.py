@@ -22,8 +22,26 @@ from typing import Any
 from src.utility import client
 from src.context.agent_context import AgentContext
 from src.context.prompt import deepseek_support
+from src.constants import WORKER_AGENT_LABEL
 
 sys_log = logging.getLogger("logger")
+
+# ── Output filenames ──
+_PREP_WORKER_REPORT_NAME = "worker_report.json"
+_PREP_VERIFIER_RESULT_NAME = "verifier_result.json"
+_PREP_MANIFEST_NAME = "manifest.json"
+
+# ── Data format constants (single source of truth) ──
+_PREP_REQUIRED_IV_COLUMNS = ("VD_V", "VBG_V", "VTG_V", "ID_A")
+_PREP_IV_SHEET_NAME = "long"
+_PREP_CV_EXPECTED_SHEETS = ("cgg", "cbg", "ctg", "vds")
+
+# ── Configurable defaults ──
+_PREP_VERIFIER_MAX_TURNS = 6
+_PREP_VERIFIER_MODEL_TIER = "fast"
+_PREP_OUTPUT_BASE_DIR = "prepared_data"
+_PREP_AGENT_ID_PREFIX = "prep_worker"
+_PREP_SUBJECT = "DG-TFT data preparation"
 
 WORKER_PROMPT_TEMPLATE = """\
 You are a data preparation specialist for DG-TFT device modeling. Convert raw measurement data into the standardized format required by the DG-TFT modeling pipeline.
@@ -33,6 +51,14 @@ You are a data preparation specialist for DG-TFT device modeling. Convert raw me
 
 The output directory already exists. Write all output files into it.
 
+**Required output format**:
+- IV training file suffix: *_train.xlsx
+- Required sheet name: {iv_sheet}
+- Required columns: {iv_columns}
+- Report filename: {report_name}
+- CV output: CV_train.xlsx (expected sheets: {cv_sheets})
+- I-t files go to: it/ subdirectory
+
 **Python usage rules**:
 - Use `python -c "..."` for all inline Python code — do NOT write scripts to files
 - Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json`
@@ -40,14 +66,14 @@ The output directory already exists. Write all output files into it.
 
 **Step-by-step instructions**:
 
-1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. You only need ONE brief glob. Do NOT spend time exploring file formats — just read and process.
+1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. One brief `glob_file` call is enough.
 
 2. Process each file by data type:
 
    **IV CSV files** (e.g., `IDVBG VDS01V.csv`):
    - Read: `df = pd.read_csv("{raw_dir}/IDVBG VDS01V.csv")`
    - Clean: `df.columns = df.columns.str.strip(); df.columns = [c.replace("(V)","_V").replace("(A)","_A") for c in df.columns]`
-   - Save: `df.to_excel("{output_dir}/IDVBG_VDS01V_train.xlsx", sheet_name="long", index=False)`
+   - Save: `df.to_excel("{output_dir}/IDVBG_VDS01V_train.xlsx", sheet_name="{iv_sheet}", index=False)`
 
    **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
    - Same steps as CSV but use `pd.read_excel()`. Clean column names identically.
@@ -66,9 +92,9 @@ The output directory already exists. Write all output files into it.
 4. **I-t files** in `{raw_dir}/it/`:
    - Copy all files to `{output_dir}/it/`: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
 
-5. Write `worker_report.json` in `{output_dir}` listing all processed files and any issues.
+5. Write `{report_name}` in `{output_dir}` listing all processed files and any issues.
 
-**Each file should take ONE python -c command. After processing all files, write worker_report.json and output a brief summary.**
+**Each file should take ONE python -c command. After processing all files, write {report_name} and output a brief summary.**
 
 Do NOT ask the user any questions — work autonomously. Do NOT explore files excessively — just read, clean, and save.
 """
@@ -80,8 +106,8 @@ You are a verification specialist for DG-TFT data preparation. A worker has proc
 
 **Instructions**:
 1. Use `glob_file` to list all files in the output directory (including the it/ subdirectory).
-2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `read_file` to check that it has a "long" sheet with columns: VD_V, VBG_V, VTG_V, ID_A.
-3. For `CV_train.xlsx`, check that it exists and report its sheets.
+2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `read_file` to check that it has a "{iv_sheet}" sheet with columns: {iv_columns}.
+3. For `CV_train.xlsx`, check that it exists and report its sheets (expected: {cv_sheets}).
 4. For the `it/` subdirectory, check if it exists and how many files it contains.
 5. After inspecting, call `report_verification` with your structured findings.
 
@@ -265,15 +291,21 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
     The worker runs synchronously in the current thread with its own
     SubAgent instance and tool loop.
     """
-    prompt = WORKER_PROMPT_TEMPLATE.format(raw_dir=raw_dir, output_dir=output_dir)
+    prompt = WORKER_PROMPT_TEMPLATE.format(
+        raw_dir=raw_dir, output_dir=output_dir,
+        iv_sheet=_PREP_IV_SHEET_NAME,
+        iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
+        cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
+        report_name=_PREP_WORKER_REPORT_NAME,
+    )
     from src.agent.subagent import SubAgent
 
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type="worker",
+        subagent_type=WORKER_AGENT_LABEL,
         prompt=prompt,
-        agent_id="prep_worker",
-        subject="DG-TFT data preparation",
+        agent_id=f"{_PREP_AGENT_ID_PREFIX}_{os.path.basename(output_dir)}",
+        subject=_PREP_SUBJECT,
         console=None,
     )
     agent.build_tools()
@@ -286,7 +318,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
         err = agent.error or "unknown error"
         raise RuntimeError(f"Worker subagent failed: {err}")
 
-    worker_report_path = os.path.join(output_dir, "worker_report.json")
+    worker_report_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
     if result:
         try:
             with open(worker_report_path, "w", encoding="utf-8") as f:
@@ -302,15 +334,23 @@ def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
     It inspects the output directory and produces a structured report.
     """
     system = {"role": "system", "content": "You are a data verification assistant. Use glob_file and read_file to inspect the output directory, then call report_verification with your structured findings."}
-    user = {"role": "user", "content": VERIFIER_PROMPT_TEMPLATE.format(output_dir=output_dir)}
+    user = {"role": "user", "content": VERIFIER_PROMPT_TEMPLATE.format(
+        output_dir=output_dir,
+        iv_sheet=_PREP_IV_SHEET_NAME,
+        iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
+        cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
+    )}
     messages = [system, user]
 
     tools = _build_verifier_tools()
-    model_tier: str = ctx.agent_configs.get("LLM_SUMMARY_MODEL", "fast")
+    model_tier: str = ctx.agent_configs.get("DG_TFT_PREP_VERIFIER_MODEL_TIER", _PREP_VERIFIER_MODEL_TIER)
     branch_func, deepseek_key = client.select_branch_func(model_tier)
 
-    max_turns = 6
+    max_turns = ctx.agent_configs.get("DG_TFT_VERIFIER_MAX_TURNS", _PREP_VERIFIER_MAX_TURNS)
+    if not isinstance(max_turns, int):
+        max_turns = _PREP_VERIFIER_MAX_TURNS
     verifier_result = None
+    finished = False
 
     for turn in range(max_turns):
         try:
@@ -351,6 +391,7 @@ def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
                 })
 
             if verifier_result is not None:
+                finished = True
                 break
         elif assistant_content:
             sys_log.info("Verifier returned text without tool call: %s", assistant_content[:200])
@@ -364,7 +405,7 @@ def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
             sys_log.warning("Verifier returned empty response at turn %d", turn)
             break
 
-    verifier_path = os.path.join(output_dir, "verifier_result.json")
+    verifier_path = os.path.join(output_dir, _PREP_VERIFIER_RESULT_NAME)
     if verifier_result:
         try:
             with open(verifier_path, "w", encoding="utf-8") as f:
@@ -372,7 +413,8 @@ def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
         except Exception:
             pass
     else:
-        fallback = {"overall_ok": False, "summary": "Verifier did not call report_verification tool"}
+        sys_log.warning("Verifier exhausted %d turns without calling report_verification", max_turns)
+        fallback = {"overall_ok": False, "summary": f"Verifier did not call report_verification within {max_turns} turns"}
         try:
             with open(verifier_path, "w", encoding="utf-8") as f:
                 json.dump(fallback, f, indent=2, ensure_ascii=False)
@@ -401,14 +443,14 @@ def _check_output(output_dir: str) -> tuple[bool, list[str]]:
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(str(f), read_only=True, data_only=True)
-                if "long" not in wb.sheetnames:
-                    issues.append(f"[CRITICAL] {f.name}: missing 'long' sheet")
+                if _PREP_IV_SHEET_NAME not in wb.sheetnames:
+                    issues.append(f"[CRITICAL] {f.name}: missing '{_PREP_IV_SHEET_NAME}' sheet")
                     critical = True
                     wb.close()
                     continue
-                ws = wb["long"]
+                ws = wb[_PREP_IV_SHEET_NAME]
                 headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-                required = {"VD_V", "VBG_V", "VTG_V", "ID_A"}
+                required = set(_PREP_REQUIRED_IV_COLUMNS)
                 present = set(h or "" for h in headers)
                 missing = required - present
                 if missing:
@@ -427,7 +469,7 @@ def _check_output(output_dir: str) -> tuple[bool, list[str]]:
         try:
             import openpyxl
             wb = openpyxl.load_workbook(str(cv_file), read_only=True, data_only=True)
-            expected_sheets = {"cgg", "cbg", "ctg", "vds"}
+            expected_sheets = set(_PREP_CV_EXPECTED_SHEETS)
             found = set(wb.sheetnames) & expected_sheets
             missing_sheets = expected_sheets - found
             if missing_sheets:
@@ -460,9 +502,9 @@ def _build_manifest(output_dir: str, prep_id: int, ok: bool, issues: list[str]) 
 
 
 def _write_manifest(output_dir: str, manifest: dict[str, Any]) -> None:
-    manifest_path = os.path.join(output_dir, "manifest.json")
+    manifest_path = os.path.join(output_dir, _PREP_MANIFEST_NAME)
     try:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        sys_log.error("Failed to write manifest.json: %s", e)
+        sys_log.error("Failed to write %s: %s", _PREP_MANIFEST_NAME, e)

@@ -202,7 +202,17 @@ class TestWorkerPromptTemplate(unittest.TestCase):
     """P4.5-T1: Worker prompt template formatting."""
 
     def test_template_formats_both_vars(self):
-        prompt = WORKER_PROMPT_TEMPLATE.format(raw_dir="/raw", output_dir="/out")
+        from src.workflow.dg_tft.data_preparer import (
+            _PREP_IV_SHEET_NAME, _PREP_REQUIRED_IV_COLUMNS,
+            _PREP_CV_EXPECTED_SHEETS, _PREP_WORKER_REPORT_NAME,
+        )
+        prompt = WORKER_PROMPT_TEMPLATE.format(
+            raw_dir="/raw", output_dir="/out",
+            iv_sheet=_PREP_IV_SHEET_NAME,
+            iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
+            cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
+            report_name=_PREP_WORKER_REPORT_NAME,
+        )
         self.assertIn("/raw", prompt)
         self.assertIn("/out", prompt)
         self.assertIn("long", prompt)
@@ -213,7 +223,15 @@ class TestVerifierPromptTemplate(unittest.TestCase):
     """P4.5-T1: Verifier prompt template formatting."""
 
     def test_template_formats_output_dir(self):
-        prompt = VERIFIER_PROMPT_TEMPLATE.format(output_dir="/out")
+        from src.workflow.dg_tft.data_preparer import (
+            _PREP_IV_SHEET_NAME, _PREP_REQUIRED_IV_COLUMNS, _PREP_CV_EXPECTED_SHEETS,
+        )
+        prompt = VERIFIER_PROMPT_TEMPLATE.format(
+            output_dir="/out",
+            iv_sheet=_PREP_IV_SHEET_NAME,
+            iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
+            cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
+        )
         self.assertIn("/out", prompt)
         self.assertIn("report_verification", prompt)
 

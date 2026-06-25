@@ -3072,10 +3072,12 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
 
         prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, "")
         output_dir = os.path.join("prepared_data", ctx.session_uuid, str(prep_id))
+        from src.workflow.dg_tft.data_preparer import _PREP_OUTPUT_BASE_DIR, run_data_preparation
+        output_dir = os.path.join(_PREP_OUTPUT_BASE_DIR, ctx.session_uuid, str(prep_id))
+
         os.makedirs(output_dir, exist_ok=True)
         wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
 
-        from src.workflow.dg_tft.data_preparer import run_data_preparation
         run_data_preparation(ctx, raw_dataset_dir, output_dir)
 
         prep = wm.preparation_tracker.get_prep(prep_id)

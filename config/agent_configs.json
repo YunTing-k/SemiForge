@@ -67,5 +67,7 @@
     "DG_TFT_DEFAULT_CONFIG_TEMPLATE": "./src/device_modeling/dg_tft/config/model_config_new_device_template.ini",
     "DG_TFT_ENABLE_BACKGROUND_WORKFLOW": true,
     "DG_TFT_USE_IMPORT_API": false,
-    "DG_TFT_HSPICE_REQUIRED": false
+    "DG_TFT_HSPICE_REQUIRED": false,
+    "DG_TFT_PREP_VERIFIER_MODEL_TIER": "fast",
+    "DG_TFT_VERIFIER_MAX_TURNS": 6
 }
