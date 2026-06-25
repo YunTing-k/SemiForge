@@ -3038,14 +3038,17 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
 
 
 def _check_prepared_output(output_dir: str) -> bool:
-    """Check if prepared data already exists in the given output directory.
+    """Check if prepared data already exists and appears complete.
 
-    Returns True if at least one *_train.xlsx file and worker_report.json exist.
+    Returns True if CV_train.xlsx, at least one *_train.xlsx file,
+    worker_report.json, and manifest.json all exist.
     """
     import glob as _glob
     train_files = _glob.glob(os.path.join(output_dir, "*_train.xlsx"))
     report_exists = os.path.isfile(os.path.join(output_dir, "worker_report.json"))
-    return len(train_files) > 0 and report_exists
+    manifest_exists = os.path.isfile(os.path.join(output_dir, "manifest.json"))
+    cv_exists = os.path.isfile(os.path.join(output_dir, "CV_train.xlsx"))
+    return len(train_files) > 0 and report_exists and manifest_exists and cv_exists
 
 
 def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:

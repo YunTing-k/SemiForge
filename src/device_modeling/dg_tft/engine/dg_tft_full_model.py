@@ -5483,13 +5483,13 @@ class ResidualDiagnostic(nn.Module):
 
 
 def _resolve_kan_config(meta: dict, mode: str) -> dict:
-    """Resolve KAN normalizer config from metadata in either legacy or current format.
+    """Resolve KAN normalizer config from metadata in either older or current format.
 
-    Legacy format:
+    Older format (original loader expectation):
       meta["kan_config"]["iv_kan"]["center"] / ["scale"] / ["ranges"]
       meta["kan_config"]["cv_kan"]["ranges"]
 
-    Current format (PKAN correction module):
+    Current format (PKAN correction module output):
       meta["iv_transport_kan"]["normalizer"]["center"] / ["scale"]
       meta["iv_transport_kan"]["output_ranges"] (for IV)
       meta["cv_trap_kan"]["output_ranges"] (for CV)
