@@ -32,6 +32,7 @@
 → runtime config 自动生成
 → subprocess 版固定工作流
 → agent 工具接入
+→ 数据整理与验证（双 agent：worker 整理 + verifier 校验）
 → 结果汇总
 → 失败诊断 + 质量守卫（自动调参重试）
 → 脚本函数化
@@ -674,6 +675,296 @@
 
 ---
 
+## 8.5. Phase 4.5：数据整理与双 Agent 验证
+
+## 8.5.1 目标
+
+解决"用户提供的原始数据格式不固定"的问题。在 DG-TFT workflow 之前，先由 **worker subagent** 分析并整理原始数据为 `*_train.xlsx` 格式，再由 **verifier**（独立 LLM call + 结构化 tool schema）验证输出格式合规性。
+
+核心设计要点：
+
+1. **Worker subagent**（type=worker）：拥有 bash/read/write/glob 等工具，读取原始文件，按 IV family 分组，转换为 `*_train.xlsx`，组织 CV/I-t 数据到输出目录
+2. **Verifier**（独立 LLM call，非 subagent）：仅拥有 `read_file` + `glob_file` + **自定义 `report_verification` tool**，LLM 调用 tool 返回结构化 JSON，杜绝自由文本幻觉
+3. **Programmatic check**（Python 代码 `_check_output()`）：做最终 CRITICAL/WARNING 判定，零 LLM 参与，避免 hallucination 影响 pass/fail
+4. **不通过定义**：任一 CRITICAL 项失败 → 阻断后续 workflow；只有 WARNING → 仍可通过
+5. **继承 `summarize_support.py` 模式**：给 LLM 唯一的结构化 output tool，LLM 必须调用 tool 才能"说话"
+
+### 8.5.2 CRITICAL vs WARNING 判定规则
+
+```
+_check_output() 规则：
+├─ [CRITICAL] IDVBG*_train.xlsx 至少 1 个 + long sheet 存在 + {VD_V,VBG_V,VTG_V,ID_A} 列全齐
+├─ [CRITICAL] IDVTG*_train.xlsx 同上
+├─ [CRITICAL] IDVD*_train.xlsx 同上
+├─ [WARNING]  CV_train.xlsx 缺失 → ok 仍为 True
+├─ [WARNING]  it/ 子目录缺失 → ok 仍为 True
+└─ [WARNING]  温度列（temp_K/T_K 等）缺失
+```
+
+**阻断策略**：`ok=False` → manifest.json 写入 failed → `/workflow_get` 显示 不通过 + 失败原因 → LLM 提示用户修复后重试。
+
+### 8.5.3 `report_verification` tool schema
+
+由 `data_preparer.py` 动态构造，verifier LLM 通过调用此 tool 输出结构化结果：
+
+```json
+{
+  "name": "report_verification",
+  "description": "Report the verification findings for prepared DG-TFT dataset. Call this tool with your structured results.",
+  "parameters": {
+    "type": "object",
+    "required": ["overall_ok"],
+    "additionalProperties": false,
+    "properties": {
+      "overall_ok": { "type": "boolean" },
+      "iv_families": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "family": {"type": "string"},
+            "files_found": {"type": "array", "items": {"type": "string"}},
+            "long_sheet_ok": {"type": "boolean"},
+            "required_columns_ok": {"type": "boolean"},
+            "missing_columns": {"type": "array", "items": {"type": "string"}},
+            "issues": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      },
+      "cv_check": {
+        "type": "object",
+        "properties": {
+          "file_found": {"type": "boolean"},
+          "sheets_ok": {"type": "object"},
+          "issues": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "it_check": {
+        "type": "object",
+        "properties": {
+          "dir_found": {"type": "boolean"},
+          "file_count": {"type": "integer"},
+          "issues": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "summary": {"type": "string"}
+    }
+  }
+}
+```
+
+### 8.5.4 输出目录结构
+
+```
+session/<uuid>/prepared_data/<prep_id>/
+├── IDVBG_VDS0.1V_train.xlsx        # IV family: IDVBG
+├── IDVTG_VDS0.1V_train.xlsx        # IV family: IDVTG
+├── IDVD_VBG0V_train.xlsx           # IV family: IDVD
+├── CV_train.xlsx                   # CV (可选)
+├── it/                             # I-t hysteresis (可选)
+│   ├── I-t with different VBG1.xlsx
+│   └── ...
+├── worker_report.json              # worker subagent 自检报告
+├── verifier_result.json            # report_verification tool 返回的结构化结果
+└── manifest.json                   # { ok, issues[], prep_id, created_at }
+```
+
+### 8.5.5 调用链路
+
+```
+用户: "整理这个目录为 DG-TFT 格式"
+    │
+    ▼
+prepare_dg_tft_dataset(raw_dataset_dir="/path/to/ref/0521")
+    │
+    ├─ 创建 session/<uuid>/prepared_data/<prep_id>/
+    ├─ 启动 background thread
+    └─ 立即返回 { prep_id, output_dir }           ← 不阻塞
+         │
+         ▼ (后台线程)
+    ┌────────────────────────────────────────────┐
+    │ Step 1: _run_worker()                      │
+    │   SubAgent(type=worker, prompt=整理指令)     │
+    │   读原始文件 → 分组 family → 转 *_train.xlsx │
+    │   → 写 worker_report.json                   │
+    ├────────────────────────────────────────────┤
+    │ Step 2: _run_verifier()                     │
+    │   独立 LLM call（非 subagent）               │
+    │   工具: read_file + glob_file +             │
+    │          report_verification (自定义)        │
+    │   → 写 verifier_result.json                 │
+    ├────────────────────────────────────────────┤
+    │ Step 3: _check_output()                     │
+    │   Python 代码读取 verifier_result.json       │
+    │   → CRITICAL/WARNING 判定                   │
+    │   → 写 manifest.json                        │
+    └────────────────────────────────────────────┘
+         │
+         ▼
+用户通过 /workflow_get <prep_id> 查询结果
+    │
+    ├─ ok=True → start_dg_tft_workflow(dataset_dir="...prepared_data/<prep_id>/")
+    └─ ok=False → 显示失败原因 → 用户修复后重试
+```
+
+### 8.5.6 Prep ↔ Workflow 关系（类 Design ↔ Run 模型）
+
+借鉴原仿真系统中 `design → run` 的关系：**一个 prepared data 可被多个 workflow run 引用**。
+
+```
+PreparationTracker
+  prep_id=1  "ref_0521_cleaned"  →  ok=True
+      │
+      ├── WorkflowRun run_id=1  (prep_id=1, device="TFT_A")
+      ├── WorkflowRun run_id=2  (prep_id=1, device="TFT_A", 重新训练)
+      └── WorkflowRun run_id=3  (prep_id=1, device="TFT_B")
+```
+
+**数据结构变更**：
+- `PreparationTracker`（新建）— 管理 prep 生命周期，存于 `WorkflowManager.preparation_tracker`
+- `WorkflowRun` 新增字段 `prep_id: int | None` — 外键引用 prepared data
+- `manifest.json` 新增 `prep_id` — 自描述
+
+**ID 隔离**：
+- `WorkflowManager._next_run_id` — workflow run counter（不变）
+- `PreparationTracker._next_prep_id` — preparation counter（独立）
+
+### 8.5.7 Verifier 容错机制
+
+独立 LLM call 的 `tool_choice` 在不同 API 下行为不同，必须处理 fallback：
+
+```
+Verifier call:
+  │
+  ├─ API 支持 tool_choice="required" (OpenAI)
+  │   → 强制 LLM 调用 report_verification
+  │   → 直接提取 tool_calls → verifier_result.json
+  │
+  └─ API 不支持 tool_choice (DeepSeek)
+      → 纯 prompt 要求"必须调用 report_verification"
+          │
+          ├─ tool_calls 非空 → 提取结构化结果 ✔
+          │
+          └─ tool_calls 为空（LLM 无视 tool 要求）
+              → 追加提示："You MUST call report_verification to report results"
+              → 重试（最多 3 次）
+                  │
+                  ├─ 重试成功 → 提取结构化结果 ✔
+                  │
+                  └─ 3 次均失败
+                      → _check_output() 直接编程检查输出目录
+                      → 写 verifier_result.json = {"overall_ok": _check_ok, "summary": "LLM refused to call tool, using programmatic check"}
+```
+
+**implementation 要点**：
+- `_run_verifier()` 内部 loop（max 3 retries），每次检查 `response.choices[0].message.tool_calls`
+- `_check_output()` 在 verifier 失败时**仍执行**（编程检查独立于 LLM 输出）
+- 最终 `manifest.json` 的 `ok` 由 `_check_output()` 决定，不由 verifier 决定
+
+### 8.5.8 Worker Prompt 质量保障
+
+Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而不是开发时随意拼接。
+
+**Prompt 结构要求**：
+
+```
+[System context] 你是数据整理专家，已知 DG-TFT 建模需要的数据格式
+
+[Input description] 原始数据目录：{raw_dir}，输出目录：{output_dir}
+
+[Step-by-step instructions]
+  1. 扫描 raw_dir 下所有文件（csv, xlsx），识别 IV/CV/I-t 数据类型
+  2. 按以下 mapping 分组并输出为 *_train.xlsx：
+     - files with "IDVBG" → IDVBG_VDS*V_train.xlsx
+     - files with "IDVTG" → IDVTG_VDS*V_train.xlsx
+     - files with "IDVD"  → IDVD_VBG*V_train.xlsx
+     (保留原始 VDS/VBG/VTG 电压值在文件名中)
+  3. 每个 *_train.xlsx 必须包含 "long" sheet，列：VD_V, VBG_V, VTG_V, ID_A
+  4. 如发现 CV 数据 → 输出 CV_train.xlsx，sheet: cgg, cbg, ctg, vds
+  5. 如发现 I-t 数据 → 输出到 output_dir/it/ 子目录
+  6. 写 worker_report.json（自检报告）
+
+[Constraints]
+  - 不改变原始测量数值（只做格式转换）
+  - 不编造数据（缺失列的单元格留空）
+  - 使用 pandas/openpyxl 处理
+```
+
+**Prompt 验收方法**：
+- 对 `ref/0521` 的 `training_ready_corrected_xlsx/` 目录（已符合格式）不做任何改动即为 benchmark —— worker 应该"原样拷贝"而非"重新处理"
+- 对 `ref/0521` 根目录（原始 csv + xlsx）做真实整理，输出应匹配 `training_ready_corrected_xlsx/` 的结构
+
+### 8.5.9 TODO
+
+### P4.5-T1 实现 `data_preparer.py` 核心模块 + schema 扩展
+- [ ] 新建 `src/workflow/dg_tft/data_preparer.py`
+- [ ] 在 `schema.py` 中 `WorkflowRun` 新增 `prep_id: int | None = None` 字段
+- [ ] 实现 `PreparationTracker` 类（独立 `_next_prep_id` counter，存于 `workflow_man.preparation_tracker`）
+- [ ] 实现 `run_data_preparation(ctx, raw_dataset_dir, output_dir)` — 串联 worker → verifier → check
+- [ ] 实现 `_run_worker(ctx, raw_dir, output_dir)` — 启动 worker subagent
+  - [ ] worker prompt 模板按 8.5.8 格式设计（system context + input + step-by-step + constraints）
+  - [ ] worker 输出 `worker_report.json`
+- [ ] 实现 `_run_verifier(ctx, output_dir)` — 独立 LLM call + `report_verification` tool
+  - [ ] 构造 `report_verification` tool definition（schema 见 8.5.3）
+  - [ ] 实现 8.5.7 容错机制：tool_choice 可用 → 强制；不可用 → prompt 要求 + 3 次重试 → fallback 编程检查
+  - [ ] verifier prompt 模板：读取 output_dir 文件、调用 `report_verification` 输出结构化结果
+  - [ ] 从 tool_calls 中提取结构化结果，写入 `verifier_result.json`
+- [ ] 实现 `_check_output(output_dir)` — 程序化 CRITICAL/WARNING 判定（见 8.5.2）
+  - [ ] 判定逻辑：IV family 文件存在 + long sheet + 必须列 = CRITICAL；CV/I-t 缺失 = WARNING
+  - [ ] verifier 失败时 `_check_output()` 独立执行，不依赖 LLM 输出
+  - [ ] 写入 `manifest.json`
+
+**依赖**
+- Phase 4 完成（SubAgent 基础设施、异步执行模式）。
+
+**验收标准**
+- 对 `ref/0521` 运行后产出正确的 `*_train.xlsx` 格式数据，verifier 结构化结果与手动检查一致。
+
+---
+
+### P4.5-T2 新增 `prepare_dg_tft_dataset` agent tool
+- [ ] 在 `src/constants.py` 新增 `TOOL_NAME_PREPARE_DATASET`
+- [ ] 在 `src/tool/tool_def.py` 新增 `tool_prepare_dg_tft_dataset_def()` + `prepare_dg_tft_dataset()` handler
+  - [ ] handler 内部：创建 output_dir → 启动 background thread → 立即返回 prep_id
+  - [ ] background thread 调用 `run_data_preparation(ctx, raw_dir, output_dir)`
+- [ ] 在 `src/tool/tool_dispatch.py` 新增 dispatch 分支
+
+**依赖**
+- P4.5-T1。
+
+**验收标准**
+- 调用 tool 后立即返回 prep_id，后台可查询准备进度。
+
+---
+
+### P4.5-T3 注册内建命令 + 更新 prompt 路由
+- [ ] 在 `src/utility/command.py` 将 preparation 结果并入 `/workflow_list` `/workflow_get` 展示
+- [ ] 在 `src/context/prompt.py` 新增：
+  - [ ] "识别用户提供原始数据目录时优先用 `prepare_dg_tft_dataset` 整理"的提示
+  - [ ] "整理完成后用 `start_dg_tft_workflow` 启动建模"的串联指引
+
+**依赖**
+- P4.5-T2。
+
+**验收标准**
+- 用户说"对这个目录做全自动建模"时，LLM 先调用 `prepare_dg_tft_dataset`，再调用 `start_dg_tft_workflow`。
+
+---
+
+### P4.5-T4 测试
+- [ ] 测试 `_check_output()` 各项判定（正常/缺文件/缺 sheet/缺列/CV 缺失/I-t 缺失）
+- [ ] Mock verifier LLM response，测试结构化 tool call 提取
+- [ ] 测试 `run_data_preparation` 完整流程（mock subagent）
+- [ ] 测试 tool handler 异步行为
+
+**依赖**
+- P4.5-T1 ~ P4.5-T3。
+
+**验收标准**
+- 所有新增测试通过，覆盖率覆盖 CRITICAL/WARNING 各分支。
+
+
+
 ## 9. Phase 5：报告、产物与任务板协同
 
 ## 9.1 目标
@@ -1148,6 +1439,7 @@ orchestrator.py (阶段执行后)
 ### 第二优先级
 - [x] `P4-T5`
 - [x] `P4-T6`
+- [ ] `P4.5-T1` ~ `P4.5-T4`（数据整理与验证 — 解决原始数据格式不统一问题）
 - [ ] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
 - [ ] `P6-T1` ~ `P6-T2`（诊断基础：分类 + subagent hooks）
 - [ ] `P7-T1` ~ `P7-T5`（质量守卫核心 — 不依赖 P5/P6，可直接接在 Phase 3 后）
@@ -1181,6 +1473,14 @@ orchestrator.py (阶段执行后)
 - [x] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
 
 这 11 项完成后，你就会拥有一版真正可用的第一代系统。
+
+**下一批建议优先：Phase 4.5**
+- [ ] `P4.5-T1` 实现 `data_preparer.py`（worker + verifier + check）
+- [ ] `P4.5-T2` 接入 `prepare_dg_tft_dataset` tool
+- [ ] `P4.5-T3` 命令 + prompt 路由更新
+- [ ] `P4.5-T4` 测试
+
+做完这一批后，系统即可接受任意格式的原始数据目录，自动整理为 `*_train.xlsx` 后再启动建模。
 
 ---
 
@@ -1328,6 +1628,51 @@ test/
 **测试统计**
 - Phase 3 新增：32 tests
 - 累计全部：135 tests (18 + 24 + 13 + 14 + 24 + 10 + 32)
+
+---
+
+### 2026-06-25 | Phase 4 完成 + Phase 4.5 设计
+
+**完成内容**
+- P4-T1 ~ P4-T6：Agent 工具集成全完成
+  - `start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report` 三个工具
+  - 异步执行模型：`threading.Thread` + `WorkflowManager._running_threads` tracker
+  - `call_tools()` dispatch 分支
+  - `/workflow_list` / `/workflow_get` / `/workflow_report` 内建命令
+  - System prompt 全面重写：TECoSim/display panel/simulator → DeviceModeling/DG-TFT fitting
+  - Simulator 六个工具从 LLM 视野完全移除（注释 schema 但不删实现）
+- Phase 4.5 设计方案确定：数据整理 + 双 Agent 验证
+  - Worker subagent 整理 + Verifier 独立 LLM call（结构化 tool schema）
+  - `_check_output()` Python 代码做 CRITICAL/WARNING 判定（零 LLM 参与）
+  - 继承 `summarize_support.py` 模式避免结构化输出幻觉
+
+**新增文件清单**
+```
+test/dg_tft_tools_test.py          # 28 tests（P4-T1~T6 全覆盖）
+```
+
+**修改文件清单**
+
+| 文件 | 修改内容 |
+|------|---------|
+| `src/constants.py` | 新增 3 个 workflow tool name 常量 |
+| `src/tool/tool_def.py` | 新增 3 schema + 3 handler + `_run_workflow_thread()`；simulator 6 工具注释掉；注册到 `create_tools_prompts()` |
+| `src/tool/tool_dispatch.py` | 新增 3 个 dispatch 分支 |
+| `src/workflow/dg_tft/manager.py` | 新增 `_running_threads` dict |
+| `src/utility/command.py` | 新增 3 个内建命令 + `BuiltinCommands` 注册 |
+| `src/context/prompt.py` | 全面重写 system prompts（定位切换 + DG-TFT 路由引导） |
+| `src/agent/progress.py` | 清理 `read_log` from allowlist/desc/presets |
+| `doc/DG_TFT_Agent全自动建模开发TODO.md` | Phase 4 checkmarked + Phase 4.5 设计插入 |
+
+**测试统计**
+- Phase 4 新增：28 tests
+- 累计全部：163 tests
+
+**下阶段：Phase 4.5**
+- P4.5-T1 `data_preparer.py` 核心模块
+- P4.5-T2 `prepare_dg_tft_dataset` agent tool
+- P4.5-T3 内建命令 + prompt 路由
+- P4.5-T4 测试
 
 ---
 
