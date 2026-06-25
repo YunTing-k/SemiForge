@@ -128,6 +128,7 @@ def create_tools_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
         # tool_query_run_def(),
         # tool_read_log_def(),
         # DG-TFT workflow tools
+        tool_prepare_dg_tft_dataset_def(),
         tool_start_dg_tft_workflow_def(),
         tool_query_dg_tft_workflow_def(),
         tool_read_dg_tft_workflow_report_def(),
@@ -3002,3 +3003,87 @@ def read_dg_tft_workflow_report(arguments: dict[str, Any], ctx: AgentContext, pr
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
         return {"status": FAIL_LABEL, "info": f"Read workflow report failed: {e}"}
+
+
+def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
+    """tool definition of preparing a raw dataset for DG-TFT modeling (TOOL_NAME_PREPARE_DATASET)"""
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME_PREPARE_DATASET,
+            "description": (
+                "Prepare a raw dataset directory for DG-TFT auto-modeling. "
+                "This runs a worker subagent to convert raw CSV/XLSX measurement files "
+                "into the standardized *_train.xlsx format (IV families, CV, I-t), "
+                "followed by an automated verification pass. "
+                "Returns immediately with a prep_id; use /workflow_list or "
+                "/workflow_get <prep_id> to check results. "
+                "After preparation succeeds, use start_dg_tft_workflow to begin modeling."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_dataset_dir": {
+                        "type": "string",
+                        "description": "Absolute path to the raw dataset directory containing CSV/XLSX measurement files.",
+                    },
+                },
+                "required": ["raw_dataset_dir"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+    """tool realization of preparing a raw dataset for DG-TFT modeling"""
+    func_name = TOOL_NAME_PREPARE_DATASET
+    try:
+        pause_for_permission(progress)
+        token, info = ask_permission_tui(ctx, func_name,
+                                         f"raw dataset: {arguments['raw_dataset_dir']}", progress.console)
+        resume_from_permission(progress)
+        if not token:
+            reason = f"Permission denied" + (f": {info}" if info else "")
+            return {"status": DENIED_LABEL, "info": reason}
+
+        raw_dataset_dir = arguments["raw_dataset_dir"]
+        wm = ctx.workflow_man
+
+        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, "")
+        output_dir = os.path.join("session", ctx.session_uuid, "prepared_data", str(prep_id))
+        os.makedirs(output_dir, exist_ok=True)
+
+        wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
+
+        import threading
+        thread = threading.Thread(
+            target=_run_prep_thread,
+            args=(ctx, raw_dataset_dir, output_dir),
+            daemon=True,
+        )
+        wm._running_threads[f"prep_{prep_id}"] = thread
+        thread.start()
+
+        sys_log.info("%s: data prep %d started for %s", func_name, prep_id, raw_dataset_dir)
+        return {
+            "status": SUCCESS_LABEL,
+            "info": f"Data preparation started. Prep ID: {prep_id}. Use query_dg_tft_workflow or /workflow_get to check results.",
+            "prep_id": prep_id,
+            "output_dir": output_dir,
+        }
+    except Exception as e:
+        sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
+        progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
+        return {"status": FAIL_LABEL, "info": f"Data preparation failed: {e}"}
+
+
+def _run_prep_thread(ctx: AgentContext, raw_dataset_dir: str, output_dir: str) -> None:
+    """Background thread that runs data preparation pipeline."""
+    try:
+        from src.workflow.dg_tft.data_preparer import run_data_preparation
+        run_data_preparation(ctx, raw_dataset_dir, output_dir)
+    except Exception as e:
+        sys_log.error("Data prep thread failed: %s", e)
+    finally:
+        ctx.workflow_man._running_threads.pop(f"prep_{output_dir.split(os.sep)[-1]}", None)

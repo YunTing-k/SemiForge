@@ -96,6 +96,7 @@ class WorkflowRun:
     dataset_dir: str = ""
     hysteresis_dir: str | None = None
     output_root: str = ""
+    prep_id: int | None = None
     status: WorkflowStatus = WorkflowStatus.PENDING
     current_stage: str = ""
     created_at: str = ""
@@ -117,6 +118,7 @@ class WorkflowRun:
             "dataset_dir": self.dataset_dir,
             "hysteresis_dir": self.hysteresis_dir,
             "output_root": self.output_root,
+            "prep_id": self.prep_id,
             "status": self.status.value,
             "current_stage": self.current_stage,
             "created_at": self.created_at,
@@ -158,6 +160,8 @@ class WorkflowRun:
         for k, v in d.pop("stage_results", {}).items():
             stage_results[k] = StageResult(**v)
         d["status"] = WorkflowStatus(d["status"])
+        if "prep_id" not in d:
+            d["prep_id"] = None
         run = cls(**{k: v for k, v in d.items() if k != "stage_results"})
         run.stage_results = stage_results
         return run

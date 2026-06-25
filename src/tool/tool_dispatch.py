@@ -112,6 +112,9 @@ def call_tools(func_name: str, arguments: dict[str, Any], ctx: AgentContext, boa
         elif func_name == TOOL_NAME_READ_LOG:
             results = tool_def.read_log(arguments, ctx, progress)
             user_addon = None
+        elif func_name == TOOL_NAME_PREPARE_DATASET:
+            results = tool_def.prepare_dg_tft_dataset(arguments, ctx, progress)
+            user_addon = None
         elif func_name == TOOL_NAME_START_WORKFLOW:
             results = tool_def.start_dg_tft_workflow(arguments, ctx, progress)
             user_addon = None

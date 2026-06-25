@@ -31,6 +31,57 @@ from .schema import (
 sys_log = logging.getLogger("logger")
 
 
+class PreparationTracker:
+    """Manages the lifecycle of data preparation sessions.
+
+    Each preparation session has a unique prep_id, a source directory,
+    and an output directory under session/<uuid>/prepared_data/<prep_id>/.
+    """
+
+    def __init__(self):
+        self._next_prep_id: int = 1
+        self._lock = threading.Lock()
+        self._preps: dict[int, dict] = {}
+
+    def register_prep(self, raw_dataset_dir: str, output_dir: str) -> int:
+        with self._lock:
+            prep_id = self._next_prep_id
+            self._next_prep_id += 1
+            self._preps[prep_id] = {
+                "prep_id": prep_id,
+                "raw_dataset_dir": raw_dataset_dir,
+                "output_dir": output_dir,
+                "ok": False,
+                "issues": [],
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            return prep_id
+
+    def get_prep(self, prep_id: int) -> dict | None:
+        with self._lock:
+            return self._preps.get(prep_id)
+
+    def update_prep(self, prep_id: int, ok: bool, issues: list[str]):
+        with self._lock:
+            prep = self._preps.get(prep_id)
+            if prep is None:
+                return
+            prep["ok"] = ok
+            prep["issues"] = issues
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "next_prep_id": self._next_prep_id,
+                "preps": self._preps,
+            }
+
+    def from_dict(self, data: dict):
+        with self._lock:
+            self._next_prep_id = data.get("next_prep_id", 1)
+            self._preps = data.get("preps", {})
+
+
 class WorkflowManager:
     """Thread-safe DG-TFT workflow run manager.
 
@@ -44,6 +95,7 @@ class WorkflowManager:
         self._runs: dict[int, WorkflowRun] = {}
         self._next_run_id: int = 1
         self._running_threads: dict[str, threading.Thread] = {}
+        self.preparation_tracker = PreparationTracker()
 
     # ──────────────────── CRUD ────────────────────
 
@@ -53,6 +105,7 @@ class WorkflowManager:
         hysteresis_dir: str | None = None,
         output_root: str = "",
         device_name: str = "",
+        prep_id: int | None = None,
     ) -> tuple[bool, int, str]:
         with self._lock:
             run_id = self._next_run_id
@@ -64,6 +117,7 @@ class WorkflowManager:
                 dataset_dir=dataset_dir,
                 hysteresis_dir=hysteresis_dir,
                 output_root=output_root,
+                prep_id=prep_id,
                 status=WorkflowStatus.PENDING,
                 created_at=now,
                 updated_at=now,
@@ -89,6 +143,7 @@ class WorkflowManager:
                     "run_id": run.run_id,
                     "status": run.status.value,
                     "dataset_dir": run.dataset_dir,
+                    "prep_id": run.prep_id,
                     "current_stage": run.current_stage,
                     "created_at": run.created_at,
                     "updated_at": run.updated_at,
@@ -212,6 +267,7 @@ class WorkflowManager:
         data = {
             "next_run_id": self._next_run_id,
             "runs": {str(k): v.to_dict() for k, v in self._runs.items()},
+            "preparation_tracker": self.preparation_tracker.to_dict(),
         }
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -235,6 +291,9 @@ class WorkflowManager:
                 self._runs = {}
                 for k, v in data.get("runs", {}).items():
                     self._runs[int(k)] = WorkflowRun.from_dict(v)
+                prep_data = data.get("preparation_tracker", {})
+                if prep_data:
+                    self.preparation_tracker.from_dict(prep_data)
                 sys_log.info(
                     "Loaded %d workflow runs, next_id=%d",
                     len(self._runs), self._next_run_id,
@@ -249,6 +308,7 @@ class WorkflowManager:
             return {
                 "next_run_id": self._next_run_id,
                 "runs": {str(k): v.to_dict() for k, v in self._runs.items()},
+                "preparation_tracker": self.preparation_tracker.to_dict(),
             }
 
     def from_dict(self, data: dict) -> None:
@@ -258,3 +318,6 @@ class WorkflowManager:
                 int(k): WorkflowRun.from_dict(v)
                 for k, v in data.get("runs", {}).items()
             }
+            prep_data = data.get("preparation_tracker", {})
+            if prep_data:
+                self.preparation_tracker.from_dict(prep_data)

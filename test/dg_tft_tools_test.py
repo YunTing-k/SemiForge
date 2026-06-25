@@ -22,6 +22,7 @@ from src.constants import (
     TOOL_NAME_START_WORKFLOW,
     TOOL_NAME_QUERY_WORKFLOW,
     TOOL_NAME_READ_WORKFLOW_REPORT,
+    TOOL_NAME_PREPARE_DATASET,
     SUCCESS_LABEL,
     FAIL_LABEL,
     DENIED_LABEL,
@@ -470,9 +471,10 @@ class TestPromptRouting(unittest.TestCase):
         from src.context.prompt import get_agent_guideline_prompts
         prompts = get_agent_guideline_prompts()
         content = prompts[0]["content"]
-        self.assertIn("MUST use", content)
+        self.assertIn("DG-TFT Workflow Routing", content)
         self.assertIn("auto-modeling", content)
         self.assertIn("DONE status", content)
+        self.assertIn(TOOL_NAME_PREPARE_DATASET, content)
 
 
 class TestRunningThreadTracker(unittest.TestCase):

@@ -997,17 +997,39 @@ def cmd_task_list_all(args: list[str], ctx: AgentContext, board: Scoreboard, con
 
 
 def cmd_workflow_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query all DG-TFT workflow runs"""
+    """query all DG-TFT workflow runs and data preparations"""
     runs = ctx.workflow_man.list_runs()
-    title = f"DG-TFT Workflow Runs ({len(runs)})"
+    preps = ctx.workflow_man.preparation_tracker._preps
+
+    total = len(runs) + len(preps)
+    title = f"DG-TFT Workflow Runs & Prep ({total})"
     cmd_str = Text()
+
+    if preps:
+        cmd_str.append(f"Data Preparations:\n", style=f"bold {MAJOR_COLOR1}")
+        for pid, p in preps.items():
+            status_icon = "[green]OK[/green]" if p["ok"] else "[yellow]PENDING[/yellow]"
+            cmd_str.append(f"Prep ID: ", style="white")
+            cmd_str.append(f"{pid}", style=f"bold {MAJOR_COLOR1}")
+            cmd_str.append(f", Status: {status_icon}\n", style="white")
+            cmd_str.append(f"  Raw: ", style="white")
+            cmd_str.append(f"{p['raw_dataset_dir']}\n", style=f"{MAJOR_COLOR2}")
+            cmd_str.append(f"  Output: ", style="white")
+            cmd_str.append(f"{p['output_dir']}\n\n", style="bright_black")
+        cmd_str.append("\n")
+
+    cmd_str.append(f"Workflow Runs:\n", style=f"bold {MAJOR_COLOR2}")
     for run in runs:
         cmd_str.append(f"Run ID: ", style="white")
         cmd_str.append(f"{run['run_id']}", style=f"bold {MAJOR_COLOR1}")
         cmd_str.append(f", Status: ", style="white")
         cmd_str.append(f"{run['status']}", style=f"bold {MAJOR_COLOR2}")
         cmd_str.append(f", Stage: ", style="white")
-        cmd_str.append(f"{run.get('current_stage', '')}\n", style=f"bright_black")
+        cmd_str.append(f"{run.get('current_stage', '')}", style=f"bright_black")
+        if run.get('prep_id') is not None:
+            cmd_str.append(f", Prep: ", style="white")
+            cmd_str.append(f"{run['prep_id']}", style="bright_black")
+        cmd_str.append("\n")
         cmd_str.append(f"  Dataset: ", style="white")
         cmd_str.append(f"{run['dataset_dir']}", style=f"{MAJOR_COLOR2}")
         cmd_str.append(f", Created: ", style="white")
@@ -1020,25 +1042,52 @@ def cmd_workflow_list(args: list[str], ctx: AgentContext, board: Scoreboard, con
 
 
 def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query details of a DG-TFT workflow run by run_id"""
+    """query details of a DG-TFT workflow run by run_id, or prep by prep_id"""
     if not args:
-        console.print("Usage: /workflow_get <run_id>", style="bold yellow")
+        console.print("Usage: /workflow_get <run_id|prep_id>", style="bold yellow")
         return
     try:
-        run_id = int(args[0])
+        lookup_id = int(args[0])
     except ValueError:
-        console.print(f"Invalid run_id: {args[0]}", style="bold yellow")
+        console.print(f"Invalid ID: {args[0]}", style="bold yellow")
         return
-    run = ctx.workflow_man.get_run(run_id)
+
+    prep = ctx.workflow_man.preparation_tracker.get_prep(lookup_id)
+    if prep is not None:
+        title = f"DG-TFT Data Preparation {lookup_id}"
+        cmd_str = Text()
+        status_str = "[green]OK[/green]" if prep["ok"] else "[yellow]PENDING/FAILED[/yellow]"
+        cmd_str.append(f"Status: {status_str}\n", style="white")
+        cmd_str.append(f"Raw dataset: ", style="white")
+        cmd_str.append(f"{prep['raw_dataset_dir']}\n", style=f"{MAJOR_COLOR2}")
+        cmd_str.append(f"Output: ", style="white")
+        cmd_str.append(f"{prep['output_dir']}\n", style=f"{MAJOR_COLOR2}")
+        cmd_str.append(f"Created: ", style="white")
+        cmd_str.append(f"{prep['created_at']}\n", style="bright_black")
+        if prep["issues"]:
+            cmd_str.append(f"Issues ({len(prep['issues'])}):\n", style="bold yellow")
+            for issue in prep["issues"]:
+                cmd_str.append(f"  - {issue}\n", style="bright_black")
+        if cmd_str.plain.endswith("\n"):
+            cmd_str.rstrip()
+        console.print(Panel.fit(cmd_str, title=title, title_align="left",
+                                padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
+        console.print("\n")
+        return
+
+    run = ctx.workflow_man.get_run(lookup_id)
     if run is None:
-        console.print(f"Workflow run {run_id} not found", style="bold yellow")
+        console.print(f"Workflow run {lookup_id} not found", style="bold yellow")
         return
-    title = f"DG-TFT Workflow Run {run_id}"
+    title = f"DG-TFT Workflow Run {lookup_id}"
     cmd_str = Text()
     cmd_str.append(f"Status: ", style="white")
     cmd_str.append(f"{run.status.value}\n", style=f"bold {MAJOR_COLOR2}")
     cmd_str.append(f"Dataset: ", style="white")
     cmd_str.append(f"{run.dataset_dir}\n", style=f"{MAJOR_COLOR2}")
+    if run.prep_id is not None:
+        cmd_str.append(f"Data Prep ID: ", style="white")
+        cmd_str.append(f"{run.prep_id}\n", style=f"{MAJOR_COLOR2}")
     cmd_str.append(f"Current Stage: ", style="white")
     cmd_str.append(f"{run.current_stage}\n", style=f"bright_black")
     cmd_str.append(f"Created: ", style="white")

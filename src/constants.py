@@ -140,6 +140,7 @@ TOOL_NAME_READ_LOG: str = "read_log"
 TOOL_NAME_START_WORKFLOW: str = "start_dg_tft_workflow"
 TOOL_NAME_QUERY_WORKFLOW: str = "query_dg_tft_workflow"
 TOOL_NAME_READ_WORKFLOW_REPORT: str = "read_dg_tft_workflow_report"
+TOOL_NAME_PREPARE_DATASET: str = "prepare_dg_tft_dataset"
 """Tool calls params"""
 ASK_USER_QUESTION_MAX_QUESTION: int = 4
 ASK_USER_QUESTION_MIN_QUESTION: int = 1
