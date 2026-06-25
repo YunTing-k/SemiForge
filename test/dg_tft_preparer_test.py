@@ -344,7 +344,8 @@ class TestToolHandler(unittest.TestCase):
         progress = MagicMock()
         arguments = {"raw_dataset_dir": "/some/raw/path"}
 
-        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation") as mock_run:
+        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation"), \
+             patch("os.makedirs"):
             result = prepare_dg_tft_dataset(arguments, ctx, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIsNotNone(result.get("prep_id"))
@@ -374,7 +375,8 @@ class TestToolDispatch(unittest.TestCase):
         progress = MagicMock()
         board = MagicMock()
 
-        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation"):
+        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation"), \
+             patch("os.makedirs"):
             result, addon = call_tools(TOOL_NAME_PREPARE_DATASET, {"raw_dataset_dir": "/data"}, ctx, board, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIsNotNone(result.get("prep_id"))
