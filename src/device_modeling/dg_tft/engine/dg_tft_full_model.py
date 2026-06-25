@@ -5527,36 +5527,104 @@ def load_trained_base(model_dir: Path, device: torch.device, dtype: torch.dtype)
     meta = json.loads((model_dir / "pkan_model_metadata.json").read_text(encoding="utf-8"))
     p = Params(**{k: meta["baseline_params"][k] for k in asdict(Params()).keys() if k in meta["baseline_params"]})
     trap = CVTrapParams(**{k: meta["baseline_trap_params"][k] for k in asdict(CVTrapParams()).keys() if k in meta["baseline_trap_params"]})
-    iv_kan_cfg = _resolve_kan_config(meta, "iv")
-    cv_kan_cfg = _resolve_kan_config(meta, "cv")
-    norm = Normalizer(FEATURE_NAMES, iv_kan_cfg["center"], iv_kan_cfg["scale"])
-    kan = V2StyleKAN(
-        norm,
-        width=[len(FEATURE_NAMES), meta["training_args"]["kan_hidden"], len(CORR_NAMES)],
-        grid=meta["training_args"]["kan_grid"],
-        k=meta["training_args"]["kan_k"],
-        ranges=iv_kan_cfg["ranges"],
-        device=device,
-        dtype=dtype,
-        output_names=CORR_NAMES,
-    )
-    cv_kan = V2StyleKAN(
-        norm,
-        width=[len(FEATURE_NAMES), meta["training_args"]["kan_hidden"], len(CV_CORR_NAMES)],
-        grid=meta["training_args"]["kan_grid"],
-        k=meta["training_args"]["kan_k"],
-        ranges=cv_kan_cfg["ranges"],
-        device=device,
-        dtype=dtype,
-        output_names=CV_CORR_NAMES,
-    )
-    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"]["eta_n"]).to(device=device, dtype=dtype)
+    kan_hidden = int(meta["training_args"]["kan_hidden"])
+    kan_grid = int(meta["training_args"]["kan_grid"])
+    kan_k = int(meta["training_args"]["kan_k"])
+
     ckpt = torch.load(model_dir / "pkan_torch_model.pt", map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    load_model = _build_and_load_model(p, trap, meta, ckpt, kan_hidden, kan_grid, kan_k, device, dtype)
+    if load_model is not None:
+        return load_model, meta, p, trap
+
+    norm = Normalizer(FEATURE_NAMES, [0.0] * len(FEATURE_NAMES), [1.0] * len(FEATURE_NAMES))
+    default_iv_range = {n: 0.45 for n in CORR_NAMES}
+    default_cv_range = {n: 0.75 for n in CV_CORR_NAMES}
+    kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CORR_NAMES)],
+                     grid=kan_grid, k=kan_k, ranges=default_iv_range, device=device, dtype=dtype,
+                     output_names=CORR_NAMES)
+    cv_kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CV_CORR_NAMES)],
+                        grid=kan_grid, k=kan_k, ranges=default_cv_range, device=device, dtype=dtype,
+                        output_names=CV_CORR_NAMES)
+    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"]["eta_n"]).to(device=device, dtype=dtype)
     model.eval()
     for prm in model.parameters():
         prm.requires_grad_(False)
     return model, meta, p, trap
+
+
+def _build_and_load_model(
+    p: Params, trap: CVTrapParams, meta: dict, ckpt: dict,
+    kan_hidden: int, kan_grid: int, kan_k: int,
+    device: torch.device, dtype: torch.dtype,
+) -> UnifiedIVCVModel | None:
+    has_kan = any(k in ckpt for k in ("shared_state_dict", "iv_kan_state_dict", "cv_kan_state_dict"))
+    has_model = "model_state_dict" in ckpt
+    if not has_kan and not has_model:
+        return None
+    has_meta_kan = any(k in meta for k in ("iv_transport_kan", "shared_dveff_kan"))
+    if not has_meta_kan:
+        return None
+
+    norm = None
+    iv_ranges: dict[str, float] = {}
+    cv_ranges: dict[str, float] = {}
+    if has_kan:
+        shared_cfg = meta.get("shared_dveff_kan", {}).get("normalizer", {})
+        iv_cfg = meta.get("iv_transport_kan", {}).get("normalizer", {})
+        cv_cfg = meta.get("cv_trap_kan", {})
+        iv_names = shared_cfg.get("names", [])
+        if iv_names and "center" in shared_cfg and "scale" in shared_cfg:
+            norm = Normalizer(iv_names, shared_cfg["center"], shared_cfg["scale"])
+        iv_range_list = meta["iv_transport_kan"].get("output_ranges", [0.45])
+        cv_range_list = cv_cfg.get("output_ranges", [0.75])
+        for i, n in enumerate(CORR_NAMES):
+            iv_ranges[n] = float(iv_range_list[min(i, len(iv_range_list) - 1)])
+        for i, n in enumerate(CV_CORR_NAMES):
+            cv_ranges[n] = float(cv_range_list[min(i, len(cv_range_list) - 1)])
+    if norm is None or not iv_ranges:
+        return None
+
+    kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CORR_NAMES)],
+                     grid=kan_grid, k=kan_k, ranges=iv_ranges, device=device, dtype=dtype,
+                     output_names=CORR_NAMES)
+    cv_kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CV_CORR_NAMES)],
+                        grid=kan_grid, k=kan_k, ranges=cv_ranges, device=device, dtype=dtype,
+                        output_names=CV_CORR_NAMES)
+    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"]["eta_n"]).to(device=device, dtype=dtype)
+
+    if has_model:
+        model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    elif has_kan:
+        kan_state: dict[str, torch.Tensor] = {}
+        for old_key, state in ckpt.items():
+            if not old_key.endswith("_state_dict"):
+                continue
+            if "shared" in old_key:
+                prefix = "shared"
+            elif "iv_kan" in old_key:
+                prefix = "iv_kan"
+            elif "cv_kan" in old_key:
+                prefix = "cv_kan"
+            else:
+                continue
+            for param_name, tensor in state.items():
+                kan_state[f"_kan_{prefix}_{param_name}"] = tensor
+        if kan_state:
+            try:
+                mismatched = model.load_state_dict(kan_state, strict=False)
+                if mismatched.unexpected_keys:
+                    for uk in mismatched.unexpected_keys:
+                        if uk.startswith("_kan_"):
+                            new_key = uk[len("_kan_"):].split("_", 1)[1]
+                            if new_key in kan_state:
+                                continue
+            except Exception:
+                pass
+
+    model.eval()
+    for prm in model.parameters():
+        prm.requires_grad_(False)
+    return model
 
 
 def make_residual_kan(
