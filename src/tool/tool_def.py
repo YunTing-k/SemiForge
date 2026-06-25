@@ -2850,25 +2850,30 @@ def _run_workflow_thread(ctx: AgentContext, run_id: int, wm) -> None:
 
 
 def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
-    """tool definition of querying a DG-TFT workflow run status (TOOL_NAME_QUERY_WORKFLOW)"""
+    """tool definition of querying a DG-TFT workflow run or data prep status (TOOL_NAME_QUERY_WORKFLOW)"""
     return {
         "type": "function",
         "function": {
             "name": TOOL_NAME_QUERY_WORKFLOW,
             "description": (
-                "Query the status and progress of a DG-TFT automatic modeling workflow run. "
-                "Returns the current stage, status, collected artifacts, metrics, "
-                "warnings, and errors for the given run_id."
+                "Query the status of a DG-TFT workflow run (by run_id) or a data preparation (by prep_id). "
+                "Pass either run_id or prep_id, not both. "
+                "For workflow runs, returns current stage, status, artifacts, metrics, warnings, errors. "
+                "For data preps, returns ok/failed status with issues list and output directory."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "run_id": {
                         "type": "integer",
-                        "description": "The workflow run ID to query.",
+                        "description": "The workflow run ID to query (use this to check a running/finished modeling job).",
+                    },
+                    "prep_id": {
+                        "type": "integer",
+                        "description": "The data preparation ID to query (use this to check a preparation job).",
                     },
                 },
-                "required": ["run_id"],
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -2876,10 +2881,27 @@ def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
 
 
 def query_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
-    """tool realization of querying a DG-TFT workflow run status"""
+    """tool realization of querying a DG-TFT workflow run or data prep status"""
     func_name = TOOL_NAME_QUERY_WORKFLOW
     try:
-        run_id = arguments["run_id"]
+        prep_id = arguments.get("prep_id")
+        if prep_id is not None:
+            prep = ctx.workflow_man.preparation_tracker.get_prep(prep_id)
+            if prep is None:
+                return {"status": FAIL_LABEL, "info": f"Data prep {prep_id} not found"}
+            return {
+                "status": SUCCESS_LABEL,
+                "prep_id": prep["prep_id"],
+                "ok": prep["ok"],
+                "raw_dataset_dir": prep["raw_dataset_dir"],
+                "output_dir": prep["output_dir"],
+                "issues": prep["issues"],
+                "created_at": prep["created_at"],
+            }
+
+        run_id = arguments.get("run_id")
+        if run_id is None:
+            return {"status": FAIL_LABEL, "info": "Provide either run_id or prep_id"}
         run = ctx.workflow_man.get_run(run_id)
         if run is None:
             return {"status": FAIL_LABEL, "info": f"Workflow run {run_id} not found"}
@@ -3016,8 +3038,8 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
                 "This runs a worker subagent to convert raw CSV/XLSX measurement files "
                 "into the standardized *_train.xlsx format (IV families, CV, I-t), "
                 "followed by an automated verification pass. "
-                "Returns immediately with a prep_id; use /workflow_list or "
-                "/workflow_get <prep_id> to check results. "
+                "Returns immediately with a prep_id and output_dir; "
+                f"use `{TOOL_NAME_QUERY_WORKFLOW}` with prep_id to check preparation results. "
                 "After preparation succeeds, use start_dg_tft_workflow to begin modeling."
             ),
             "parameters": {
@@ -3068,7 +3090,7 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         sys_log.info("%s: data prep %d started for %s", func_name, prep_id, raw_dataset_dir)
         return {
             "status": SUCCESS_LABEL,
-            "info": f"Data preparation started. Prep ID: {prep_id}. Use query_dg_tft_workflow or /workflow_get to check results.",
+            "info": f"Data preparation started. Prep ID: {prep_id}. Use query_dg_tft_workflow with prep_id={prep_id} to check results.",
             "prep_id": prep_id,
             "output_dir": output_dir,
         }

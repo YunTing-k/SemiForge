@@ -104,9 +104,12 @@ class TestToolSchemas(unittest.TestCase):
         fn = schema["function"]
         self.assertEqual(fn["name"], TOOL_NAME_QUERY_WORKFLOW)
         self.assertIn("run_id", fn["parameters"]["properties"])
-        self.assertIn("run_id", fn["parameters"]["required"])
+        self.assertIn("prep_id", fn["parameters"]["properties"])
         self.assertEqual(
             fn["parameters"]["properties"]["run_id"]["type"], "integer"
+        )
+        self.assertEqual(
+            fn["parameters"]["properties"]["prep_id"]["type"], "integer"
         )
 
     def test_read_report_schema(self):

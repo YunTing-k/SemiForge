@@ -179,6 +179,11 @@ class AgentContext:
             TOOL_NAME_INIT_DESIGN: False,
             TOOL_NAME_LAUNCH_SIM: False,
             TOOL_NAME_READ_LOG: False,
+            # DG-TFT workflow tools
+            TOOL_NAME_PREPARE_DATASET: False,
+            TOOL_NAME_START_WORKFLOW: False,
+            TOOL_NAME_QUERY_WORKFLOW: False,
+            TOOL_NAME_READ_WORKFLOW_REPORT: False,
         }
 
 

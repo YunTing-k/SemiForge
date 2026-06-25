@@ -33,30 +33,51 @@ You are a data preparation specialist for DG-TFT device modeling. Convert raw me
 
 The output directory already exists. Process files and write outputs into it.
 
+**Python setup (use bash to run Python scripts)**:
+- Always start every Python command with: `import pandas as pd, openpyxl, os, shutil`
+- Use `pd.read_csv()` for CSV files, `pd.read_excel()` for XLSX files
+- Columns in CSV have a leading space — use `df.columns = df.columns.str.strip()` to clean them
+
 **Step-by-step instructions**:
 
-1. Scan `{raw_dir}` recursively for all data files (`.csv`, `.xlsx`). Determine the data type by inspecting column headers:
-   - **IV** (transfer/output curves): columns like VD_V, VBG_V, VTG_V, ID_A
-   - **CV** (capacitance-voltage): columns like VGB_V, CGG_F
-   - **I-t** (current-time): columns like Time_s, ID_A at fixed biases
+1. Scan `{raw_dir}` for all files. Identify data type by filename and content:
+   - **IV files**: `IDVBG_*`, `IDVD_*`, `IDVTG_*` (both CSV and XLSX)
+   - **CV files**: `CV_*` (e.g., `CV_wide_tables.xlsx`)
+   - **I-t files**: `I-t*` files in the `it/` subdirectory
+   - Skip: `DUAL_REF_*.csv` and `Refernce.xlsx`
 
-2. Group and output IV data by family, one `*_train.xlsx` per family:
-   - Files with "IDVBG" in filename -> `IDVBG_VDS{{V}}_V_train.xlsx` (preserve VDS voltage from filename)
-   - Files with "IDVTG" in filename -> `IDVTG_VDS{{V}}_V_train.xlsx`
-   - Files with "IDVD" in filename  -> `IDVD_VBG{{V}}_V_train.xlsx`
-   If a file doesn't match any pattern, skip it but note in your report.
+2. For CSV IV files (e.g., `IDVBG VDS01V.csv`):
+   - Read with pandas, strip column name whitespace, rename columns to standard names:
+     - If header contains lowercase: use `df.columns = [c.strip().upper() for c in df.columns]` then map `VD(V) -> VD_V`, `VBG(V) -> VBG_V`, `VTG(V) -> VTG_V`, `ID(A) -> ID_A`
+   - Save as `*_train.xlsx` with sheet name "long"
 
-3. Each IV `*_train.xlsx` MUST contain one sheet named "long" with columns: VD_V, VBG_V, VTG_V, ID_A. Do NOT invent data; leave missing columns empty.
+3. For XLSX IV files (e.g., `IDVBG_VDS0.1V.xlsx`):
+   - Read, clean column names similarly, save as `*_train.xlsx` with sheet "long"
 
-4. If CV data is found, output `CV_train.xlsx` with sheets: cgg, cbg, ctg, vds.
+4. **Family mapping — use the ORIGINAL FILENAME to determine family**:
+   - Files with `IDVBG` in name → output: `IDVBG_VDS<Vvalue>_V_train.xlsx` (extract V after VDS from filename)
+   - Files with `IDVTG` in name → output: `IDVTG_VDS<Vvalue>_V_train.xlsx`
+   - Files with `IDVD` AND `VBG` in name → output: `IDVD_VBG<Vvalue>_V_train.xlsx`
+   - Files with `IDVD` AND `VTG` in name → output: `IDVD_VTG<Vvalue>_V_train.xlsx`
+   - **CRITICAL**: Preserve whether the file is VBG or VTG — do NOT mix them up.
 
-5. If I-t data is found, copy files to an `it/` subdirectory under `{output_dir}`.
+5. Each output `*_train.xlsx` MUST have:
+   - One sheet named "long"
+   - Columns: VD_V, VBG_V, VTG_V, ID_A (in that order)
+   - Missing columns → fill with 0
 
-6. Write `worker_report.json` in `{output_dir}`:
+6. If CV file found (e.g., `CV_wide_tables.xlsx`):
+   - Read it, check what sheets it has, save as `CV_train.xlsx`
+   - Preserve all original sheets (cgg, cbg, ctg, vds if present)
+   - If it has only one sheet, name it `cgg`
+
+7. I-t files in `{raw_dir}/it/` → copy into `{output_dir}/it/` (already present, verify)
+
+8. Write `worker_report.json` in `{output_dir}`:
 ```json
 {{
   "files_processed": ["..."],
-  "iv_families": ["IDVBG", "IDVTG", "IDVD"],
+  "iv_families": ["IDVBG", "IDVD", "IDVTG"],
   "cv_found": true,
   "it_found": false,
   "issues": ["..."]
@@ -64,12 +85,12 @@ The output directory already exists. Process files and write outputs into it.
 ```
 
 **Constraints**:
-- Use pandas and openpyxl via bash/python commands
-- Never modify original measurement values — only reformat
-- Never invent data — missing columns stay empty
-- If the raw data is already in `*_train.xlsx` format with a "long" sheet, copy it directly rather than re-processing
+- Start with `import pandas as pd, openpyxl, os, shutil` before any pandas operations
+- Never modify original measurement values — only reformat column names
+- Handle both CSV (space in filename) and XLSX inputs
+- If a file cannot be read, log it in issues and skip
 - Do NOT ask the user any questions — work autonomously
-- When done, output a brief summary text (no tool calls) describing what was produced
+- When done, output a brief summary text describing what was produced
 """
 
 VERIFIER_PROMPT_TEMPLATE = """\
@@ -155,8 +176,10 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
 
     Called from a background thread. Does not return a value; results
     are written to manifest.json and registered via PreparationTracker.
+
+    Note: prep_id is derived from output_dir (the handler already registered it).
     """
-    prep_id = ctx.workflow_man.preparation_tracker.register_prep(raw_dataset_dir, output_dir)
+    prep_id = int(Path(output_dir).name)
     sys_log.info("Data prep %d started: raw=%s output=%s", prep_id, raw_dataset_dir, output_dir)
 
     try:

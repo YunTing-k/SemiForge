@@ -245,7 +245,9 @@ class TestRunDataPreparationMocked(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.outdir = Path(self.tmpdir.name)
+        self.prep_id = 1
+        self.outdir = Path(self.tmpdir.name) / str(self.prep_id)
+        self.outdir.mkdir(parents=True, exist_ok=True)
 
         import openpyxl
         wb = openpyxl.Workbook()
@@ -265,6 +267,7 @@ class TestRunDataPreparationMocked(unittest.TestCase):
         mock_ctx = MagicMock()
         mock_ctx.workflow_man = WorkflowManager()
         mock_ctx.workflow_man.preparation_tracker = PreparationTracker()
+        mock_ctx.workflow_man.preparation_tracker.register_prep("/raw", str(self.outdir))
 
         with patch("src.workflow.dg_tft.data_preparer._run_worker") as mock_worker, \
              patch("src.workflow.dg_tft.data_preparer._run_verifier") as mock_verifier:
@@ -273,7 +276,7 @@ class TestRunDataPreparationMocked(unittest.TestCase):
             mock_worker.assert_called_once_with(mock_ctx, "/raw", str(self.outdir))
             mock_verifier.assert_called_once_with(mock_ctx, str(self.outdir))
 
-        prep = mock_ctx.workflow_man.preparation_tracker.get_prep(1)
+        prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
         self.assertIsNotNone(prep)
         self.assertTrue(os.path.exists(str(self.outdir / "manifest.json")))
 
@@ -282,12 +285,13 @@ class TestRunDataPreparationMocked(unittest.TestCase):
         mock_ctx = MagicMock()
         mock_ctx.workflow_man = WorkflowManager()
         mock_ctx.workflow_man.preparation_tracker = PreparationTracker()
+        mock_ctx.workflow_man.preparation_tracker.register_prep("/raw", str(self.outdir))
 
         with patch("src.workflow.dg_tft.data_preparer._run_worker", side_effect=RuntimeError("worker crash")), \
              patch("src.workflow.dg_tft.data_preparer._run_verifier"):
             run_data_preparation(mock_ctx, "/raw", str(self.outdir))
 
-        prep = mock_ctx.workflow_man.preparation_tracker.get_prep(1)
+        prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
         self.assertIsNotNone(prep)
         self.assertFalse(prep["ok"])
         manifest = json.load(open(str(self.outdir / "manifest.json"), encoding="utf-8"))
