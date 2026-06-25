@@ -22,3 +22,4 @@
 /src/workflow/**/__pycache__
 /test/__pycache__
 /testdata/
+/prepared_data/

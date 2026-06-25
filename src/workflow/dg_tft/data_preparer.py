@@ -31,66 +31,46 @@ You are a data preparation specialist for DG-TFT device modeling. Convert raw me
 **Raw data directory**: {raw_dir}
 **Output directory**: {output_dir}
 
-The output directory already exists. Process files and write outputs into it.
+The output directory already exists. Write all output files into it.
 
-**Python setup (use bash to run Python scripts)**:
-- Always start every Python command with: `import pandas as pd, openpyxl, os, shutil`
-- Use `pd.read_csv()` for CSV files, `pd.read_excel()` for XLSX files
-- Columns in CSV have a leading space — use `df.columns = df.columns.str.strip()` to clean them
+**Python usage rules**:
+- Use `python -c "..."` for all inline Python code — do NOT write scripts to files
+- Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json`
+- CSV columns may have leading spaces — use `df.columns = df.columns.str.strip()` to clean them
 
 **Step-by-step instructions**:
 
-1. Scan `{raw_dir}` for all files. Identify data type by filename and content:
-   - **IV files**: `IDVBG_*`, `IDVD_*`, `IDVTG_*` (both CSV and XLSX)
-   - **CV files**: `CV_*` (e.g., `CV_wide_tables.xlsx`)
-   - **I-t files**: `I-t*` files in the `it/` subdirectory
-   - Skip: `DUAL_REF_*.csv` and `Refernce.xlsx`
+1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. You only need ONE brief glob. Do NOT spend time exploring file formats — just read and process.
 
-2. For CSV IV files (e.g., `IDVBG VDS01V.csv`):
-   - Read with pandas, strip column name whitespace, rename columns to standard names:
-     - If header contains lowercase: use `df.columns = [c.strip().upper() for c in df.columns]` then map `VD(V) -> VD_V`, `VBG(V) -> VBG_V`, `VTG(V) -> VTG_V`, `ID(A) -> ID_A`
-   - Save as `*_train.xlsx` with sheet name "long"
+2. Process each file by data type:
 
-3. For XLSX IV files (e.g., `IDVBG_VDS0.1V.xlsx`):
-   - Read, clean column names similarly, save as `*_train.xlsx` with sheet "long"
+   **IV CSV files** (e.g., `IDVBG VDS01V.csv`):
+   - Read: `df = pd.read_csv("{raw_dir}/IDVBG VDS01V.csv")`
+   - Clean: `df.columns = df.columns.str.strip(); df.columns = [c.replace("(V)","_V").replace("(A)","_A") for c in df.columns]`
+   - Save: `df.to_excel("{output_dir}/IDVBG_VDS01V_train.xlsx", sheet_name="long", index=False)`
 
-4. **Family mapping — use the ORIGINAL FILENAME to determine family**:
-   - Files with `IDVBG` in name → output: `IDVBG_VDS<Vvalue>_V_train.xlsx` (extract V after VDS from filename)
-   - Files with `IDVTG` in name → output: `IDVTG_VDS<Vvalue>_V_train.xlsx`
-   - Files with `IDVD` AND `VBG` in name → output: `IDVD_VBG<Vvalue>_V_train.xlsx`
-   - Files with `IDVD` AND `VTG` in name → output: `IDVD_VTG<Vvalue>_V_train.xlsx`
-   - **CRITICAL**: Preserve whether the file is VBG or VTG — do NOT mix them up.
+   **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
+   - Same steps as CSV but use `pd.read_excel()`. Clean column names identically.
 
-5. Each output `*_train.xlsx` MUST have:
-   - One sheet named "long"
-   - Columns: VD_V, VBG_V, VTG_V, ID_A (in that order)
-   - Missing columns → fill with 0
+   **Family mapping rules**:
+   - `IDVBG_*` -> `IDVBG_VDS<Vvalue>_V_train.xlsx` (extract V from filename)
+   - `IDVTG_*` -> `IDVTG_VDS<Vvalue>_V_train.xlsx`
+   - `IDVD_*VBG*` -> `IDVD_VBG<Vvalue>_V_train.xlsx` (CRITICAL: check for VBG in name)
+   - `IDVD_*VTG*` -> `IDVD_VTG<Vvalue>_V_train.xlsx` (CRITICAL: check for VTG in name)
+   - Skip: `DUAL_REF_*.csv`, `Refernce.xlsx`
 
-6. If CV file found (e.g., `CV_wide_tables.xlsx`):
-   - Read it, check what sheets it has, save as `CV_train.xlsx`
-   - Preserve all original sheets (cgg, cbg, ctg, vds if present)
-   - If it has only one sheet, name it `cgg`
+3. **CV file** (e.g., `CV_wide_tables.xlsx`):
+   - Read and save as `CV_train.xlsx` with original sheets
+   - `df = pd.read_excel("{raw_dir}/CV_wide_tables.xlsx", sheet_name=None); with pd.ExcelWriter("{output_dir}/CV_train.xlsx") as writer: for name, sheet in df.items(): sheet.to_excel(writer, sheet_name=name[:31], index=False)`
 
-7. I-t files in `{raw_dir}/it/` → copy into `{output_dir}/it/` (already present, verify)
+4. **I-t files** in `{raw_dir}/it/`:
+   - Copy all files to `{output_dir}/it/`: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
 
-8. Write `worker_report.json` in `{output_dir}`:
-```json
-{{
-  "files_processed": ["..."],
-  "iv_families": ["IDVBG", "IDVD", "IDVTG"],
-  "cv_found": true,
-  "it_found": false,
-  "issues": ["..."]
-}}
-```
+5. Write `worker_report.json` in `{output_dir}` listing all processed files and any issues.
 
-**Constraints**:
-- Start with `import pandas as pd, openpyxl, os, shutil` before any pandas operations
-- Never modify original measurement values — only reformat column names
-- Handle both CSV (space in filename) and XLSX inputs
-- If a file cannot be read, log it in issues and skip
-- Do NOT ask the user any questions — work autonomously
-- When done, output a brief summary text describing what was produced
+**Each file should take ONE python -c command. After processing all files, write worker_report.json and output a brief summary.**
+
+Do NOT ask the user any questions — work autonomously. Do NOT explore files excessively — just read, clean, and save.
 """
 
 VERIFIER_PROMPT_TEMPLATE = """\
@@ -174,19 +154,31 @@ def build_report_verification_tool() -> dict[str, Any]:
 def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: str) -> None:
     """Run the full data preparation pipeline: worker -> verifier -> check.
 
-    Called from a background thread. Does not return a value; results
-    are written to manifest.json and registered via PreparationTracker.
+    Called synchronously from the tool handler. Results are written to
+    manifest.json and registered via PreparationTracker.
 
     Note: prep_id is derived from output_dir (the handler already registered it).
     """
     prep_id = int(Path(output_dir).name)
+    console = getattr(ctx, "console", None)
     sys_log.info("Data prep %d started: raw=%s output=%s", prep_id, raw_dataset_dir, output_dir)
 
+    if console and not getattr(ctx, "subagent_mute", False):
+        console.print(f"[bold]DG-TFT Data Preparation {prep_id}[/bold] — converting raw measurements to *_train.xlsx format")
+
     try:
+        if console and not getattr(ctx, "subagent_mute", False):
+            console.print("  [bold]Step 1/3[/bold]: Worker subagent processing raw files ...")
         _run_worker(ctx, raw_dataset_dir, output_dir)
+
+        if console and not getattr(ctx, "subagent_mute", False):
+            console.print("  [bold]Step 2/3[/bold]: Verifier checking output structure ...")
         _run_verifier(ctx, output_dir)
+
     except Exception as e:
         sys_log.error("Data prep %d failed: %s", prep_id, e)
+        if console and not getattr(ctx, "subagent_mute", False):
+            console.print(f"  [bold red]Failed[/bold red]: {e}")
         manifest = _build_manifest(output_dir, prep_id, False, [str(e)])
         _write_manifest(output_dir, manifest)
         ctx.workflow_man.preparation_tracker.update_prep(prep_id, False, [str(e)])
@@ -196,6 +188,18 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     manifest = _build_manifest(output_dir, prep_id, ok, issues)
     _write_manifest(output_dir, manifest)
     ctx.workflow_man.preparation_tracker.update_prep(prep_id, ok, issues)
+
+    if console and not getattr(ctx, "subagent_mute", False):
+        if ok:
+            console.print(f"  [bold green]Step 3/3[/bold green]: Verification passed [green]({len(issues)} warnings)[/green]")
+        else:
+            console.print(f"  [bold red]Step 3/3[/bold red]: Verification failed")
+            for issue in issues:
+                if "CRITICAL" in issue:
+                    console.print(f"    [bold red]{issue}[/bold red]")
+                else:
+                    console.print(f"    [bold yellow]{issue}[/bold yellow]")
+
     sys_log.info("Data prep %d done: ok=%s issues=%s", prep_id, ok, issues)
 
 
