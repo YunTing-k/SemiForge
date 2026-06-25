@@ -351,7 +351,8 @@ def get_bash_risk(cmd: str) -> tuple[str, str, int]:
         return BASH_FILE_LABEL, f"Build command: {cmd}", 4
 
     # Python / scripting
-    script_cmds = {'python', 'python3', 'node', 'deno', 'ruby', 'perl', 'lua', 'php'}
+    script_cmds = {'python', 'python.exe', 'python3', 'python3.exe',
+                   'node', 'node.exe', 'deno', 'ruby', 'perl', 'lua', 'php'}
     if base_cmd in script_cmds:
         s_tokens = tokens_from_cmd(cmd)
         # If running with a script file, treat as file operation
