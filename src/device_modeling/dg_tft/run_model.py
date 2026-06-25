@@ -87,7 +87,8 @@ def _normalize_cv_format(data_dir: Path) -> None:
             continue
         col0_label = str(df.iloc[1, 0]).lower()
         col1_label = str(df.iloc[1, 1]).lower() if df.shape[1] > 1 else ""
-        if "bias" not in col0_label or "bias" in col1_label or "bias_node_centered" in col0_label:
+        col2_label = str(df.iloc[1, 2]).lower() if df.shape[1] > 2 else ""
+        if "bias" not in col0_label or "bias" in col1_label or "bias_node_centered" in col0_label or ("bias" in col0_label and "bias" not in col1_label and "bias" in col2_label):
             result[sheet_name] = df
             continue
         rewritten = True

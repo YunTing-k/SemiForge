@@ -89,8 +89,7 @@ The output directory already exists. Write all output files into it.
    - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version. Normalize V values: 01V = 0.1V, 05V = 0.5V, 5V = 5V. Check if output file already exists before writing and skip duplicates.
 
 3. **CV file** (e.g., `CV_wide_tables.xlsx`):
-   - Read and save as `CV_train.xlsx` with original sheets unchanged
-   - `df = pd.read_excel("{raw_dir}/CV_wide_tables.xlsx", sheet_name=None); with pd.ExcelWriter("{output_dir}/CV_train.xlsx") as writer: for name, sheet in df.items(): sheet.to_excel(writer, sheet_name=name[:31], index=False)`
+   - Copy as-is to preserve original merged-cell structure: `shutil.copy("{raw_dir}/CV_wide_tables.xlsx", "{output_dir}/CV_train.xlsx")`
 
 4. **I-t files**:
    - Priority 1: If `{raw_dir}/it/` exists and contains files, copy all: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
