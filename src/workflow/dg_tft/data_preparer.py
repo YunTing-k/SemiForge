@@ -64,6 +64,7 @@ The output directory already exists. Write all output files into it.
 - Use `{python_exe} -c "..."` for all inline Python code — do NOT write scripts to files
 - Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json`
 - CSV columns may have leading spaces — use `df.columns = df.columns.str.strip()` to clean them
+- Use standard GNU bash commands (rm, not del) for any non-Python operations — the shell is git bash
 
 **Step-by-step instructions**:
 
@@ -88,7 +89,7 @@ The output directory already exists. Write all output files into it.
    - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version. Normalize V values: 01V = 0.1V, 05V = 0.5V, 5V = 5V. Check if output file already exists before writing and skip duplicates.
 
 3. **CV file** (e.g., `CV_wide_tables.xlsx`):
-   - Read and save as `CV_train.xlsx` with original sheets
+   - Read and save as `CV_train.xlsx` with original sheets unchanged
    - `df = pd.read_excel("{raw_dir}/CV_wide_tables.xlsx", sheet_name=None); with pd.ExcelWriter("{output_dir}/CV_train.xlsx") as writer: for name, sheet in df.items(): sheet.to_excel(writer, sheet_name=name[:31], index=False)`
 
 4. **I-t files** in `{raw_dir}/it/`:

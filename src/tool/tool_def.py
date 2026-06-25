@@ -918,9 +918,12 @@ def tool_bash_def() -> dict[str, Any]:
                            "# Instructions\n"
                            " - If your command will create new directories or files, first use this tool to run `ls` to "
                            "verify the parent directory exists and is the correct location.\n"
-                            " - Always quote file paths that contain spaces with double quotes "
-                            "(e.g. cd \"path with spaces/file.txt\"). On Windows prefer forward slashes in paths: "
-                            "\"C:/Users/admin/file.txt\". Quoting errors are automatically retried.\n"
+                             " - Always quote file paths that contain spaces with double quotes "
+                             "(e.g. cd \"path with spaces/file.txt\"). On Windows prefer forward slashes in paths: "
+                             "\"C:/Users/admin/file.txt\". Quoting errors are automatically retried.\n"
+                            " - Commands run in a GNU bash environment regardless of platform. "
+                            "Use standard GNU utilities (rm, cp, mv, ls, mkdir, etc.), not platform-specific "
+                            "commands like del, copy, rename, dir, etc.\n"
                            " - Try to maintain your current working directory throughout the session by using absolute "
                            "paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.\n"
                            f" - You may specify an optional timeout in milliseconds "
@@ -2763,6 +2766,11 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
                         "type": "string",
                         "description": "Optional. A human-readable label for this run.",
                     },
+                    "overrides": {
+                        "type": "object",
+                        "description": "Optional. Dict of section.key=value to override in the generated model_config.ini. "
+                                       "Example: {\"full_model.epochs\": \"3\", \"full_model.quick_run\": \"yes\"}.",
+                    },
                 },
                 "required": ["dataset_dir"],
                 "additionalProperties": False,
@@ -2787,6 +2795,7 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         dataset_dir = arguments["dataset_dir"]
         hysteresis_dir = arguments.get("hysteresis_dir")
         device_name = arguments.get("device_name", "")
+        overrides = arguments.get("overrides") or {}
 
         from src.workflow.dg_tft.manager import WorkflowManager
         from src.workflow.dg_tft.dataset_inspector import inspect_dataset
@@ -2811,7 +2820,8 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         wm.set_dataset_profile(run_id, profile)
 
         build_result = build_runtime_config(ctx, profile, dataset_dir,
-                                            output_root=output_root, run_id=run_id)
+                                            output_root=output_root, run_id=run_id,
+                                            overrides=overrides)
         config_path = build_result["config_path"]
 
         workflow_ok, summary = run_workflow(ctx, run_id, config_path, board=board)

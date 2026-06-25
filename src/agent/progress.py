@@ -168,6 +168,7 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         BASH_SAFE_LABEL,
         BASH_INLINE_SCRIPT_LABEL,
         BASH_FILE_LABEL,
+        BASH_UNKNOWN_LABEL,
     ),
 }
 

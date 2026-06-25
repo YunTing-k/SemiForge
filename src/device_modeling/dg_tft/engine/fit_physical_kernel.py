@@ -20,15 +20,7 @@ from scipy.optimize import least_squares
 
 ROOT = Path(__file__).resolve().parent
 VA_TEMPLATE = ROOT / "dg_tft_ekv_level2.va"
-DEFAULT_DATA_DIR = (
-    Path("E:/")
-    / "\u5b66\u4e60"
-    / "\u5927\u8bba\u6587\u76f8\u5173\u6750\u6599"
-    / "\u5668\u4ef6\u6570\u636e"
-    / "0521"
-    / "0521"
-    / "training_ready_corrected_xlsx"
-)
+DEFAULT_DATA_DIR = Path(".")
 
 EPS0 = 8.8541878128e-12
 K_B = 1.380649e-23
@@ -1221,7 +1213,7 @@ def write_outputs(
 def main():
     ap = argparse.ArgumentParser(description="Fit corrected training-ready DG-TFT IV/CV xlsx data.")
     ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    ap.add_argument("--out-dir", type=Path, default=ROOT / "fit_training_ready_outputs")
+    ap.add_argument("--out-dir", type=Path, default=Path("./fit_training_ready_outputs"))
     ap.add_argument("--template-va", type=Path, default=VA_TEMPLATE)
     ap.add_argument("--max-iv-points", type=int, default=10000)
     ap.add_argument("--max-cv-points", type=int, default=1200)

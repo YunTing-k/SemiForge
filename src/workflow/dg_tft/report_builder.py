@@ -102,7 +102,7 @@ def _build_artifact_manifest(
     items: list[dict[str, Any]] = []
 
     for stage_name in [
-        "check-data", "fit-physical", "train-base-pkan",
+        "check-data", "fit-physical",
         "train-static", "train-hysteresis",
     ]:
         entry = STAGE_ARTIFACTS.get(stage_name)
@@ -172,7 +172,7 @@ def _build_json_summary(
     stage_results = run_data.get("stage_results", {})
 
     stages_list: list[dict[str, Any]] = []
-    for sn in ["check-data", "fit-physical", "train-base-pkan", "train-static", "train-hysteresis"]:
+    for sn in ["check-data", "fit-physical", "train-static", "train-hysteresis"]:
         sr = stage_results.get(sn)
         if sr is None:
             continue
@@ -256,7 +256,7 @@ def _build_md_summary(
     lines.append("## 2. Stage Results")
     lines.append("")
     stage_results = run_data.get("stage_results", {})
-    for sn in ["check-data", "fit-physical", "train-base-pkan", "train-static", "train-hysteresis"]:
+    for sn in ["check-data", "fit-physical", "train-static", "train-hysteresis"]:
         sr = stage_results.get(sn)
         if sr is None:
             continue
@@ -289,7 +289,7 @@ def _build_md_summary(
         st = it.get("stage", "other")
         stage_items.setdefault(st, []).append(it)
 
-    for sn in ["check-data", "fit-physical", "train-base-pkan", "train-static", "train-hysteresis", "report", "attached"]:
+    for sn in [    "check-data", "fit-physical", "train-static", "train-hysteresis", "report", "attached"]:
         si = stage_items.get(sn)
         if not si:
             continue

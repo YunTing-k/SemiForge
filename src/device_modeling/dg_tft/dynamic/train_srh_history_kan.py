@@ -23,7 +23,7 @@ from scipy.optimize import least_squares
 ROOT = Path(__file__).resolve().parent
 RESULTS = ROOT / "results_long_timescale"
 OUT = RESULTS / "srh_history_kan"
-HSPICE = Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.exe")
+HSPICE = Path("hspice.com")
 
 FEATURE_NAMES = [
     "interface_top",

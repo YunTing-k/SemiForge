@@ -12,7 +12,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "results_long_timescale" / "srh_top2_regime_banks" / "combined"
-HSPICE = Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.exe")
+HSPICE = Path("hspice.com")
 
 
 def parse_hspice_float(token: str) -> float:

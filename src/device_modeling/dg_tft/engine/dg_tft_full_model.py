@@ -92,7 +92,7 @@ from train_base_pkan import (
 
 
 ROOT = Path(__file__).resolve().parent
-LEGACY_DEFAULT_OUT_DIR = ROOT / "pkan_ivcv_universal_best_outputs"
+LEGACY_DEFAULT_OUT_DIR = Path("./pkan_ivcv_universal_best_outputs")
 
 CORR_NAMES = [
     "dpsi_V",
@@ -3379,8 +3379,8 @@ va_symbol_expr = _v90_va_symbol_expr
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL_DIR = ROOT / "base_physical_pkan"
-DEFAULT_OUT_DIR = ROOT / "outputs" / "static_training"
+DEFAULT_MODEL_DIR = Path("./base_physical_pkan")
+DEFAULT_OUT_DIR = Path("./outputs/static_training")
 DEFAULT_DISABLED_IV_PKAN = ["dpartition", "dpartition_inv", "dgamma_intergate"]
 DEFAULT_DISABLED_CV_PKAN = [
     "dVtrap_center_cv_V",
@@ -5545,7 +5545,7 @@ def load_trained_base(model_dir: Path, device: torch.device, dtype: torch.dtype)
     cv_kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CV_CORR_NAMES)],
                         grid=kan_grid, k=kan_k, ranges=default_cv_range, device=device, dtype=dtype,
                         output_names=CV_CORR_NAMES)
-    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"]["eta_n"]).to(device=device, dtype=dtype)
+    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"].get("eta_n", 0.60)).to(device=device, dtype=dtype)
     model.eval()
     for prm in model.parameters():
         prm.requires_grad_(False)
@@ -5590,7 +5590,7 @@ def _build_and_load_model(
     cv_kan = V2StyleKAN(norm, width=[len(FEATURE_NAMES), kan_hidden, len(CV_CORR_NAMES)],
                         grid=kan_grid, k=kan_k, ranges=cv_ranges, device=device, dtype=dtype,
                         output_names=CV_CORR_NAMES)
-    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"]["eta_n"]).to(device=device, dtype=dtype)
+    model = UnifiedIVCVModel(p, trap, kan, cv_kan, eta_n=meta["training_args"].get("eta_n", 0.60)).to(device=device, dtype=dtype)
 
     if has_model:
         model.load_state_dict(ckpt["model_state_dict"], strict=True)
@@ -11785,7 +11785,7 @@ def run_hspice_standalone_smoke(
 
     if getattr(args, "skip_hspice_smoke", False):
         return {"enabled": False, "reason": "skipped_by_cli", "pass": False}
-    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.com")))
+    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path("hspice.com")))
     if not exe.exists():
         return {"enabled": False, "reason": f"hspice_not_found:{exe}", "pass": False}
     # Resolve once before passing paths to HSPICE.  A relative output prefix
@@ -11895,7 +11895,7 @@ def run_hspice_standalone_iv_grid_equivalence(
 
     if getattr(args, "skip_hspice_grid_equivalence", False):
         return {"enabled": False, "reason": "skipped_by_cli", "pass": False}
-    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.com")))
+    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path("hspice.com")))
     if not exe.exists():
         return {"enabled": False, "reason": f"hspice_not_found:{exe}", "pass": False}
     out_dir = out_dir.resolve()
@@ -12040,7 +12040,7 @@ def run_hspice_standalone_cv_grid_equivalence(
 
     if getattr(args, "skip_hspice_cv_grid_equivalence", False):
         return {"enabled": False, "reason": "skipped_by_cli", "pass": False}
-    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.com")))
+    exe = _resolve_hspice_executable(getattr(args, "hspice_exe", Path("hspice.com")))
     if not exe.exists():
         return {"enabled": False, "reason": f"hspice_not_found:{exe}", "pass": False}
     out_dir = out_dir.resolve()
@@ -12828,7 +12828,7 @@ def parse_args():
     ap.add_argument("--temperature-device-class", choices=["generic_ntype", "igzo", "ltps"], default="generic_ntype")
     ap.add_argument("--temperature-penalty-weight", type=float, default=0.025)
     ap.add_argument("--temperature-lr-mult", type=float, default=0.12)
-    ap.add_argument("--temperature-transfer-json", type=Path, default=ROOT / "temperature_transfer_igzo" / "donor_temperature_transfer_summary.json")
+    ap.add_argument("--temperature-transfer-json", type=Path, default=Path("temperature_transfer_igzo/donor_temperature_transfer_summary.json"))
     ap.add_argument("--temperature-transfer-strength", type=float, default=0.55)
     ap.add_argument("--disable-temperature-transfer", action="store_true", default=False)
     ap.add_argument("--extrap-anchor-weight", type=float, default=0.45)
@@ -13019,7 +13019,7 @@ def parse_args():
         default=False,
         help="Reuse existing v90_edgewise_symbolic_*.txt files in --out-dir instead of refitting edge-wise top-1 formulas.",
     )
-    ap.add_argument("--hspice-exe", type=Path, default=Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.com"))
+    ap.add_argument("--hspice-exe", type=Path, default=Path("hspice.com"))
     ap.add_argument("--hspice-timeout-s", type=int, default=240)
     ap.add_argument("--hspice-equiv-rel-tol", type=float, default=0.08)
     ap.add_argument("--hspice-grid-equiv-rel-tol", type=float, default=0.03)
@@ -13118,7 +13118,7 @@ def main():
     if disabled_iv_pkan or disabled_cv_pkan:
         apply_pkan_output_pruning(base, disabled_iv_pkan, disabled_cv_pkan)
         print(f"Pruned low-impact PKAN outputs: IV={sorted(disabled_iv_pkan)} CV={sorted(disabled_cv_pkan)}")
-    final_scale = float(meta["final_kan_scale"])
+    final_scale = float(meta.get("final_kan_scale", 0.35))
     print(f"Loaded base model from {args.model_dir}; final_scale={final_scale:.4f}; device={device}; dtype={dtype}")
 
     active_data_dir = Path(args.data_dir_override) if args.data_dir_override is not None else Path(meta["training_args"]["data_dir"])

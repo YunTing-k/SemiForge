@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import configparser
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+
+import numpy as np
+import pandas as pd
 
 
 CODE_ROOT = Path(__file__).resolve().parent
@@ -29,8 +33,16 @@ def yes(cfg: configparser.ConfigParser, section: str, option: str) -> bool:
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
+    resolved_env = dict(os.environ)
+    if env:
+        resolved_env.update(env)
+    py_paths = [str(ENGINE)]
+    existing = resolved_env.get("PYTHONPATH", "")
+    if existing:
+        py_paths.append(existing)
+    resolved_env["PYTHONPATH"] = os.pathsep.join(py_paths)
     print("+", " ".join(shlex.quote(str(x)) for x in command), flush=True)
-    subprocess.run(command, check=True, cwd=RELEASE_ROOT, env=env)
+    subprocess.run(command, check=True, cwd=RELEASE_ROOT, env=resolved_env)
 
 
 def load_config(path: Path) -> configparser.ConfigParser:
@@ -54,7 +66,63 @@ def paths(cfg: configparser.ConfigParser, config_path: Path) -> dict[str, Path]:
     }
 
 
+def _normalize_cv_format(data_dir: Path) -> None:
+    """Convert shared-bias CV layout to paired-column format expected by the engine.
+
+    Raw CV files often use: col0=bias, col1=cap1, col2=cap2, ...
+    Engine expects:       col0=bias1, col1=cap1, col2=bias2, col3=cap2, ...
+    """
+    cv_path = data_dir / "CV_train.xlsx"
+    if not cv_path.exists():
+        return
+    try:
+        sheets = pd.read_excel(cv_path, sheet_name=None, header=None)
+    except Exception:
+        return
+    rewritten = False
+    result: dict[str, pd.DataFrame] = {}
+    for sheet_name, df in sheets.items():
+        if df.shape[0] < 3 or df.shape[1] < 3:
+            result[sheet_name] = df
+            continue
+        col0_label = str(df.iloc[1, 0]).lower()
+        col1_label = str(df.iloc[1, 1]).lower() if df.shape[1] > 1 else ""
+        if "bias" not in col0_label or "bias" in col1_label or "bias_node_centered" in col0_label:
+            result[sheet_name] = df
+            continue
+        rewritten = True
+        desc = str(df.iloc[0, 0])
+        bias_raw = pd.to_numeric(df.iloc[2:, 0], errors="coerce").values.astype(float)
+        # Build description row + header row + data rows
+        full_desc = desc + " | corrected coordinate, smoothed capacitance only"
+        header_pairs: list[str] = []
+        data_cols: list[pd.Series] = []
+        for c in range(1, df.shape[1]):
+            cap_label = str(df.iloc[1, c])
+            cap_label_clean = re.sub(r'\s*\(F\)\s*$', '', cap_label, flags=re.I)
+            cap_raw = pd.to_numeric(df.iloc[2:, c], errors="coerce").values.astype(float)
+            header_pairs.extend([
+                f"Bias_node_centered @ {cap_label_clean} (V)",
+                f"Capacitance_smoothed @ {cap_label_clean} (F)",
+            ])
+            data_cols.extend([pd.Series(bias_raw), pd.Series(cap_raw)])
+        out = pd.concat(data_cols, axis=1)
+        out.columns = header_pairs
+        out.index = range(2, 2 + len(bias_raw))
+        # Prepend description row (row 0) and header row (row 1)
+        desc_series = pd.Series([full_desc] + [np.nan] * (out.shape[1] - 1), index=out.columns, name=0)
+        header_series = pd.Series(header_pairs, index=out.columns, name=1)
+        out = pd.concat([pd.DataFrame([desc_series]), pd.DataFrame([header_series]), out])
+        result[sheet_name] = out
+    if not rewritten:
+        return
+    with pd.ExcelWriter(cv_path, engine="openpyxl") as writer:
+        for name, df_out in result.items():
+            df_out.to_excel(writer, sheet_name=name[:31], index=False, header=False)
+
+
 def validate_data(cfg, config_path, p) -> None:
+    _normalize_cv_format(p["data"])
     command = [
         sys.executable,
         str(ENGINE / "validate_dataset.py"),
@@ -136,13 +204,59 @@ def train_base_pkan(cfg, p) -> None:
     )
 
 
+# ── Model architecture defaults (used when [base_pkan] section is absent) ──
+_FALLBACK_KAN_HIDDEN = 12
+_FALLBACK_KAN_GRID = 5
+_FALLBACK_KAN_K = 3
+_FALLBACK_ETA_N = 0.60
+
+
+def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Path]) -> None:
+    """..."""
+    import json
+
+    fp = p["physical"] / "fitted_params.json"
+    if not fp.exists():
+        raise FileNotFoundError(
+            f"{fp} is missing. Run `python run_model.py fit-physical` first."
+        )
+    physical = json.loads(fp.read_text(encoding="utf-8"))
+    section = cfg["base_pkan"] if cfg.has_section("base_pkan") else {}
+    meta = {
+        "description": "Synthesized from fit-physical — no base PKAN weights.",
+        "uses_pykan": True,
+        "baseline_params": physical["final_params"],
+        "baseline_trap_params": physical.get("cv_shared_trap_params")
+        or {},
+        "baseline_metrics_summary": physical.get("metrics_summary", {}),
+        "pkan_metrics_summary": {},
+        "final_kan_scale": float(cfg.get("temperature", "kan_scale", fallback="0.35")),
+        "training_args": {
+            "kan_hidden": int(section.get("kan_hidden", _FALLBACK_KAN_HIDDEN)),
+            "kan_grid": int(section.get("kan_grid", _FALLBACK_KAN_GRID)),
+            "kan_k": int(section.get("kan_k", _FALLBACK_KAN_K)),
+            "eta_n": _FALLBACK_ETA_N,
+            "data_dir": str(p["data"]),
+        },
+    }
+    p["base_pkan"].mkdir(parents=True, exist_ok=True)
+    (p["base_pkan"] / "pkan_model_metadata.json").write_text(
+        json.dumps(meta, indent=2), encoding="utf-8"
+    )
+    try:
+        import torch
+    except ImportError:
+        raise RuntimeError(
+            "train-static requires PyTorch to synthesize the fallback model_dir. "
+            "Ensure the modeling Python environment has torch installed."
+        )
+    torch.save({}, p["base_pkan"] / "pkan_torch_model.pt")
+
 def train_full_model(cfg, p) -> None:
     section = cfg["full_model"]
-    model_dir = (
-        p["base_pkan"]
-        if (p["base_pkan"] / "pkan_torch_model.pt").exists()
-        else RELEASE_ROOT / "trained_model" / "base_physical_pkan"
-    )
+    model_dir = p["base_pkan"]
+    if not (model_dir / "pkan_torch_model.pt").exists():
+        _prepare_fallback_model_dir(cfg, p)
     p["full"].mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -207,6 +321,8 @@ def train_full_model(cfg, p) -> None:
             "--skip-hspice-grid-equivalence",
             "--skip-hspice-cv-grid-equivalence",
         ]
+    if yes(cfg, "full_model", "quick_run"):
+        command.append("--quick-run")
     run(command)
 
 

@@ -78,11 +78,6 @@ class TestStageDefinitions(unittest.TestCase):
         self.assertIn("fitted_params.json", sd.key_artifacts)
         self.assertEqual(sd.expected_output_subdir, "01_physical_kernel")
 
-    def test_train_base_pkan_artifacts(self):
-        sd = get_stage_by_name(StageName.TRAIN_BASE_PKAN)
-        self.assertIn("pkan_torch_model.pt", sd.key_artifacts)
-        self.assertEqual(sd.expected_output_subdir, "02_base_pkan")
-
     def test_train_static_artifacts(self):
         sd = get_stage_by_name(StageName.TRAIN_STATIC)
         self.assertEqual(sd.expected_output_subdir, "03_full_model")
@@ -284,10 +279,8 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         responses = [
             StageResult(ok=True, stage="check-data", summary="OK"),
             StageResult(ok=True, stage="fit-physical", summary="OK"),
-            StageResult(ok=True, stage="train-base-pkan", summary="OK"),
             StageResult(ok=True, stage="train-static", summary="OK"),
             StageResult(ok=False, stage="train-hysteresis", error="HSPICE crash"),
-            StageResult(ok=True, stage="deployment-validate", summary="OK"),
         ]
         mock_run.side_effect = responses
         ok, rid, _ = self.ctx.workflow_man.create_run(
@@ -345,19 +338,17 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         subdirs = [
             "",  # check-data prints dataset_validation.json to output root
             "01_physical_kernel",
-            "02_base_pkan",
             "03_full_model",
         ]
         mock_run.side_effect = self._mock_stage_ok
 
-        for sd_name in ["01_physical_kernel", "02_base_pkan", "03_full_model"]:
+        for sd_name in ["01_physical_kernel", "03_full_model"]:
             os.makedirs(os.path.join(self.tmpdir, "output", sd_name), exist_ok=True)
 
-        # Create artifacts for check-data (root), fit-physical, base-pkan, static
+        # Create artifacts for check-data (root), fit-physical, static
         artifacts_to_create = [
             ("dataset_validation.json", ""),
             ("fitted_params.json", "01_physical_kernel"),
-            ("pkan_torch_model.pt", "02_base_pkan"),
             ("static_model_checkpoint.pt", "03_full_model"),
             ("model.va", "03_full_model"),
         ]

@@ -88,13 +88,13 @@ class TestArtifactConstants(unittest.TestCase):
             self.assertIn(key, ARTIFACT_FILENAMES)
 
     def test_stage_artifacts_has_expected_stages(self):
-        expected_stages = ["check-data", "fit-physical", "train-base-pkan",
+        expected_stages = ["check-data", "fit-physical",
                            "train-static", "train-hysteresis"]
         for s in expected_stages:
             self.assertIn(s, STAGE_ARTIFACTS)
 
     def test_stage_display_names_covers_stages(self):
-        for s in ["check-data", "fit-physical", "train-base-pkan",
+        for s in ["check-data", "fit-physical",
                   "train-static", "train-hysteresis"]:
             self.assertIn(s, STAGE_DISPLAY_NAMES)
             self.assertIsInstance(STAGE_DISPLAY_NAMES[s], str)
@@ -201,10 +201,10 @@ class TestReportBuilder(unittest.TestCase):
                     "summary": "Fit done", "metrics": {"r2": 0.95},
                     "outputs": {}, "warnings": [],
                 },
-                "train-base-pkan": {
-                    "ok": stages_ok, "stage": "train-base-pkan", "skipped": False,
+                "train-static": {
+                    "ok": stages_ok, "stage": "train-static", "skipped": False,
                     "skip_reason": "", "error": None,
-                    "summary": "PKAN trained", "metrics": {"loss": 0.01},
+                    "summary": "Static model trained", "metrics": {"loss": 0.01},
                     "outputs": {}, "warnings": [],
                 },
             },

@@ -53,9 +53,6 @@ STAGE_ARTIFACTS: dict[str, dict[str, list[str]]] = {
     "fit-physical": {
         "01_physical_kernel": [ARTIFACT_KEY_FITTED_PARAMS],
     },
-    "train-base-pkan": {
-        "02_base_pkan": [ARTIFACT_KEY_PKAN_MODEL],
-    },
     "train-static": {
         "03_full_model": [ARTIFACT_KEY_STATIC_MODEL_CKPT, ARTIFACT_KEY_STATIC_MODEL_VA],
     },
@@ -68,7 +65,6 @@ STAGE_ARTIFACTS: dict[str, dict[str, list[str]]] = {
 STAGE_DISPLAY_NAMES: dict[str, str] = {
     "check-data": "Dataset Audit",
     "fit-physical": "Physical Kernel Fitting",
-    "train-base-pkan": "Base PKAN Training",
     "train-static": "Static Model Training",
     "train-hysteresis": "Hysteresis Training",
     "deployment-validate": "Deployment Validation",

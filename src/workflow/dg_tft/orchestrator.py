@@ -35,6 +35,7 @@ from .stages import get_stages, StageDef
 from .stage_runner import run_stage
 from .artifacts import STAGE_DISPLAY_NAMES, get_report_paths
 from .report_builder import build_and_write_reports
+from src.constants import MAJOR_COLOR2, WF_STATUS_ERROR, WF_STATUS_SUCCESS, WF_STATUS_WARN, WF_MISSING_ITEM, WF_SECTION_TITLE
 
 if TYPE_CHECKING:
     from src.context.agent_context import AgentContext
@@ -47,7 +48,6 @@ _WF_TASK_PREFIX: str = "[DG-TFT]"
 _STAGE_TASK_SUBJECTS: dict[str, str] = {
     StageName.CHECK_DATA: "Audit dataset",
     StageName.FIT_PHYSICAL: "Fit physical kernel",
-    StageName.TRAIN_BASE_PKAN: "Train base PKAN",
     StageName.TRAIN_STATIC: "Train static model",
     StageName.TRAIN_HYSTERESIS: "Train hysteresis",
 }
@@ -55,7 +55,6 @@ _STAGE_TASK_SUBJECTS: dict[str, str] = {
 _STAGE_TASK_DESCS: dict[str, str] = {
     StageName.CHECK_DATA: "Validate dataset structure and inspect IV/CV/I-t profiles.",
     StageName.FIT_PHYSICAL: "Fit physical equations to extract initial parameter kernels.",
-    StageName.TRAIN_BASE_PKAN: "Train the Base-PKAN core network structure.",
     StageName.TRAIN_STATIC: "Train the full static model and export Verilog-A.",
     StageName.TRAIN_HYSTERESIS: "Train hysteresis-aware dynamic extension and export dynamic VA.",
 }
@@ -77,7 +76,7 @@ def run_workflow(
 ) -> tuple[bool, str]:
     """Execute the DG-TFT modeling pipeline for a single workflow run.
 
-    Stages are executed in order (check-data → fit-physical → train-base-pkan
+    Stages are executed in order (check-data → fit-physical
     → train-static → train-hysteresis), with fail-fast on required stages and
     automatic skip of hysteresis when no I-t data is available.
 
@@ -141,14 +140,14 @@ def run_workflow(
 
         if _stage_done(run, sd.name):
             sys_log.info("Stage [%s] already completed, skipping (resume)", sd.name)
-            _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
+            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
             continue
 
         run.current_stage = sd.name
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING)
         sys_log.info("--- Stage [%s] starting ---", sd.name)
-        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]starting...[/bright_black]")
+        _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]starting...[/bright_black]")
         _start_task(board, ctx.agent_id, task_map.get(sd.name))
 
         timeout = stage_timeout or sd.timeout
@@ -163,7 +162,7 @@ def run_workflow(
                 )
                 wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
                 sys_log.info("Stage [%s] skipped: %s", sd.name, sr.skip_reason)
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]skipped ({sr.skip_reason})[/bright_black]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped ({sr.skip_reason})[/bright_black]")
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
                 run = wm.get_run(run_id)
                 continue
@@ -184,7 +183,7 @@ def run_workflow(
                     "Run %d failed at required stage [%s]: %s",
                     run_id, sd.name, sr.error,
                 )
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bold red]failed[/bold red] [bright_black]({sr.error})[/bright_black]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
                 failed_stage = sd.name
                 failed_error = sr.error or "unknown error"
                 # Generate partial reports even on failure
@@ -196,7 +195,7 @@ def run_workflow(
                 sys_log.warning(
                     "Optional stage [%s] failed for run %d, continuing", sd.name, run_id,
                 )
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bold yellow]failed (non-critical, continuing)[/bold yellow]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]failed (non-critical, continuing)[/{WF_STATUS_WARN}]")
                 run = wm.get_run(run_id)
                 continue
 
@@ -215,7 +214,7 @@ def run_workflow(
                 wm.attach_artifact(run_id, p, str(full_path))
 
         sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
-        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [green]✓[/green]")
+        _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
         _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
         run = wm.get_run(run_id)
 
@@ -253,13 +252,13 @@ def _finalize_run(
     if failed:
         wm.mark_failed(run_id, failed_error)
         sys_log.error("Workflow run %d failed at %s", run_id, failed_stage)
-        _console(ctx, f"[bold red]Run #{run_id} FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}[/bold red]"
+        _console(ctx, f"[{WF_STATUS_ERROR}]Run #{run_id} FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}[/{WF_STATUS_ERROR}]"
                  f" [bright_black]({elapsed:.0f}s)[/bright_black]")
         _console_summary(ctx, run_id, output_dir, failed=True, failed_stage=failed_stage, failed_error=failed_error)
     else:
         wm.mark_done(run_id)
         sys_log.info("Workflow run %d completed successfully", run_id)
-        _console(ctx, f"[bold green]Run #{run_id} DONE[/bold green] [bright_black]({elapsed:.0f}s)[/bright_black]")
+        _console(ctx, f"[{WF_STATUS_SUCCESS}]Run #{run_id} DONE[/{WF_STATUS_SUCCESS}] [bright_black]({elapsed:.0f}s)[/bright_black]")
         _console_summary(ctx, run_id, output_dir, failed=False)
 
 
@@ -354,12 +353,12 @@ def _console_summary(
 
     reports = get_report_paths(output_dir)
     c.print("")
-    c.print("[underline]DG-TFT Run Summary[/underline]")
+    c.print(f"[{WF_SECTION_TITLE}]DG-TFT Run Summary[/{WF_SECTION_TITLE}]")
     if failed:
-        c.print(f"  [bold red]Status   :[/bold red] FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}")
-        c.print(f"  Reason   : [red]{failed_error[:120]}[/red]")
+        c.print(f"  [{WF_STATUS_ERROR}]Status   :[/{WF_STATUS_ERROR}] FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}")
+        c.print(f"  Reason   : [{WF_STATUS_ERROR}]{failed_error[:120]}[/{WF_STATUS_ERROR}]")
     else:
-        c.print("  [bold green]Status   :[/bold green] COMPLETED")
+        c.print(f"  [{WF_STATUS_SUCCESS}]Status   :[/{WF_STATUS_SUCCESS}] COMPLETED")
 
     c.print(f"  Run ID   : {run_id}")
     c.print(f"  Output   : [bright_black]{output_dir}[/bright_black]")
@@ -367,9 +366,9 @@ def _console_summary(
     for key, label in [("md", "Markdown"), ("json", "JSON"), ("manifest", "Manifest")]:
         p = Path(reports[key])
         if p.exists():
-            c.print(f"    [green]✓[/green] {label}: [bright_black]{p.name}[/bright_black]")
+            c.print(f"    [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] {label}: [bright_black]{p.name}[/bright_black]")
         else:
-            c.print(f"    [red]✗[/red] {label}: (missing)")
+            c.print(f"    [{WF_MISSING_ITEM}]✗[/{WF_MISSING_ITEM}] {label}: (missing)")
 
     # Key artifacts summary
     if run.artifacts:
@@ -380,7 +379,7 @@ def _console_summary(
     # Recommendations
     if failed:
         c.print("")
-        c.print("  [yellow]Next steps:[/yellow]")
+        c.print(f"  [{WF_STATUS_WARN}]Next steps:[/{WF_STATUS_WARN}]")
         _print_failure_recommendation(c, failed_stage)
     c.print("")
 
@@ -390,7 +389,6 @@ def _print_failure_recommendation(c, stage_name: str) -> None:
     hints = {
         StageName.CHECK_DATA: "Verify the dataset directory contains valid *_train.xlsx files with required sheets.",
         StageName.FIT_PHYSICAL: "Check the physical model fitting inputs — may indicate incompatible data range.",
-        StageName.TRAIN_BASE_PKAN: "Try reducing model complexity or adjusting the base PKAN hyperparameters.",
         StageName.TRAIN_STATIC: "Try adjusting static training hyperparameters or checking for NaN/inf in data.",
         StageName.TRAIN_HYSTERESIS: "Verify I-t data availability and hysteresis configuration settings.",
     }

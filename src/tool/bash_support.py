@@ -288,7 +288,7 @@ def get_bash_risk(cmd: str) -> tuple[str, str, int]:
     if base_cmd == 'chown':
         return BASH_CHOWN_LABEL, f"File ownership change: {cmd}", 4
 
-    file_ops = {'mkdir', 'touch', 'cp', 'mv', 'ln', 'rmdir', 'install', 'truncate'}
+    file_ops = {'mkdir', 'touch', 'cp', 'mv', 'ln', 'rmdir', 'install', 'truncate', 'rm', 'rmdir'}
     if base_cmd in file_ops:
         return BASH_FILE_LABEL, f"File operation: {cmd}", 4
 

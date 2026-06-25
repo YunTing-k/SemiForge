@@ -144,13 +144,6 @@ class TestWorkflowFullLifecycle(unittest.TestCase):
                                     outputs={"params": "01_physical_kernel/fitted_params.json"},
                                     metrics={"rms_error": 0.002}))
 
-        # Phase: train-base-pkan
-        wm.update_stage(rid, "train-base-pkan", WorkflowStatus.RUNNING,
-                        StageResult(ok=True, stage="train-base-pkan",
-                                    summary="Base PKAN trained",
-                                    outputs={"model": "02_base_pkan/pkan_torch_model.pt"},
-                                    metrics={"best_loss": 0.123}))
-
         # Phase: train-static
         wm.update_stage(rid, "train-static", WorkflowStatus.RUNNING,
                         StageResult(ok=True, stage="train-static",
@@ -166,12 +159,6 @@ class TestWorkflowFullLifecycle(unittest.TestCase):
                                         summary="Hysteresis model trained",
                                         outputs={"va": "04_hysteresis/model.va"}))
 
-        # Phase: deployment-validate
-        wm.update_stage(rid, "deployment-validate", WorkflowStatus.RUNNING,
-                        StageResult(ok=True, stage="deployment-validate",
-                                    summary="Deployment validated",
-                                    warnings=["HSPICE not available, skipped smoke test"]))
-
         # Phase: final-report
         wm.update_stage(rid, "final-report", WorkflowStatus.RUNNING,
                         StageResult(ok=True, stage="final-report", summary="Report generated"))
@@ -182,7 +169,7 @@ class TestWorkflowFullLifecycle(unittest.TestCase):
         # Verify final state
         run = wm.get_run(rid)
         self.assertEqual(run.status, WorkflowStatus.DONE)
-        self.assertEqual(len(run.stage_results), 7)  # all stages recorded
+        self.assertEqual(len(run.stage_results), 5)  # all stages recorded
         self.assertTrue(run.temperature_enabled)
         self.assertTrue(run.hysteresis_enabled)
         self.assertIn("iv_rms", run.metrics)
@@ -221,20 +208,16 @@ class TestWorkflowFullLifecycle(unittest.TestCase):
                         StageResult(ok=True, stage="check-data", summary="OK"))
         wm.update_stage(1, "fit-physical", WorkflowStatus.RUNNING,
                         StageResult(ok=True, stage="fit-physical", summary="OK"))
-        wm.update_stage(1, "train-base-pkan", WorkflowStatus.RUNNING,
-                        StageResult(ok=True, stage="train-base-pkan", summary="OK"))
         wm.update_stage(1, "train-static", WorkflowStatus.RUNNING,
                         StageResult(ok=True, stage="train-static", summary="OK"))
         # train-hysteresis skipped because no hysteresis data
         wm.add_warning(1, "Hysteresis stage skipped: no I-t data available")
-        wm.update_stage(1, "deployment-validate", WorkflowStatus.RUNNING,
-                        StageResult(ok=True, stage="deployment-validate", summary="OK"))
         wm.mark_done(1)
 
         run = wm.get_run(1)
         self.assertEqual(run.status, WorkflowStatus.DONE)
         self.assertFalse(run.hysteresis_enabled)
-        self.assertEqual(len(run.stage_results), 5)  # hysteresis skipped
+        self.assertEqual(len(run.stage_results), 3)  # hysteresis skipped
         self.assertIn("no i-t data available", run.warnings[0].lower())
 
 
@@ -318,11 +301,10 @@ class TestRunModelAccessibility(unittest.TestCase):
                         f"run_model.py not found at {RUN_MODEL_PATH}")
 
     def test_run_model_has_expected_actions(self):
-        content = RUN_MODEL_PATH.read_text()
+        content = RUN_MODEL_PATH.read_text(encoding="utf-8")
         expected_actions = [
             "check-data",
             "fit-physical",
-            "train-base-pkan",
             "train-static",
             "train-hysteresis",
             "train-all",

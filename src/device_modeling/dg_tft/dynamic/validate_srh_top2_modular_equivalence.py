@@ -16,7 +16,7 @@ import refine_srh_waveform_end_to_end as base
 ROOT = Path(__file__).resolve().parent
 BANK = ROOT / "results_long_timescale" / "srh_top2_regime_banks"
 OUT = BANK / "combined"
-HSPICE = Path(r"E:\synopsys\Hspice_S-2021.09\WIN64\hspice.exe")
+HSPICE = Path("hspice.com")
 CONFIG = ROOT / "DYNAMIC_RELEASE_CONFIG.json"
 
 

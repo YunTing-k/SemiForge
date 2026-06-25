@@ -41,8 +41,8 @@ from fit_physical_kernel import (
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_BASELINE_JSON = ROOT / "fit_training_ready_outputs" / "fitted_params.json"
-DEFAULT_OUT_DIR = ROOT / "pkan_ivcv_torch_outputs"
+DEFAULT_BASELINE_JSON = Path("./fit_training_ready_outputs/fitted_params.json")
+DEFAULT_OUT_DIR = Path("./pkan_ivcv_torch_outputs")
 ID_FLOOR = 1e-15
 C_FLOOR = 1e-18
 LOG10 = math.log(10.0)

@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 sys_log = logging.getLogger("logger")
 
 
+def _session_id(ctx: AgentContext) -> str:
+    return ctx.session_uuid or "unknown"
+
+
 def build_runtime_config(
     ctx: AgentContext,
     profile: DatasetProfile,
@@ -37,11 +41,12 @@ def build_runtime_config(
     output_root: str | None = None,
     run_id: int | None = None,
     work_dir: str | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> dict:
     """Build and persist a run-specific DG-TFT .ini configuration (P2-T6, P2-T7).
 
     Reads the template .ini, fills in dynamic fields based on the DatasetProfile,
-    and writes the runtime config to disk.
+    applies optional section.key overrides, and writes the runtime config to disk.
 
     Args:
         ctx: Agent context (for default config keys).
@@ -51,6 +56,8 @@ def build_runtime_config(
         run_id: Optional run ID for generating a unique output subdirectory.
         work_dir: If given, write config files inside this directory.
                   Otherwise uses output_root/run_<run_id>/.
+        overrides: Optional dict of "section.key" → "value" to apply after
+                   writing the template-based config.
 
     Returns:
         dict with keys:
@@ -60,6 +67,7 @@ def build_runtime_config(
     """
     data_path = Path(dataset_dir).resolve()
     run_tag = f"run_{run_id:04d}" if run_id is not None else "run_0001"
+    session_tag = _session_id(ctx)
 
     default_output_root = ctx.agent_configs.get("DG_TFT_DEFAULT_OUTPUT_ROOT", "./outputs/dg_tft_runs")
     out_root = Path(output_root or default_output_root).resolve()
@@ -67,14 +75,16 @@ def build_runtime_config(
     if work_dir:
         config_dir = Path(work_dir).resolve()
     else:
-        config_dir = out_root / run_tag
+        config_dir = out_root / session_tag / run_tag
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    resolution = _build_resolution(ctx, profile, data_path, out_root, run_tag)
+    resolution = _build_resolution(ctx, profile, data_path, out_root, session_tag, run_tag)
 
     runtime_config_path = config_dir / "model_config.ini"
     _write_ini(ctx, profile, data_path, resolution, runtime_config_path)
+    if overrides:
+        _apply_overrides(runtime_config_path, overrides)
     sys_log.info("Runtime config written: %s", runtime_config_path)
 
     profile_path = config_dir / "dataset_profile.json"
@@ -100,6 +110,7 @@ def _build_resolution(
     profile: DatasetProfile,
     data_path: Path,
     out_root: Path,
+    session_tag: str,
     run_tag: str,
 ) -> dict:
     """Compute all auto-filled config values (P2-T4, P2-T5, P2-T7)."""
@@ -111,7 +122,7 @@ def _build_resolution(
     hysteresis_enabled = profile.has_hysteresis
     hysteresis_dir = profile.suggested_hysteresis_dir or str(data_path)
 
-    output_dir = str(out_root / run_tag)
+    output_dir = str(out_root / session_tag / run_tag)
 
     return {
         "data_dir": str(data_path),
@@ -141,7 +152,11 @@ def _write_ini(
     resolution: dict,
     out_path: Path,
 ) -> None:
-    """Read template .ini, fill dynamic fields, write to out_path (P2-T6)."""
+    """Read template .ini, fill dynamic fields, write to out_path (P2-T6).
+
+    Uses direct text replacement to avoid configparser formatting issues
+    (tab indentation, comment stripping, case folding).
+    """
     template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", "")
     if not template_key:
         raise ValueError("DG_TFT_DEFAULT_CONFIG_TEMPLATE not set in agent_configs.json")
@@ -150,20 +165,41 @@ def _write_ini(
     if not template_path.exists():
         raise FileNotFoundError(f"Config template not found: {template_path}")
 
-    cfg = configparser.ConfigParser()
-    cfg.read(template_path, encoding="utf-8")
+    text = template_path.read_text(encoding="utf-8")
 
-    cfg.set("paths", "data_dir", str(data_path))
-    cfg.set("paths", "hysteresis_data_dir", resolution["hysteresis_data_dir"])
-    cfg.set("paths", "output_dir", resolution["output_dir"])
-    cfg.set("paths", "hspice_exe", resolution["hspice_exe"])
+    replacements = {
+        "data_dir": resolution["data_dir"],
+        "hysteresis_data_dir": resolution["hysteresis_data_dir"],
+        "output_dir": resolution["output_dir"],
+        "hspice_exe": resolution["hspice_exe"],
+    }
 
-    cfg.set("hysteresis", "enabled", resolution["hysteresis_enabled"])
-    cfg.set("temperature", "mode", resolution["temperature_mode"])
-    cfg.set("deployment", "run_hspice", resolution["run_hspice"])
+    lines = text.splitlines(keepends=True)
+    current_section = ""
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        cfg.write(f)
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("[") and stripped.rstrip().endswith("]"):
+            current_section = stripped[1:].split("]")[0].strip()
+            continue
+        if "=" not in stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        option = stripped.split("=", 1)[0].strip()
+
+        if current_section == "paths" and option in replacements:
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}{option} = {replacements[option]}\n"
+        elif current_section == "hysteresis" and option == "enabled":
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}enabled = {resolution['hysteresis_enabled']}\n"
+        elif current_section == "temperature" and option == "mode":
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}mode = {resolution['temperature_mode']}\n"
+        elif current_section == "deployment" and option == "run_hspice":
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}run_hspice = {resolution['run_hspice']}\n"
+
+    out_path.write_text("".join(lines), encoding="utf-8")
 
 
 def _read_template_hspice_path(ctx: AgentContext) -> str:
@@ -178,3 +214,49 @@ def _read_template_hspice_path(ctx: AgentContext) -> str:
     cfg = configparser.ConfigParser()
     cfg.read(template_path, encoding="utf-8")
     return cfg.get("paths", "hspice_exe", fallback="")
+
+
+def _apply_overrides(config_path: Path, overrides: dict[str, str]) -> None:
+    """Apply section.key → value overrides by direct text manipulation.
+
+    Uses line-by-line replacement to avoid configparser formatting issues
+    (tab indentation, keyword lowercasing, comment stripping).
+    """
+    invalid = []
+    for key in overrides:
+        if "." not in key:
+            invalid.append(key)
+    if invalid:
+        raise ValueError(
+            f"Overrides must use section.key format. "
+            f"Invalid keys (missing section prefix): {invalid}"
+        )
+
+    if not overrides:
+        return
+
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    current_section = ""
+    replaced = set()
+
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("[") and stripped.endswith("]\n") or stripped.startswith("[") and stripped.rstrip().endswith("]"):
+            current_section = stripped[1:].split("]")[0].strip()
+            continue
+        if "=" not in stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        option = stripped.split("=", 1)[0].strip()
+        full_key = f"{current_section}.{option}"
+        if full_key in overrides:
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}{option} = {overrides[full_key]}\n"
+            replaced.add(full_key)
+
+    # Warn about keys that didn't match any line
+    missed = set(overrides.keys()) - replaced
+    if missed:
+        sys_log.warning("Overrides not found in config (no matching line): %s", sorted(missed))
+
+    config_path.write_text("".join(lines), encoding="utf-8")
+    sys_log.info("Applied %d config overrides to %s", len(replaced), config_path)

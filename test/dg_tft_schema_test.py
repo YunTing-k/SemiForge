@@ -126,7 +126,7 @@ class TestWorkflowRun(unittest.TestCase):
         self.assertEqual(run2.stage_results, {})
 
     def test_multiple_stage_results(self):
-        for stage in ["check-data", "fit-physical", "train-base-pkan"]:
+        for stage in ["check-data", "fit-physical", "train-static"]:
             self.run.stage_results[stage] = StageResult(ok=True, stage=stage, summary="OK")
         d = self.run.to_dict()
         run2 = WorkflowRun.from_dict(d)
@@ -174,16 +174,14 @@ class TestWorkflowStatus(unittest.TestCase):
 
 class TestStageName(unittest.TestCase):
     def test_stage_order_length(self):
-        self.assertEqual(len(StageName.STAGE_ORDER), 7)
+        self.assertEqual(len(StageName.STAGE_ORDER), 5)
 
     def test_stage_order_contains_all(self):
         expected = [
             "check-data",
             "fit-physical",
-            "train-base-pkan",
             "train-static",
             "train-hysteresis",
-            "deployment-validate",
             "final-report",
         ]
         self.assertEqual(StageName.STAGE_ORDER, expected)

@@ -29,19 +29,15 @@ class WorkflowStatus(str, Enum):
 class StageName:
     CHECK_DATA = "check-data"
     FIT_PHYSICAL = "fit-physical"
-    TRAIN_BASE_PKAN = "train-base-pkan"
     TRAIN_STATIC = "train-static"
     TRAIN_HYSTERESIS = "train-hysteresis"
-    DEPLOYMENT_VALIDATE = "deployment-validate"
     FINAL_REPORT = "final-report"
 
     STAGE_ORDER: list[str] = [
         CHECK_DATA,
         FIT_PHYSICAL,
-        TRAIN_BASE_PKAN,
         TRAIN_STATIC,
         TRAIN_HYSTERESIS,
-        DEPLOYMENT_VALIDATE,
         FINAL_REPORT,
     ]
 
