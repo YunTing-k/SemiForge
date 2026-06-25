@@ -134,6 +134,7 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         BASH_SAFE_LABEL,
         BASH_NETWORK_LABEL,
         BASH_FILE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
     ),
     SCHEDULER_AGENT_LABEL: (
         TOOL_NAME_CREATE_TASK,

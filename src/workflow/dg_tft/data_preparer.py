@@ -22,14 +22,6 @@ from typing import Any
 from src.utility import client
 from src.context.agent_context import AgentContext
 from src.context.prompt import deepseek_support
-from src.constants import (
-    TOOL_NAME_READ_FILE,
-    TOOL_NAME_WRITE_FILE,
-    TOOL_NAME_GLOB_FILE,
-    TOOL_NAME_GREP_FILE,
-    BASH_SAFE_LABEL,
-    BASH_FILE_LABEL,
-)
 
 sys_log = logging.getLogger("logger")
 
@@ -228,12 +220,6 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
         subject="DG-TFT data preparation",
         console=None,
     )
-    agent.ctx.permissions[TOOL_NAME_READ_FILE] = True
-    agent.ctx.permissions[TOOL_NAME_WRITE_FILE] = True
-    agent.ctx.permissions[TOOL_NAME_GLOB_FILE] = True
-    agent.ctx.permissions[TOOL_NAME_GREP_FILE] = True
-    agent.ctx.permissions[BASH_SAFE_LABEL] = True
-    agent.ctx.permissions[BASH_FILE_LABEL] = True
     agent.build_tools()
     agent.build_messages()
     result = agent.run()
