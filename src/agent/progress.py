@@ -111,6 +111,9 @@ SUPPORTED_TYPES: dict[str, tuple[str, ...]] = {
         TOOL_NAME_READ_FILE,
         TOOL_NAME_WRITE_FILE,
         TOOL_NAME_BASH,
+        TOOL_NAME_CREATE_TASK,
+        TOOL_NAME_UPDATE_TASK,
+        TOOL_NAME_QUERY_TASK,
     ),
 }
 
@@ -159,6 +162,9 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         TOOL_NAME_GREP_FILE,
         TOOL_NAME_READ_FILE,
         TOOL_NAME_WRITE_FILE,
+        TOOL_NAME_CREATE_TASK,
+        TOOL_NAME_UPDATE_TASK,
+        TOOL_NAME_QUERY_TASK,
         BASH_SAFE_LABEL,
         BASH_INLINE_SCRIPT_LABEL,
         BASH_FILE_LABEL,
