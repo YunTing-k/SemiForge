@@ -105,6 +105,13 @@ SUPPORTED_TYPES: dict[str, tuple[str, ...]] = {
         TOOL_NAME_WEB_SEARCH,
         TOOL_NAME_BASH,
     ),
+    PREPARER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_WRITE_FILE,
+        TOOL_NAME_BASH,
+    ),
 }
 
 PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
@@ -147,6 +154,15 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         TOOL_NAME_WEB_SEARCH,
         BASH_SAFE_LABEL,
     ),
+    PREPARER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_WRITE_FILE,
+        BASH_SAFE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
+        BASH_FILE_LABEL,
+    ),
 }
 
 SUPPORTED_TYPES_DESC: dict[str, str] = {
@@ -165,5 +181,10 @@ SUPPORTED_TYPES_DESC: dict[str, str] = {
         f"{TOOL_NAME_UPDATE_TASK} / {TOOL_NAME_QUERY_TASK} to plan and organize work, set task dependencies, delete incorrect "
         f"tasks, and can access read-only tools. Tasks it creates are available for main-agent and subagent that have shared "
         f"scoreboard access."
+    ),
+    PREPARER_AGENT_LABEL: (
+        f"Data preparation specialist for DG-TFT device modeling. Converts raw CSV/XLSX measurement files into standardized "
+        f"*_train.xlsx format. Has {TOOL_NAME_GLOB_FILE}, {TOOL_NAME_GREP_FILE}, {TOOL_NAME_READ_FILE}, {TOOL_NAME_WRITE_FILE}, "
+        f"and {TOOL_NAME_BASH} (with python inline execution) for efficient batch file processing."
     ),
 }

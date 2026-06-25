@@ -22,7 +22,7 @@ from typing import Any
 from src.utility import client
 from src.context.agent_context import AgentContext
 from src.context.prompt import deepseek_support
-from src.constants import WORKER_AGENT_LABEL
+from src.constants import PREPARER_AGENT_LABEL
 
 sys_log = logging.getLogger("logger")
 
@@ -322,7 +322,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
 
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type=WORKER_AGENT_LABEL,
+        subagent_type=PREPARER_AGENT_LABEL,
         prompt=prompt,
         agent_id=f"{_PREP_AGENT_ID_PREFIX}_{os.path.basename(output_dir)}",
         subject=_PREP_SUBJECT,

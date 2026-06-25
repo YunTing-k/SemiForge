@@ -49,6 +49,7 @@ AGENT_ID_LEN: int = 8
 EXPLORER_AGENT_LABEL: str = "explorer"
 WORKER_AGENT_LABEL: str = "worker"
 SCHEDULER_AGENT_LABEL: str = "scheduler"
+PREPARER_AGENT_LABEL: str = "preparer"
 AGENT_PENDING_LABEL: str = "pending"
 AGENT_RUNNING_LABEL: str = "running"
 AGENT_TIMEOUT_LABEL: str = "timeout"
