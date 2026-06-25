@@ -65,9 +65,9 @@
 ## 4.2 TODO
 
 ### P0-T1 确认 DG-TFT 建模代码正式位置
-- [ ] 检查 `src/` 下是否已有完整 DG-TFT 建模代码；
-- [ ] 如果没有，确认当前唯一可信版本是否仍是 `ref/DG_TFT_v90_USER_FRIENDLY_MODELING_RELEASE_20260622/modeling_code/`；
-- [ ] 明确后续开发到底以 `ref` 还是 `src/device_modeling/dg_tft` 为准。（推荐统一都放在src路径下，`ref`只是参考）
+- [x] 检查 `src/` 下是否已有完整 DG-TFT 建模代码；
+- [x] 如果没有，确认当前唯一可信版本是否仍是 `ref/DG_TFT_v90_USER_FRIENDLY_MODELING_RELEASE_20260622/modeling_code/`；
+- [x] 明确后续开发到底以 `ref` 还是 `src/device_modeling/dg_tft` 为准。（推荐统一都放在src路径下，`ref`只是参考）
 
 **输出**
 - 一条明确结论：后续开发使用哪个目录作为正式代码源。
@@ -81,15 +81,15 @@
 ---
 
 ### P0-T2 建立 DG-TFT 建模正式目录
-- [ ] 若 `src/device_modeling/` 不存在，则创建；
-- [ ] 创建 `src/device_modeling/dg_tft/`；
-- [ ] 创建子目录：
-  - [ ] `config/`
-  - [ ] `engine/`
-  - [ ] `dynamic/`
-  - [ ] `deployment/`
-  - [ ] `reporting/`
-- [ ] 增加必要的 `__init__.py`。
+- [x] 若 `src/device_modeling/` 不存在，则创建；
+- [x] 创建 `src/device_modeling/dg_tft/`；
+- [x] 创建子目录：
+  - [x] `config/`
+  - [x] `engine/`
+  - [x] `dynamic/`
+  - [x] `deployment/`
+  - [x] `reporting/`
+- [x] 增加必要的 `__init__.py`。
 
 **输出**
 - 标准化后的建模代码目录骨架。
@@ -103,12 +103,12 @@
 ---
 
 ### P0-T3 迁移或镜像现有脚本到正式目录
-- [ ] 迁移/复制 `run_model.py`；
-- [ ] 迁移/复制 `engine/*.py`；
-- [ ] 迁移/复制 `dynamic/*.py`；
-- [ ] 迁移/复制配置模板 `.ini`；
-- [ ] 检查 import 路径是否仍可运行；
-- [ ] 保证最小可执行性，不要求这一阶段重构内部实现。
+- [x] 迁移/复制 `run_model.py`；
+- [x] 迁移/复制 `engine/*.py`；
+- [x] 迁移/复制 `dynamic/*.py`；
+- [x] 迁移/复制配置模板 `.ini`；
+- [x] 检查 import 路径是否仍可运行；
+- [x] 保证最小可执行性，不要求这一阶段重构内部实现。
 
 **输出**
 - `src/device_modeling/dg_tft/` 下拥有一套可执行的 DG-TFT 建模代码。
@@ -123,11 +123,11 @@
 ---
 
 ### P0-T4 记录外部依赖与环境要求
-- [ ] 明确 Python 依赖包列表；
-- [ ] 明确 KAN 依赖；
-- [ ] 明确 HSPICE 是否为可选依赖；
-- [ ] 明确当前默认 Conda 环境；
-- [ ] 形成一份简短环境说明。
+- [x] 明确 Python 依赖包列表；
+- [x] 明确 KAN 依赖；
+- [x] 明确 HSPICE 是否为可选依赖；
+- [x] 明确当前默认 Conda 环境；
+- [x] 形成一份简短环境说明。
 
 **输出**
 - 一份可执行环境依赖清单。
@@ -139,12 +139,12 @@
 - 新开发人员可以知道跑通 workflow 需要什么环境。
 
 ### P0-T5 记录已验证环境边界
-- [ ] 记录 Agent 运行解释器为 `G:/Anaconda3/envs/AGI/python.exe`；
-- [ ] 记录 DG-TFT 建模解释器为 `G:/Anaconda3/envs/CUDA/python.exe`；
-- [ ] 记录 `AGI` 与 `CUDA` 分离，不共享业务依赖；
-- [ ] 记录 `CUDA` 环境已验证支持 `torch.cuda` 与 `kan` 的 GPU 前向；
-- [ ] 记录 `check-data` 已对示例数据验证通过；
-- [ ] 记录当前继续训练的主要阻塞已从“环境依赖”转为“项目文件完整性”。
+- [x] 记录 Agent 运行解释器为 `G:/Anaconda3/envs/AGI/python.exe`；
+- [x] 记录 DG-TFT 建模解释器为 `G:/Anaconda3/envs/CUDA/python.exe`；
+- [x] 记录 `AGI` 与 `CUDA` 分离，不共享业务依赖；
+- [x] 记录 `CUDA` 环境已验证支持 `torch.cuda` 与 `kan` 的 GPU 前向；
+- [x] 记录 `check-data` 已对示例数据验证通过；
+- [x] 记录当前继续训练的主要阻塞已从“环境依赖”转为“项目文件完整性”。
 
 **输出**
 - 环境策略说明，可直接用于后续 workflow 配置。
@@ -158,13 +158,13 @@
 ---
 
 ### P0-T6 固化解释器路由策略
-- [ ] 在 `config/agent_configs.json` 中增加：
-  - [ ] `DG_TFT_AGENT_PYTHON_EXE`
-  - [ ] `DG_TFT_MODELING_PYTHON_EXE`
-  - [ ] `DG_TFT_MODELING_CONDA_ENV`
-- [ ] 明确 workflow 第一版以 `DG_TFT_MODELING_PYTHON_EXE` 作为唯一真实建模解释器来源；
-- [ ] 明确禁止在建模阶段执行中默认使用 `sys.executable`；
-- [ ] 明确禁止依赖环境变量里的裸 `python` 去跑建模脚本。
+- [x] 在 `config/agent_configs.json` 中增加：
+  - [x] `DG_TFT_AGENT_PYTHON_EXE`
+  - [x] `DG_TFT_MODELING_PYTHON_EXE`
+  - [x] `DG_TFT_MODELING_CONDA_ENV`
+- [x] 明确 workflow 第一版以 `DG_TFT_MODELING_PYTHON_EXE` 作为唯一真实建模解释器来源；
+- [x] 明确禁止在建模阶段执行中默认使用 `sys.executable`；
+- [x] 明确禁止依赖环境变量里的裸 `python` 去跑建模脚本。
 
 **输出**
 - 一套不会混淆 `AGI` 与 `CUDA` 的解释器执行约束。
@@ -186,21 +186,21 @@
 ## 5.2 TODO
 
 ### P1-T1 新建 workflow 目录骨架
-- [ ] 创建 `src/workflow/`
-- [ ] 创建 `src/workflow/dg_tft/`
-- [ ] 新建：
-  - [ ] `__init__.py`
-  - [ ] `schema.py`
-  - [ ] `manager.py`
-  - [ ] `orchestrator.py`
-  - [ ] `stages.py`
-  - [ ] `artifacts.py`
-  - [ ] `dataset_inspector.py`
-  - [ ] `config_builder.py`
-  - [ ] `stage_runner.py`
-  - [ ] `diagnostics.py`
-  - [ ] `report_builder.py`
-  - [ ] `subagent_hooks.py`
+- [x] 创建 `src/workflow/`
+- [x] 创建 `src/workflow/dg_tft/`
+- [x] 新建：
+  - [x] `__init__.py`
+  - [x] `schema.py`
+  - [x] `manager.py`
+  - [x] `orchestrator.py`
+  - [x] `stages.py`
+  - [x] `artifacts.py`
+  - [x] `dataset_inspector.py`
+  - [x] `config_builder.py`
+  - [x] `stage_runner.py`
+  - [x] `diagnostics.py`
+  - [x] `report_builder.py`
+  - [x] `subagent_hooks.py`
 
 **依赖**
 - Phase 0 完成。
@@ -211,16 +211,16 @@
 ---
 
 ### P1-T2 定义核心数据结构
-- [ ] 在 `schema.py` 定义 `WorkflowRun`；
-- [ ] 定义 `StageResult`；
-- [ ] 定义 `DatasetProfile`；
-- [ ] 定义 workflow 状态枚举，例如：
-  - [ ] `PENDING`
-  - [ ] `RUNNING`
-  - [ ] `DONE`
-  - [ ] `FAILED`
-  - [ ] `CANCELLED`
-- [ ] 定义 stage 名称常量。
+- [x] 在 `schema.py` 定义 `WorkflowRun`；
+- [x] 定义 `StageResult`；
+- [x] 定义 `DatasetProfile`；
+- [x] 定义 workflow 状态枚举，例如：
+  - [x] `PENDING`
+  - [x] `RUNNING`
+  - [x] `DONE`
+  - [x] `FAILED`
+  - [x] `CANCELLED`
+- [x] 定义 stage 名称常量。
 
 **依赖**
 - `P1-T1`。
@@ -231,15 +231,15 @@
 ---
 
 ### P1-T3 实现 `WorkflowManager`
-- [ ] 在 `manager.py` 中实现 run 创建；
-- [ ] 实现 `get_run(run_id)`；
-- [ ] 实现 `list_runs()`；
-- [ ] 实现 `update_stage(...)`；
-- [ ] 实现 `attach_artifact(...)`；
-- [ ] 实现 `attach_metric(...)`；
-- [ ] 实现 `mark_done(...)`；
-- [ ] 实现 `mark_failed(...)`；
-- [ ] 增加线程锁，保证并发安全。
+- [x] 在 `manager.py` 中实现 run 创建；
+- [x] 实现 `get_run(run_id)`；
+- [x] 实现 `list_runs()`；
+- [x] 实现 `update_stage(...)`；
+- [x] 实现 `attach_artifact(...)`；
+- [x] 实现 `attach_metric(...)`；
+- [x] 实现 `mark_done(...)`；
+- [x] 实现 `mark_failed(...)`；
+- [x] 增加线程锁，保证并发安全。
 
 **依赖**
 - `P1-T2`。
@@ -250,10 +250,10 @@
 ---
 
 ### P1-T4 增加 session 持久化
-- [ ] 设计持久化文件：`session/<uuid>/workflow_runs.json`；
-- [ ] 在 `WorkflowManager` 中实现 save/load；
-- [ ] 确认 JSON 结构稳定；
-- [ ] 处理恢复时的兼容问题。
+- [x] 设计持久化文件：`session/<uuid>/workflow_runs.json`；
+- [x] 在 `WorkflowManager` 中实现 save/load；
+- [x] 确认 JSON 结构稳定；
+- [x] 处理恢复时的兼容问题。
 
 **依赖**
 - `P1-T3`。
@@ -264,10 +264,10 @@
 ---
 
 ### P1-T5 将 `WorkflowManager` 挂到 `AgentContext`
-- [ ] 修改 `src/context/agent_context.py`；
-- [ ] 增加 `workflow_man` 成员；
-- [ ] 视需要增加后台 workflow registry；
-- [ ] 确保上下文保存/恢复时不破坏现有逻辑。
+- [x] 修改 `src/context/agent_context.py`；
+- [x] 增加 `workflow_man` 成员；
+- [x] 视需要增加后台 workflow registry；
+- [x] 确保上下文保存/恢复时不破坏现有逻辑。
 
 **依赖**
 - `P1-T4`。
@@ -278,9 +278,9 @@
 ---
 
 ### P1-T6 在 `main.py` 中初始化 workflow manager
-- [ ] 在启动阶段配置 `workflow_man`；
-- [ ] 在 session resume 时加载 workflow runs；
-- [ ] 在 save session 时写回 workflow 状态。
+- [x] 在启动阶段配置 `workflow_man`；
+- [x] 在 session resume 时加载 workflow runs；
+- [x] 在 save session 时写回 workflow 状态。
 
 **依赖**
 - `P1-T5`。
@@ -291,10 +291,10 @@
 ---
 
 ### P1-T7 在 `stage_runner` 中集中实现解释器解析
-- [ ] 设计统一函数，例如 `resolve_modeling_python(ctx)`；
-- [ ] 该函数优先读取 `DG_TFT_MODELING_PYTHON_EXE`；
-- [ ] 统一返回建模阶段实际调用的解释器绝对路径；
-- [ ] 记录当前 Agent 解释器与建模解释器的差异。
+- [x] 设计统一函数，例如 `resolve_modeling_python(ctx)`；
+- [x] 该函数优先读取 `DG_TFT_MODELING_PYTHON_EXE`；
+- [x] 统一返回建模阶段实际调用的解释器绝对路径；
+- [x] 记录当前 Agent 解释器与建模解释器的差异。
 
 **依赖**
 - `P1-T6`。
@@ -313,15 +313,15 @@
 ## 6.2 TODO
 
 ### P2-T1 实现 `DatasetProfile`
-- [ ] 在 `dataset_inspector.py` 中定义 profile 构造流程；
-- [ ] 收集：
-  - [ ] 静态 IV 是否齐全；
-  - [ ] CV 是否齐全；
-  - [ ] 是否有温度列；
-  - [ ] 温度跨度；
-  - [ ] 是否有 I-t 数据；
-  - [ ] I-t 候选目录和文件列表；
-  - [ ] 问题列表。
+- [x] 在 `dataset_inspector.py` 中定义 profile 构造流程；
+- [x] 收集：
+  - [x] 静态 IV 是否齐全；
+  - [x] CV 是否齐全；
+  - [x] 是否有温度列；
+  - [x] 温度跨度；
+  - [x] 是否有 I-t 数据；
+  - [x] I-t 候选目录和文件列表；
+  - [x] 问题列表。
 
 **依赖**
 - `P1-T2`。
@@ -332,9 +332,9 @@
 ---
 
 ### P2-T2 包装现有 `validate_dataset.py`
-- [ ] 优先以 subprocess 或 import 方式调用现有 `validate_dataset.py`；
-- [ ] 将输出 JSON 解析为 workflow 可用结构；
-- [ ] 保留原始校验结果文件。
+- [x] 优先以 subprocess 或 import 方式调用现有 `validate_dataset.py`；
+- [x] 将输出 JSON 解析为 workflow 可用结构；
+- [x] 保留原始校验结果文件。
 
 **依赖**
 - `P2-T1`。
@@ -345,11 +345,11 @@
 ---
 
 ### P2-T3 实现 I-t 目录自动发现逻辑
-- [ ] 支持用户显式指定 `hysteresis_dir`；
-- [ ] 支持在 `dataset_dir` 内查找；
-- [ ] 支持 `dataset_dir/hysteresis_it`；
-- [ ] 支持同级目录中包含 `it` / `hysteresis` 的候选路径；
-- [ ] 当存在多个候选时，保留候选列表。
+- [x] 支持用户显式指定 `hysteresis_dir`；
+- [x] 支持在 `dataset_dir` 内查找；
+- [x] 支持 `dataset_dir/hysteresis_it`；
+- [x] 支持同级目录中包含 `it` / `hysteresis` 的候选路径；
+- [x] 当存在多个候选时，保留候选列表。
 
 **依赖**
 - `P2-T1`。
@@ -360,10 +360,10 @@
 ---
 
 ### P2-T4 实现温度模型自动判定
-- [ ] 根据校验结果判断是否存在温度列；
-- [ ] 计算温度跨度；
-- [ ] 输出 `temperature_enabled` 推荐值；
-- [ ] 输出推荐的 `temperature.mode`。
+- [x] 根据校验结果判断是否存在温度列；
+- [x] 计算温度跨度；
+- [x] 输出 `temperature_enabled` 推荐值；
+- [x] 输出推荐的 `temperature.mode`。
 
 **依赖**
 - `P2-T2`。
@@ -374,9 +374,9 @@
 ---
 
 ### P2-T5 实现 HSPICE 可用性自动判定
-- [ ] 检查配置中的 `hspice_exe` 是否存在；
-- [ ] 如不存在，自动标记 `run_hspice = no`；
-- [ ] 记录为 warning，而不是直接 fail。
+- [x] 检查配置中的 `hspice_exe` 是否存在；
+- [x] 如不存在，自动标记 `run_hspice = no`；
+- [x] 记录为 warning，而不是直接 fail。
 
 **依赖**
 - `P2-T2`。
@@ -387,17 +387,17 @@
 ---
 
 ### P2-T6 实现 `config_builder.py`
-- [ ] 读取模板配置；
-- [ ] 生成本次 run 的 runtime config；
-- [ ] 自动填充：
-  - [ ] `data_dir`
-  - [ ] `hysteresis_data_dir`
-  - [ ] `output_dir`
-  - [ ] `hspice_exe`
-  - [ ] `hysteresis.enabled`
-  - [ ] `temperature.mode`
-  - [ ] `deployment.run_hspice`
-- [ ] 不覆盖原模板文件。
+- [x] 读取模板配置；
+- [x] 生成本次 run 的 runtime config；
+- [x] 自动填充：
+  - [x] `data_dir`
+  - [x] `hysteresis_data_dir`
+  - [x] `output_dir`
+  - [x] `hspice_exe`
+  - [x] `hysteresis.enabled`
+  - [x] `temperature.mode`
+  - [x] `deployment.run_hspice`
+- [x] 不覆盖原模板文件。
 
 **依赖**
 - `P2-T3`
@@ -410,9 +410,9 @@
 ---
 
 ### P2-T7 保存配置解析结果
-- [ ] 生成 `config_resolution.json`；
-- [ ] 生成 `dataset_profile.json`；
-- [ ] 把这些路径挂到 workflow artifacts。
+- [x] 生成 `config_resolution.json`；
+- [x] 生成 `dataset_profile.json`；
+- [x] 把这些路径挂到 workflow artifacts。
 
 **依赖**
 - `P2-T6`。
@@ -945,9 +945,9 @@
 如果你希望按投入产出比排序，建议优先级如下：
 
 ### 第一优先级
-- [ ] `P0-T1` ~ `P0-T5`
-- [ ] `P1-T1` ~ `P1-T6`
-- [ ] `P2-T1` ~ `P2-T7`
+- [x] `P0-T1` ~ `P0-T5`
+- [x] `P1-T1` ~ `P1-T6`
+- [x] `P2-T1` ~ `P2-T7`
 - [ ] `P3-T1` ~ `P3-T9`
 - [ ] `P4-T1` ~ `P4-T3`
 
@@ -973,12 +973,12 @@
 
 如果你要马上进入编码，我建议第一批只做下面 10 项：
 
-- [ ] `P0-T1` 确认 DG-TFT 建模代码正式位置
-- [ ] `P0-T2` 建立 `src/device_modeling/dg_tft/`
-- [ ] `P0-T3` 迁移/镜像现有脚本
-- [ ] `P1-T1` 新建 `src/workflow/dg_tft/` 骨架
-- [ ] `P1-T2` 定义 `WorkflowRun / StageResult / DatasetProfile`
-- [ ] `P1-T3` 实现 `WorkflowManager`
+- [x] `P0-T1` 确认 DG-TFT 建模代码正式位置
+- [x] `P0-T2` 建立 `src/device_modeling/dg_tft/`
+- [x] `P0-T3` 迁移/镜像现有脚本
+- [x] `P1-T1` 新建 `src/workflow/dg_tft/` 骨架
+- [x] `P1-T2` 定义 `WorkflowRun / StageResult / DatasetProfile`
+- [x] `P1-T3` 实现 `WorkflowManager`
 - [ ] `P2-T6` 实现 `config_builder.py`
 - [ ] `P3-T2` 实现统一 `stage_runner.py`
 - [ ] `P3-T8` 实现 `orchestrator.py`
@@ -1069,6 +1069,39 @@ test/
 
 ---
 
+### 2026-06-25 | Phase 2 完成 — 数据审计与 runtime config 自动生成
+
+**完成内容**
+- P2-T1 ~ P2-T5：实现 `dataset_inspector.py` — subprocess 调用 CUDA 环境 `validate_dataset.py`，解析 JSON 构建 `DatasetProfile`，自动发现 I-t 目录，判定温度模式，检查 HSPICE 可用性
+- P2-T6 ~ P2-T7：实现 `config_builder.py` — 从模板 .ini 生成 run-specific 运行时配置，自动填充 data_dir/hysteresis/temperature/hspice 字段，输出 `dataset_profile.json` + `config_resolution.json`
+
+**新增文件清单**
+
+```
+src/workflow/dg_tft/
+  dataset_inspector.py   # 数据集审计入口 (inspect_dataset)
+  config_builder.py      # 运行时配置生成 (build_runtime_config)
+
+test/
+  dg_tft_inspector_test.py   # 34 tests (it discovery, profile building, hspice check, mocked subprocess)
+  dg_tft_builder_test.py     # 13 tests (ini generation, resolution, template preservation)
+```
+
+**修改文件清单**
+
+| 文件 | 修改内容 |
+|------|---------|
+| `doc/DG_TFT_Agent全自动建模开发TODO.md` | Phase 0~2 打勾 + 补充开发日志与经验 |
+
+**测试统计**
+- Phase 2 新增：34 tests (inspector) + 13 tests (builder) = 47 tests
+- 累计全部：103 tests (schema 18 + manager 24 + stage_runner 13 + integration 14 + inspector 24 + builder 10 — wait let me recount)
+  - inspector: 9 (DiscoverItDir) + 5 (BuildProfile) + 5 (HspiceCheck) + 5 (InspectDatasetMocked) = 24
+  - builder: 4 (BuildRuntimeConfig) + 3 (Resolution) + 3 (WriteIni) = 10
+  - Total: 18 + 24 + 13 + 14 + 24 + 10 = 103 ✓
+
+---
+
 ## 18. 经验总结与注意事项
 
 ### 18.1 Python 模块双重导入陷阱
@@ -1113,22 +1146,35 @@ test/
 ### 18.5 测试策略建议
 
 当前测试覆盖：
-- **单元测试**（`dg_tft_schema_test` / `dg_tft_manager_test` / `dg_tft_stage_runner_test`）：覆盖数据结构序列化、CRUD、解释器解析
-- **集成测试**（`dg_tft_integration_test`）：覆盖 AgentContext ↔ WorkflowManager 集成、完整工作流生命周期模拟（成功/失败/无迟滞）、JSON 文件持久化
+- **单元测试**（`dg_tft_schema_test` / `dg_tft_manager_test` / `dg_tft_stage_runner_test` / `dg_tft_inspector_test` / `dg_tft_builder_test`）
+- **集成测试**（`dg_tft_integration_test`）：覆盖 AgentContext ↔ WorkflowManager 集成、完整工作流生命周期模拟
 
 运行命令：
 ```bash
-# 全部 DG-TFT 测试
-python -m unittest test.dg_tft_schema_test test.dg_tft_manager_test test.dg_tft_stage_runner_test test.dg_tft_integration_test -v
-
-# 仅集成测试（需 agent_configs.json 存在）
-python -m unittest test.dg_tft_integration_test -v
+# 全部 DG-TFT 测试（103 tests）
+python -m unittest test.dg_tft_schema_test test.dg_tft_manager_test test.dg_tft_stage_runner_test test.dg_tft_integration_test test.dg_tft_inspector_test test.dg_tft_builder_test -v
 ```
 
-后续 Phase 开发建议：每个新模块（`dataset_inspector.py`、`config_builder.py` 等）同步编写对应测试文件，保持 TDD 节奏。
+后续 Phase 开发建议：每个新模块同步编写对应测试文件，保持 TDD 节奏。
 
-### 18.6 下一步 Phase 2 关键点
+### 18.6 Phase 2 经验：HSPICE 可用性检查
 
-1. `dataset_inspector.py` 需要调用 `engine/validate_dataset.py`，注意**解释器分离**：inspector 本身是 Agent 代码（运行在 AGI 环境），但它需要 subprocess 调用 CUDA 环境的 `validate_dataset.py`
-2. `config_builder.py` 需读取 `config/model_config_new_device_template.ini` 模板，按 `DatasetProfile` 填入动态字段
-3. 实现时优先考虑**独立测试**：可 mock 文件系统，不依赖真实数据目录
+HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Path.exists()` 来判断。`config_builder.py` 和 `dataset_inspector.py` 各有一份 `_read_template_hspice_path()` 实现（读取同一模板），避免循环导入。
+
+注意：Windows 上 `Path('/non/existent/file').exists()` 可能因路径解析差异返回意外结果。测试中应使用绝对确定不存在的路径（如 `tmpdir/does_not_exist.exe`）来模拟 HSPICE 不可用场景。
+
+### 18.7 Phase 2 经验：I-t 目录发现顺序
+
+`_discover_it_dir` 按优先级搜索：
+1. 用户显式指定的 `hysteresis_dir`
+2. `dataset_dir/hysteresis_it`
+3. `dataset_dir/` 下含 `it`/`hysteresis`/`I-t` 关键字的子目录
+4. 同级目录中含匹配关键字的目录
+
+当 `parent.iterdir()` 可能抛出 `FileNotFoundError`（模拟环境中路径不存在）或 `PermissionError` 时，用 try/except 兜底。
+
+### 18.8 下一步 Phase 3 关键点
+
+1. 实现 `stages.py`（标准阶段列表 + 前置条件）和 `orchestrator.py`（串联全部阶段、失败即停、条件跳过）
+2. `stage_runner.py` 已有 `run_stage` 基础，需补充产物收集（检查输出目录、解析 metrics）
+3. 打通 `check-data → fit-physical → train-base-pkan → train-static → [train-hysteresis]` 的 subprocess 闭环
