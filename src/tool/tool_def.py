@@ -3035,12 +3035,13 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
             "name": TOOL_NAME_PREPARE_DATASET,
             "description": (
                 "Prepare a raw dataset directory for DG-TFT auto-modeling. "
-                "This runs a worker subagent to convert raw CSV/XLSX measurement files "
-                "into the standardized *_train.xlsx format (IV families, CV, I-t), "
-                "followed by an automated verification pass. "
-                "Returns immediately with a prep_id and output_dir; "
-                f"use `{TOOL_NAME_QUERY_WORKFLOW}` with prep_id to check preparation results. "
-                "After preparation succeeds, use start_dg_tft_workflow to begin modeling."
+                "This tool returns IMMEDIATELY with a prep_id and output_dir — "
+                "preparation runs in the background. "
+                f"Use `{TOOL_NAME_QUERY_WORKFLOW}` with prep_id to poll for completion. "
+                "A worker subagent converts raw CSV/XLSX files into standardized "
+                "*_train.xlsx format, then an automated verification runs. "
+                "When ok becomes true, preparation is complete and you can proceed "
+                "to start_dg_tft_workflow."
             ),
             "parameters": {
                 "type": "object",

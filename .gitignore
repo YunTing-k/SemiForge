@@ -5,6 +5,7 @@
 /run.bat
 /clean.bat
 /ref/
+/log
 /session/**/*.json
 /session/**/*.log
 /session/**/user_history
