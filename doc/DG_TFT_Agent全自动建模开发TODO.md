@@ -645,7 +645,7 @@
 - [ ] 避免主 agent 将该类请求拆成大量零散工具调用。
 
 **依赖**
-- `P4-T1`。
+- `P4-T2`。
 
 **验收标准**
 - 用户说“对某目录做全自动建模”时，主 agent倾向直接调用 workflow tool。
@@ -928,7 +928,7 @@ orchestrator.py (阶段执行后)
 - [ ] 敏感参数（如数据路径、output_dir）禁止自动修改。
 
 **依赖**
-- `P7-T3`、`P6-T1`（诊断归类）。
+- `P7-T3`。
 
 **验收标准**
 - 自动调参不会写入危险值或破坏性路径。
@@ -1004,6 +1004,9 @@ orchestrator.py (阶段执行后)
 
 ---
 
+**验收标准**
+- 静态训练阶段可函数调用。
+
 ### P8-T5 函数化动态模块
 - [ ] 函数化 `analyze_it_hysteresis.py`；
 - [ ] 函数化 `train_srh_top2_regime_banks.py`；
@@ -1025,6 +1028,9 @@ orchestrator.py (阶段执行后)
 
 ---
 
+**验收标准**
+- 工作流默认走函数调用，必要时仍可回退 CLI。
+
 ## 13. Phase 9：测试、稳定性与文档收尾
 
 ## 13.1 目标
@@ -1033,12 +1039,12 @@ orchestrator.py (阶段执行后)
 
 ## 13.2 TODO
 
-### P9-T1 新增 workflow 单元测试
-- [ ] `test/dg_tft_workflow_manager_test.py`
-- [ ] `test/dg_tft_dataset_inspector_test.py`
-- [ ] `test/dg_tft_config_builder_test.py`
-- [ ] `test/dg_tft_stage_runner_test.py`
-- [ ] `test/dg_tft_diagnostics_test.py`
+### P9-T1 补充并统一 workflow 单元测试
+- [ ] 补充 `test/dg_tft_artifacts_test.py`（产物管理）
+- [ ] 补充 `test/dg_tft_report_builder_test.py`（报告生成）
+- [ ] 补充 `test/dg_tft_diagnostics_test.py`（诊断归类）
+- [ ] 补充 `test/dg_tft_quality_guard_test.py`（质量守卫）
+- [ ] 复查已有 7 个测试文件（135 tests）的覆盖率缺口
 
 **依赖**
 - Phase 8 基本完成。
@@ -1389,8 +1395,9 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 
 ### 18.10 下一步 Phase 4 关键点
 
-1. 新增 workflow tool schema（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`）在 `src/tool/tool_def.py`
-2. 实现工具 handler，调用 `workflow_man` 和 `orchestrator`
-3. 注册 dispatch 分支
+1. P4-T1：新增 workflow tool schema（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`）在 `src/tool/tool_def.py`
+2. P4-T2：实现工具 handler，内部串联 create_run() inspect_dataset() build_runtime_config() run_workflow() `workflow_man` 和 `orchestrator`
+3. P4-T3：实现后台异步执行模式（启动不阻塞，RunningRunTracker）
+4. P4-T4：注册 dispatch 分支
 4. 增加 `/workflow_list`、`/workflow_get`、`/workflow_report` 内建命令
-5. 优化 prompt 路由（识别"全自动建模"请求 → 优先走 workflow tool）
+6. P4-T6：优化 prompt 路由（识别"全自动建模"请求 → 优先走 workflow tool）
