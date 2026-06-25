@@ -93,9 +93,9 @@ def run_workflow(
     run.current_stage = ""
     run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    _console(ctx, f"Run #{run_id} [bold]DG-TFT workflow[/bold] 开始 ({len(stages)} 阶段)")
-    _console(ctx, f"  数据: {run.dataset_dir}")
-    _console(ctx, f"  输出: {output_dir}")
+    _console(ctx, f"DG-TFT workflow run #{run_id} starting [bright_black]({len(stages)} stages)[/bright_black]")
+    _console(ctx, f"  data dir  : [bright_black]{run.dataset_dir}[/bright_black]")
+    _console(ctx, f"  output dir: [bright_black]{output_dir}[/bright_black]")
     t_start = time.monotonic()
 
     idx = 0
@@ -108,13 +108,13 @@ def run_workflow(
 
         if _stage_done(run, sd.name):
             sys_log.info("Stage [%s] already completed, skipping (resume)", sd.name)
-            _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]⊘ 跳过 (已完成)[/bright_black]")
+            _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
             continue
 
         run.current_stage = sd.name
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING)
         sys_log.info("--- Stage [%s] starting ---", sd.name)
-        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]开始...[/bright_black]")
+        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]starting...[/bright_black]")
 
         timeout = stage_timeout or sd.timeout
 
@@ -128,7 +128,7 @@ def run_workflow(
                 )
                 wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
                 sys_log.info("Stage [%s] skipped: %s", sd.name, sr.skip_reason)
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]⊘ 跳过 ({sr.skip_reason})[/bright_black]")
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]skipped ({sr.skip_reason})[/bright_black]")
                 run = wm.get_run(run_id)  # refresh after manager mutation
                 continue
 
@@ -147,15 +147,15 @@ def run_workflow(
                     "Run %d failed at required stage [%s]: %s",
                     run_id, sd.name, sr.error,
                 )
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [red]✗[/red] [bright_black]({sr.error})[/bright_black]")
-                _console(ctx, f"[red]✗ Run #{run_id} FAILED at {sd.name}[/red]")
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bold red]failed[/bold red] [bright_black]({sr.error})[/bright_black]")
+                _console(ctx, f"[bold red]Run #{run_id} FAILED at {sd.name}[/bold red]")
                 return False, f"Failed at {sd.name}: {sr.error}"
             else:
                 wm.add_warning(run_id, f"Optional stage {sd.name} failed: {sr.error}")
                 sys_log.warning(
                     "Optional stage [%s] failed for run %d, continuing", sd.name, run_id,
                 )
-                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [yellow]⚠ 失败（非必需，继续）[/yellow]")
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bold yellow]failed (non-critical, continuing)[/bold yellow]")
                 run = wm.get_run(run_id)
                 continue
 
@@ -180,7 +180,7 @@ def run_workflow(
     wm.mark_done(run_id)
     elapsed = time.monotonic() - t_start
     sys_log.info("Workflow run %d completed successfully", run_id)
-    _console(ctx, f"[green]✓ Run #{run_id} DONE[/green] [bright_black]({elapsed:.0f}s, {len(stages)} 阶段)[/bright_black]")
+    _console(ctx, f"[bold green]Run #{run_id} DONE[/bold green] [bright_black]({elapsed:.0f}s, {len(stages)} stages)[/bright_black]")
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
 

@@ -1410,6 +1410,16 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 4. **Fail-fast vs optional**：`required=True` 的阶段失败立即停止整个 run 并标记 FAILED；`required=False` 的阶段失败记录 warning 后继续。
 5. **mock 测试的签名陷阱**：使用 `unittest.mock.patch` 替换 `run_stage()` 时，mock 函数的第一个参数是 `ctx`（AgentContext），而非 `action`。签名应为 `(self, ctx, action, *args, **kwargs)`。
 6. **用户可见性**：workflow 模块只有 `sys_log`（默认仅写文件），`ctx.console`（Rich TUI）未接入。P3-T10 需补全，利用已有的 `ctx.console`（`main.py:93` 已注入）在各关键节点输出进度，无需新增参数。
+7. **Console 输出风格规范**：
+   - 代码中**不出现中文**（注释和 docstring 中的 header 除外）；
+   - `console.print()` 输出统一英文，风格对齐项目现有惯例：
+     - 错误 → `[bold red]` 或 `style="bold red"`
+     - 警告 → `[bold yellow]` 或 `style="bold yellow"`
+     - 次要/补充信息 → `[bright_black]`
+     - 成功 → `[bold green]` 或 `[green]`
+     - `MAJOR_COLOR1` / `MAJOR_COLOR2` 仅用于真正需要强调的关键信息（如模块名、配置项），**不整句滥用**；
+   - 不引入新的 `Live` / `Progress` / `Panel`，只用 `console.print()`；
+   - `sys_log` 独立保留作为完整审计日志，风格互不影响。
 
 ### 18.9 `asdict` 序列化兼容性问题
 

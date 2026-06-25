@@ -166,7 +166,7 @@ def _console_start(ctx: AgentContext, stage_name: str) -> None:
     c = getattr(ctx, "console", None)
     if c is None:
         return
-    c.print(f"  {stage_name} [bright_black]执行中...[/bright_black]")
+    c.print(f"  {stage_name} [bright_black]running...[/bright_black]")
 
 
 def _console_done(ctx: AgentContext, stage_name: str) -> None:
