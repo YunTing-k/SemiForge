@@ -51,8 +51,9 @@
 | Phase 4 | 接入 Agent 工具和命令 | 用户可通过自然语言或命令启动 workflow |
 | Phase 5 | 完善报告和产物管理 | 自动输出 summary / manifest / metrics |
 | Phase 6 | 完善诊断和 subagent 协作 | 失败时可自动解释和给建议 |
-| Phase 7 | 脚本函数化重构 | 建模模块从 CLI 脚本升级为可调用 API |
-| Phase 8 | 测试、稳定性、收尾 | 有完整单测、集成测试和使用文档 |
+| Phase 7 | 质量守卫与自动重拟合 | 效果不好时自动调参重跑，减少专家介入 |
+| Phase 8 | 脚本函数化重构 | 建模模块从 CLI 脚本升级为可调用 API |
+| Phase 9 | 测试、稳定性、收尾 | 有完整单测、集成测试和使用文档 |
 
 ---
 
@@ -776,7 +777,143 @@
 
 ---
 
-## 11. Phase 7：脚本函数化重构
+## 11. Phase 7：质量守卫与自动重拟合
+
+## 11.1 目标
+
+模型第一次跑通不代表效果达标。Agent 必须在每个训练阶段结束后**自动评估拟合质量**，如果关键精度指标（RMS 误差等）不满足阈值，则自动调整参数后重跑，以此减少专家反复手调参数的工作量。
+
+## 11.2 设计要点
+
+### 两档失败需区分
+
+| 类型 | 判定 | 动作 |
+|------|------|------|
+| **硬失败** | exit code ≠ 0（崩溃/发散/OOM） | Phase 6 诊断 + 报告 |
+| **软失败** | exit code = 0 但质量不达标 | Phase 7 自动调参重试 |
+
+软失败是 Phase 7 的核心场景 — 脚本没报错，但 RMS 0.15 明显不可用。
+
+### 调参策略
+
+采用**渐进式按优先级**调整，每次只改 1-2 个参数，避免组合爆炸。
+
+| 阶段 | 质量指标 | 第 1 次重试 | 第 2 次重试 | 第 3 次重试 |
+|------|---------|-----------|-----------|-----------|
+| `fit-physical` | final_RMS | `max_nfev_scale` ×2.0 | `max_nfev_scale` ×3.0 + 换 seed | 降采样 `max_iv_points` |
+| `train-base-pkan` | best_loss | `epochs` +30% | `kan_hidden` +4, `kan_grid` +2 | `lr` 减半 + `epochs` 翻倍 |
+| `train-static` | iv_rms, cv_rms | `epochs` +50%, `lr` ×0.5 | `cv_weight` ×2.0, `epochs` 翻倍 | `early_stop_patience` 翻倍 + 换 seed |
+| `train-hysteresis` | hysteresis_RMS | `epochs` +50% | `hidden_capture/emission` +4 | `amp_parameterization` → aggressive |
+
+### 架构
+
+```
+orchestrator.py (阶段执行后)
+  → quality_guard.py (质量评估)
+    → 调用 _assess_quality() 解析 stdout/metrics 产出
+    → 若达标 → 继续下一阶段
+    → 若未达标且未超重试次数 → _adjust_params() 修改 .ini → 重跑当前阶段
+    → 若未达标且已超重试次数 → 标记 WARNING + 附最佳结果继续
+```
+
+## 11.3 TODO
+
+### P7-T1 设计质量门禁与默认阈值
+- [ ] 定义各阶段质量指标及默认阈值：
+  - [ ] `fit-physical` → physical_RMS_max（默认 0.01）
+  - [ ] `train-base-pkan` → base_pkan_loss_max（默认 0.05）
+  - [ ] `train-static` → static_iv_rms_max（默认 0.02）、static_cv_rms_max（默认 0.05）
+  - [ ] `train-hysteresis` → hysteresis_rms_max（默认 0.03）
+- [ ] 将阈值写入 `agent_configs.json` 的 `DG_TFT_QUALITY_*` 键；
+- [ ] 允许从 DatasetProfile 的 data scale 动态调整阈值（大电流器件 vs 小电流器件）。
+
+**依赖**
+- Phase 5（需要 metrics 收集能力）。
+
+**验收标准**
+- 每个阶段都有可配置的质量门槛。
+
+---
+
+### P7-T2 实现 metrics 解析（从 stdout / stderr 提取精度）
+- [ ] 解析 `fit-physical` 的 stdout，提取 final RMS；
+- [ ] 解析 `train-base-pkan` 的 stdout，提取 best_loss；
+- [ ] 解析 `train-static` 的 stdout，提取 iv_rms / cv_rms；
+- [ ] 解析 `train-hysteresis` 的 stdout，提取 hysteresis 误差；
+- [ ] 若 stdout 不可解析，降级为检查产物文件中的 metrics；
+- [ ] 将提取到的 metrics 写回 `StageResult.metrics` 和 `WorkflowRun.metrics`。
+
+**依赖**
+- `P7-T1`。
+
+**验收标准**
+- 每个阶段结束后能自动得到数值化的精度结果。
+
+---
+
+### P7-T3 实现调参规则引擎（`quality_guard.py`）
+- [ ] 定义每个阶段的参数调整策略表；
+- [ ] 实现 `assess_quality(stage_name, metrics, thresholds) → bool`；
+- [ ] 实现 `suggest_param_adjustments(stage_name, attempt, current_config) → dict`：
+  - [ ] 返回 `{section: {key: new_value, ...}, ...}`；
+- [ ] 实现 `apply_adjustments(config_path, adjustments) → new_config_path`：
+  - [ ] 读原 .ini，修改指定字段，写新 .ini（不覆盖原文件）；
+- [ ] 定义最大重试次数：
+  - [ ] 默认每个阶段最多 3 次；
+  - [ ] 通过 `agent_configs.json` 的 `DG_TFT_QUALITY_MAX_RETRIES` 可配；
+  - [ ] 超过后记录 WARNING + 附 best-effort 结果继续。
+
+**依赖**
+- `P7-T2`。
+
+**验收标准**
+- 给定一个质量不达标的 run，能自动生成调参后的新 config 并重试。
+
+---
+
+### P7-T4 集成到 orchestrator
+- [ ] 在 `orchestrator.py` 的阶段完成与下一阶段之间插入质量门禁；
+- [ ] 处理重试循环（最多 N 次，每次调参 + 重跑）；
+- [ ] 重试期间更新 `run.stage_results`，保留每次 attempt 的结果；
+- [ ] 记录重试历史到 `run.extra["retry_history"]`；
+- [ ] 最终指标取所有 attempts 中的最优值。
+
+**依赖**
+- `P7-T3`。
+
+**验收标准**
+- `run_workflow()` 自动处理效果不好 → 调参 → 重跑 → 收敛的完整闭环。
+
+---
+
+### P7-T5 可调参数白名单与安全边界
+- [ ] 定义允许自动调整的 `[section].[key]` 白名单；
+- [ ] 设定每个可调参数的上下界（如 `max_nfev_scale` 不超过 5.0，`kan_hidden` 不超过 32）；
+- [ ] 边界外的调整需记录 WARNING 并 clamp；
+- [ ] 敏感参数（如数据路径、output_dir）禁止自动修改。
+
+**依赖**
+- `P7-T3`。
+
+**验收标准**
+- 自动调参不会写入危险值或破坏性路径。
+
+---
+
+### P7-T6 质量报告输出
+- [ ] 在 `RUN_SUMMARY.md` / JSON 中包含质量评估结果；
+- [ ] 标记"是否经过自动重拟合"、"重试次数"、"最终采纳的参数组合"；
+- [ ] 在 report 中对比初始参数 vs 最终参数的变化。
+
+**依赖**
+- `P7-T4`、`P5-T2`。
+
+**验收标准**
+- 用户能回看 Agent 在哪些参数上做了自动调整。
+
+---
+
+## 12. Phase 8：脚本函数化重构
 
 ## 11.1 目标
 
@@ -784,85 +921,76 @@
 
 ## 11.2 TODO
 
-### P7-T1 函数化 `validate_dataset.py`
+### P8-T1 函数化 `validate_dataset.py`
 - [ ] 提供 `validate_dataset(...) -> dict`；
 - [ ] CLI 只保留为包装层；
 - [ ] workflow 优先调用函数，不再依赖 stdout 解析。
 
 **依赖**
-- Phase 6 完成。
+- Phase 7 完成。
 
 **验收标准**
 - 数据校验可直接通过 Python 调用。
 
 ---
 
-### P7-T2 函数化 `fit_physical_kernel.py`
+### P8-T2 函数化 `fit_physical_kernel.py`
 - [ ] 提供 `fit_physical(...)->StageResult`；
 - [ ] 保留 CLI 入口兼容；
 - [ ] 把关键结果结构化返回。
 
 **依赖**
-- `P7-T1`。
+- `P8-T1`。
 
 **验收标准**
 - 物理内核阶段可直接函数调用。
 
 ---
 
-### P7-T3 函数化 `train_base_pkan.py`
+### P8-T3 函数化 `train_base_pkan.py`
 - [ ] 提供 `train_base_pkan(...)->StageResult`；
 - [ ] 结构化返回 best metrics 和模型路径。
 
 **依赖**
-- `P7-T2`。
+- `P8-T2`。
 
 **验收标准**
 - base pkan 阶段可脱离 subprocess。
 
 ---
 
-### P7-T4 函数化 `dg_tft_full_model.py`
+### P8-T4 函数化 `dg_tft_full_model.py`
 - [ ] 提供 `train_full_model(...)->StageResult`；
 - [ ] 提取静态关键指标；
 - [ ] 返回 VA 产物信息。
 
 **依赖**
-- `P7-T3`。
-
-**验收标准**
-- 静态训练阶段可函数调用。
+- `P8-T3`。
 
 ---
 
-### P7-T5 函数化动态模块
+### P8-T5 函数化动态模块
 - [ ] 函数化 `analyze_it_hysteresis.py`；
 - [ ] 函数化 `train_srh_top2_regime_banks.py`；
 - [ ] 函数化导出和验证脚本；
 - [ ] 统一返回 `StageResult`。
 
 **依赖**
-- `P7-T4`。
-
-**验收标准**
-- 动态阶段也可脱离 subprocess。
+- `P8-T4`。
 
 ---
 
-### P7-T6 切换 workflow 到 import API 模式
+### P8-T6 切换 workflow 到 import API 模式
 - [ ] 在 `config/agent_configs.json` 中支持 `DG_TFT_USE_IMPORT_API=true`；
 - [ ] 在 `stage_runner.py` 中新增 import 执行分支；
 - [ ] 保留 subprocess fallback。
 
 **依赖**
-- `P7-T5`。
-
-**验收标准**
-- 工作流默认走函数调用，必要时仍可回退 CLI。
+- `P8-T5`。
 
 ---
 
-## 12. Phase 8：测试、稳定性与文档收尾
+## 13. Phase 9：测试、稳定性与文档收尾
 
 ## 12.1 目标
 
@@ -870,7 +998,7 @@
 
 ## 12.2 TODO
 
-### P8-T1 新增 workflow 单元测试
+### P9-T1 新增 workflow 单元测试
 - [ ] `test/dg_tft_workflow_manager_test.py`
 - [ ] `test/dg_tft_dataset_inspector_test.py`
 - [ ] `test/dg_tft_config_builder_test.py`
@@ -878,54 +1006,54 @@
 - [ ] `test/dg_tft_diagnostics_test.py`
 
 **依赖**
-- Phase 7 基本完成。
+- Phase 8 基本完成。
 
 **验收标准**
 - 核心 workflow 组件有基础单元测试覆盖。
 
 ---
 
-### P8-T2 新增 Agent 集成测试
+### P9-T2 新增 Agent 集成测试
 - [ ] `test/dg_tft_workflow_tool_test.py`
 - [ ] `test/dg_tft_workflow_background_test.py`
 - [ ] 测试主 agent 是否优先用 workflow tool；
 - [ ] 测试任务板联动。
 
 **依赖**
-- `P8-T1`。
+- `P9-T1`。
 
 **验收标准**
 - workflow 已真正接入 agent，而不是只在模块层可跑。
 
 ---
 
-### P8-T3 准备三类测试数据集
+### P9-T3 准备三类测试数据集
 - [ ] 仅静态示例数据；
 - [ ] 静态 + I-t 完整数据；
 - [ ] 故意损坏的数据。
 
 **依赖**
-- `P8-T1`。
+- `P9-T1`。
 
 **验收标准**
 - 覆盖 success / partial / fail 三类典型场景。
 
 ---
 
-### P8-T4 更新使用文档
+### P9-T4 更新使用文档
 - [ ] 更新 `doc/` 中的用户使用说明；
-- [ ] 增加“如何启动 DG-TFT 自动建模 workflow”；
-- [ ] 增加“失败后如何查看报告”。
+- [ ] 增加"如何启动 DG-TFT 自动建模 workflow"；
+- [ ] 增加"失败后如何查看报告"。
 
 **依赖**
-- `P8-T2`。
+- `P9-T2`。
 
 **验收标准**
 - 用户知道如何使用新能力。
 
 ---
 
-### P8-T5 收尾检查
+### P9-T5 收尾检查
 - [ ] 清理临时调试代码；
 - [ ] 检查 import 路径一致性；
 - [ ] 检查 session 持久化兼容性；
@@ -933,7 +1061,7 @@
 - [ ] 检查产物路径是否有硬编码问题。
 
 **依赖**
-- `P8-T4`。
+- `P9-T4`。
 
 **验收标准**
 - 功能可持续维护，不依赖开发时临时假设。
@@ -963,7 +1091,8 @@
 
 ### 第三优先级
 - [ ] `P7-T1` ~ `P7-T6`
-- [ ] `P8-T1` ~ `P8-T5`
+- [ ] `P8-T1` ~ `P8-T6`
+- [ ] `P9-T1` ~ `P9-T5`
 
 这部分做完，系统才进入“可维护、可扩展”的工程化成熟阶段。
 
