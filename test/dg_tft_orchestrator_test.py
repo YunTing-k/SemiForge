@@ -45,6 +45,7 @@ class MockContext:
         self.workflow_man = WorkflowManager()
         self.agent_list = {}
         self.workflow_man.session_uuid = "test_session"
+        self.workflow_man._save_runs = lambda: None
         self.agent_id = "test_agent"
         self.subagent_mute = False
         self.console = None

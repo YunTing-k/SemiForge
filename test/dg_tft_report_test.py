@@ -402,6 +402,7 @@ class TestConsoleSummary(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.wm = WorkflowManager()
         self.wm.session_uuid = "test_session"
+        self.wm._save_runs = lambda: None
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -458,6 +459,7 @@ class TestOrchestratorFinalize(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.wm = WorkflowManager()
         self.wm.session_uuid = "test_session"
+        self.wm._save_runs = lambda: None
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

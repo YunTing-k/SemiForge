@@ -35,6 +35,7 @@ class MockContext:
         self.agent_configs = configs or {"DG_TFT_OUTPUT_ROOT": "/tmp/dg_tft_out"}
         self.workflow_man = WorkflowManager()
         self.workflow_man.session_uuid = "test_session_tools"
+        self.workflow_man._save_runs = lambda: None
         self.subagent_mute = False
         self.console = None
         self.agent_list = {}
