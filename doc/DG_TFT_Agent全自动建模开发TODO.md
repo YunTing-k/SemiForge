@@ -1674,6 +1674,21 @@ test/dg_tft_tools_test.py          # 28 tests（P4-T1~T6 全覆盖）
 - P4.5-T3 内建命令 + prompt 路由
 - P4.5-T4 测试
 
+### 2026-06-25 | Bugfix round — 7 issues from end-to-end test
+
+**Fixed**
+1. **CloneContext `workflow_man` 不共享** — `subagent.py:clone_context` 新增 `ctx.workflow_man = parent_ctx.workflow_man`
+2. **Worker 用 AGI python 缺少 pandas** — `data_preparer.py` worker prompt 模板新增 `{python_exe}` 占位符，`_run_worker` 注入 CUDA python 路径
+3. **SubAgent 进度不显示** — `_run_worker` 注册/注销 SubAgentProgress 到 `parent_ctx.agent_list`，实时显示在 spinner 中
+4. **数据已准备时跳过** — `prepare_dg_tft_dataset` 新增 `_check_prepared_output()` 检测已有 `*_train.xlsx`
+5. **Workflow 改为前台阻塞** — 移除 `_run_workflow_thread` + `threading.Thread`，`start_dg_tft_workflow` 直接同步执行
+6. **train-static `kan_config` KeyError** — `dg_tft_full_model.py` 新增 `_resolve_kan_config()` 兼容新旧 metadata 格式
+7. **Bash DENIED 问题调查** — `ask_permission_tui` 在 `subagent_mute=True` 时静默检查权限，worker 有 BASH_SAFE preset 但实际 DENIED；根因待进一步排查。
+
+**测试**: 234 tests PASS (移除了 3 个 `_run_workflow_thread` 相关测试)
+
+---
+
 ### 2026-06-25 | Phase 5 完成 — 报告/产物/任务板/用户摘要
 
 **完成内容**

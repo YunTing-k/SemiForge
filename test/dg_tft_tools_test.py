@@ -16,6 +16,7 @@ from src.workflow.dg_tft.schema import (
     WorkflowStatus,
     StageResult,
     StageName,
+    DatasetProfile,
 )
 from src.workflow.dg_tft.manager import WorkflowManager
 from src.constants import (
@@ -37,6 +38,8 @@ class MockContext:
         self.subagent_mute = False
         self.console = None
         self.agent_list = {}
+        self.agent_id = "test_main"
+        self.session_uuid = "test_session_tools"
         self.mcp_router = MagicMock()
         self.mcp_router.tool_registry = {}
         self.mcp_router.reg_tools = []
@@ -149,16 +152,20 @@ class TestToolHandlers(unittest.TestCase):
         p.console.print = MagicMock()
         return p
 
+    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
+    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
+    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    @patch("threading.Thread")
     def test_start_workflow_creates_run_and_returns_run_id(
-        self, mock_thread, mock_resume, mock_pause, mock_ask
+        self, mock_resume, mock_pause, mock_ask,
+        mock_inspect, mock_build, mock_run_wf,
     ):
         mock_ask.return_value = (True, None)
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
+        mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
+        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
+        mock_run_wf.return_value = (True, "all done")
 
         from src.tool.tool_def import start_dg_tft_workflow
         result = start_dg_tft_workflow(
@@ -170,16 +177,20 @@ class TestToolHandlers(unittest.TestCase):
         self.assertIn("run_id", result)
         self.assertGreater(result["run_id"], 1)
 
+    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
+    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
+    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    @patch("threading.Thread")
     def test_start_workflow_with_hysteresis(
-        self, mock_thread, mock_resume, mock_pause, mock_ask
+        self, mock_resume, mock_pause, mock_ask,
+        mock_inspect, mock_build, mock_run_wf,
     ):
         mock_ask.return_value = (True, None)
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
+        mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
+        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
+        mock_run_wf.return_value = (True, "all done")
 
         from src.tool.tool_def import start_dg_tft_workflow
         result = start_dg_tft_workflow(
@@ -276,16 +287,20 @@ class TestToolDispatch(unittest.TestCase):
         p.console.print = MagicMock()
         return p
 
+    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
+    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
+    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    @patch("threading.Thread")
     def test_dispatch_start_workflow(
-        self, mock_thread, mock_resume, mock_pause, mock_ask
+        self, mock_resume, mock_pause, mock_ask,
+        mock_inspect, mock_build, mock_run_wf,
     ):
         mock_ask.return_value = (True, None)
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
+        mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
+        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
+        mock_run_wf.return_value = (True, "all done")
 
         from src.tool.tool_dispatch import call_tools
         from src.tool.scoreboard import Scoreboard
@@ -303,16 +318,20 @@ class TestToolDispatch(unittest.TestCase):
         self.assertIn("run_id", result)
         self.assertIsNone(addon)
 
+    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
+    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
+    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    @patch("threading.Thread")
     def test_dispatch_query_workflow(
-        self, mock_thread, mock_resume, mock_pause, mock_ask
+        self, mock_resume, mock_pause, mock_ask,
+        mock_inspect, mock_build, mock_run_wf,
     ):
         mock_ask.return_value = (True, None)
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
+        mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
+        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
+        mock_run_wf.return_value = (True, "all done")
 
         from src.tool.tool_dispatch import call_tools
         from src.tool.scoreboard import Scoreboard
@@ -339,16 +358,20 @@ class TestToolDispatch(unittest.TestCase):
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertEqual(result["run_id"], run_id)
 
+    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
+    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
+    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    @patch("threading.Thread")
     def test_dispatch_read_report(
-        self, mock_thread, mock_resume, mock_pause, mock_ask
+        self, mock_resume, mock_pause, mock_ask,
+        mock_inspect, mock_build, mock_run_wf,
     ):
         mock_ask.return_value = (True, None)
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
+        mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
+        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
+        mock_run_wf.return_value = (True, "all done")
 
         from src.tool.tool_dispatch import call_tools
         from src.tool.scoreboard import Scoreboard
@@ -481,83 +504,13 @@ class TestPromptRouting(unittest.TestCase):
 
 
 class TestRunningThreadTracker(unittest.TestCase):
-    """P4-T3: Verify RunningRunTracker in WorkflowManager."""
+    """P4-T3: Verify dict exists in WorkflowManager (retained for compat)."""
 
     def test_manager_has_running_threads_dict(self):
         wm = WorkflowManager()
         self.assertTrue(hasattr(wm, "_running_threads"))
         self.assertIsInstance(wm._running_threads, dict)
         self.assertEqual(len(wm._running_threads), 0)
-
-    @patch("threading.Thread")
-    def test_thread_stored_after_start(self, mock_thread):
-        mock_thread_obj = MagicMock()
-        mock_thread.return_value = mock_thread_obj
-
-        wm = WorkflowManager()
-        wm.session_uuid = "test_threads"
-        ok, run_id, _ = wm.create_run(dataset_dir="/tmp/tds")
-
-        thread = mock_thread.return_value
-        wm._running_threads[str(run_id)] = thread
-
-        self.assertIn(str(run_id), wm._running_threads)
-        self.assertEqual(wm._running_threads[str(run_id)], thread)
-
-
-class TestBackgroundThreadFunction(unittest.TestCase):
-    """P4-T3: Verify _run_workflow_thread clears thread on completion."""
-
-    @patch("src.workflow.dg_tft.orchestrator.run_workflow")
-    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
-    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
-    def test_thread_clears_tracker_on_success(
-        self, mock_inspect, mock_build, mock_run_wf
-    ):
-        from src.tool.tool_def import _run_workflow_thread
-        from src.workflow.dg_tft.schema import DatasetProfile
-
-        profile = DatasetProfile(static_ok=True, cv_ok=True)
-        mock_inspect.return_value = (profile, {})
-        mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
-        mock_run_wf.return_value = (True, "all done")
-
-        wm = WorkflowManager()
-        wm.session_uuid = "test_bg"
-        ok, run_id, _ = wm.create_run(dataset_dir="/tmp/bgds")
-        wm._running_threads[str(run_id)] = MagicMock()
-
-        ctx = MockContext()
-        ctx.workflow_man = wm
-
-        _run_workflow_thread(ctx, run_id, wm)
-
-        self.assertNotIn(str(run_id), wm._running_threads)
-        mock_inspect.assert_called_once()
-        mock_build.assert_called_once()
-        mock_run_wf.assert_called_once()
-
-    @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
-    @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
-    def test_thread_marks_failed_on_exception(self, mock_inspect, mock_build):
-        from src.tool.tool_def import _run_workflow_thread
-
-        mock_inspect.side_effect = RuntimeError("inspection failure")
-
-        wm = WorkflowManager()
-        wm.session_uuid = "test_bg_fail"
-        ok, run_id, _ = wm.create_run(dataset_dir="/tmp/bgfail")
-        wm._running_threads[str(run_id)] = MagicMock()
-
-        ctx = MockContext()
-        ctx.workflow_man = wm
-
-        _run_workflow_thread(ctx, run_id, wm)
-
-        self.assertNotIn(str(run_id), wm._running_threads)
-        run = wm.get_run(run_id)
-        self.assertEqual(run.status, WorkflowStatus.FAILED)
-        self.assertIn("inspection failure", run.errors[0])
 
 
 if __name__ == "__main__":

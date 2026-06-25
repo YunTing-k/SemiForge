@@ -106,6 +106,7 @@ def clone_context(parent_ctx: AgentContext, agent_id: str, subagent_type: str) -
     ctx.active_cron = 0
     ctx.design_man = parent_ctx.design_man
     ctx.run_man = parent_ctx.run_man
+    ctx.workflow_man = parent_ctx.workflow_man
     ctx.agent_list = {}
     ctx.background_agents = []
     # params

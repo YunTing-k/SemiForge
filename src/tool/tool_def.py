@@ -2773,7 +2773,7 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
 
 def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
                           board=None) -> dict[str, Any]:
-    """tool realization of starting a DG-TFT auto-modeling workflow"""
+    """tool realization of starting a DG-TFT auto-modeling workflow (blocking, P5-T3/P6-T2)."""
     func_name = TOOL_NAME_START_WORKFLOW
     try:
         pause_for_permission(progress)
@@ -2789,6 +2789,9 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         device_name = arguments.get("device_name", "")
 
         from src.workflow.dg_tft.manager import WorkflowManager
+        from src.workflow.dg_tft.dataset_inspector import inspect_dataset
+        from src.workflow.dg_tft.config_builder import build_runtime_config
+        from src.workflow.dg_tft.orchestrator import run_workflow
         wm: WorkflowManager = ctx.workflow_man
 
         output_root = ctx.agent_configs.get("DG_TFT_OUTPUT_ROOT", "")
@@ -2802,52 +2805,30 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         if not ok:
             return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
 
-        thread = threading.Thread(
-            target=_run_workflow_thread,
-            args=(ctx, run_id, wm, board),
-            daemon=True,
-        )
-        wm._running_threads[str(run_id)] = thread
-        thread.start()
+        resume_from_permission(progress)
 
-        sys_log.info("%s: workflow run %d started for %s", func_name, run_id, dataset_dir)
+        profile, _ = inspect_dataset(ctx, dataset_dir, hysteresis_dir=hysteresis_dir)
+        wm.set_dataset_profile(run_id, profile)
+
+        build_result = build_runtime_config(ctx, profile, dataset_dir,
+                                            output_root=output_root, run_id=run_id)
+        config_path = build_result["config_path"]
+
+        workflow_ok, summary = run_workflow(ctx, run_id, config_path, board=board)
+
+        sys_log.info("%s: workflow run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
         return {
             "status": SUCCESS_LABEL,
-            "info": f"Workflow started. Run ID: {run_id}. Use {TOOL_NAME_QUERY_WORKFLOW} to monitor progress.",
+            "info": f"Workflow completed. Run ID: {run_id}. Success: {workflow_ok}. {summary}",
             "run_id": run_id,
             "created_at": now,
+            "workflow_ok": workflow_ok,
+            "summary": summary,
         }
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
         return {"status": FAIL_LABEL, "info": f"Start workflow failed: {e}"}
-
-
-def _run_workflow_thread(ctx: AgentContext, run_id: int, wm, board=None) -> None:
-    """Background thread that runs the full DG-TFT pipeline."""
-    try:
-        from src.workflow.dg_tft.dataset_inspector import inspect_dataset
-        from src.workflow.dg_tft.config_builder import build_runtime_config
-        from src.workflow.dg_tft.orchestrator import run_workflow
-
-        run = wm.get_run(run_id)
-        if run is None:
-            return
-
-        profile, _ = inspect_dataset(ctx, run.dataset_dir, hysteresis_dir=run.hysteresis_dir)
-        wm.set_dataset_profile(run_id, profile)
-
-        build_result = build_runtime_config(ctx, profile, run.dataset_dir,
-                                            output_root=run.output_root, run_id=run_id)
-        config_path = build_result["config_path"]
-
-        run_workflow(ctx, run_id, config_path, board=board)
-
-    except Exception as e:
-        sys_log.error("Workflow run %d thread failed: %s", run_id, e)
-        wm.mark_failed(run_id, str(e))
-    finally:
-        wm._running_threads.pop(str(run_id), None)
 
 
 def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
@@ -3056,6 +3037,17 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
     }
 
 
+def _check_prepared_output(output_dir: str) -> bool:
+    """Check if prepared data already exists in the given output directory.
+
+    Returns True if at least one *_train.xlsx file and worker_report.json exist.
+    """
+    import glob as _glob
+    train_files = _glob.glob(os.path.join(output_dir, "*_train.xlsx"))
+    report_exists = os.path.isfile(os.path.join(output_dir, "worker_report.json"))
+    return len(train_files) > 0 and report_exists
+
+
 def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
     """tool realization of preparing a raw dataset for DG-TFT modeling"""
     func_name = TOOL_NAME_PREPARE_DATASET
@@ -3071,14 +3063,28 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         raw_dataset_dir = arguments["raw_dataset_dir"]
         wm = ctx.workflow_man
 
-        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, "")
-        output_dir = os.path.join("prepared_data", ctx.session_uuid, str(prep_id))
-        from src.workflow.dg_tft.data_preparer import _PREP_OUTPUT_BASE_DIR, run_data_preparation
-        output_dir = os.path.join(_PREP_OUTPUT_BASE_DIR, ctx.session_uuid, str(prep_id))
+        from src.workflow.dg_tft.data_preparer import _PREP_OUTPUT_BASE_DIR, _PREP_WORKER_REPORT_NAME
+        output_dir = os.path.join(_PREP_OUTPUT_BASE_DIR, ctx.session_uuid, "1")
+
+        existing = _check_prepared_output(output_dir)
+        if existing:
+            prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir)
+            wm.preparation_tracker.update_prep(prep_id, True, ["[SKIP] previously prepared data found"])
+            return {
+                "status": SUCCESS_LABEL,
+                "info": f"Data already prepared. Prep ID: {prep_id}. Skipping re-preparation.",
+                "prep_id": prep_id,
+                "output_dir": output_dir,
+                "ok": True,
+                "issues": ["[SKIP] previously prepared data found"],
+            }
+
+        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir)
 
         os.makedirs(output_dir, exist_ok=True)
         wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
 
+        from src.workflow.dg_tft.data_preparer import run_data_preparation
         run_data_preparation(ctx, raw_dataset_dir, output_dir)
 
         prep = wm.preparation_tracker.get_prep(prep_id)

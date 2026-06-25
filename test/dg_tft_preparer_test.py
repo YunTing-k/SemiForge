@@ -212,6 +212,7 @@ class TestWorkerPromptTemplate(unittest.TestCase):
             iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
             cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
             report_name=_PREP_WORKER_REPORT_NAME,
+            python_exe="python",
         )
         self.assertIn("/raw", prompt)
         self.assertIn("/out", prompt)

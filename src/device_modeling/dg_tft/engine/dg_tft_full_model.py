@@ -5482,17 +5482,60 @@ class ResidualDiagnostic(nn.Module):
         return self.apply_cv_sheet_calibration(raw, data)
 
 
+def _resolve_kan_config(meta: dict, mode: str) -> dict:
+    """Resolve KAN normalizer config from metadata in either legacy or current format.
+
+    Legacy format:
+      meta["kan_config"]["iv_kan"]["center"] / ["scale"] / ["ranges"]
+      meta["kan_config"]["cv_kan"]["ranges"]
+
+    Current format (PKAN correction module):
+      meta["iv_transport_kan"]["normalizer"]["center"] / ["scale"]
+      meta["iv_transport_kan"]["output_ranges"] (for IV)
+      meta["cv_trap_kan"]["output_ranges"] (for CV)
+    """
+    if mode == "iv":
+        if "kan_config" in meta and "iv_kan" in meta["kan_config"]:
+            iv_kan = meta["kan_config"]["iv_kan"]
+            return {
+                "center": iv_kan["center"],
+                "scale": iv_kan["scale"],
+                "ranges": iv_kan.get("ranges", [0.45]),
+            }
+        iv_trans = meta.get("iv_transport_kan") or meta.get("shared_dveff_kan") or {}
+        normalizer = iv_trans.get("normalizer", {})
+        ranges = iv_trans.get("output_ranges", [0.45])
+        return {
+            "center": normalizer.get("center", [0.0]),
+            "scale": normalizer.get("scale", [1.0]),
+            "ranges": list(ranges),
+        }
+    else:
+        if "kan_config" in meta and "cv_kan" in meta["kan_config"]:
+            cv_kan = meta["kan_config"]["cv_kan"]
+            return {
+                "ranges": cv_kan.get("ranges", [0.75, 0.75]),
+            }
+        cv_trans = meta.get("cv_trap_kan") or {}
+        ranges = cv_trans.get("output_ranges", [0.75, 0.75])
+        return {
+            "ranges": list(ranges),
+        }
+
+
 def load_trained_base(model_dir: Path, device: torch.device, dtype: torch.dtype) -> tuple[UnifiedIVCVModel, dict, Params, CVTrapParams]:
     meta = json.loads((model_dir / "pkan_model_metadata.json").read_text(encoding="utf-8"))
     p = Params(**{k: meta["baseline_params"][k] for k in asdict(Params()).keys() if k in meta["baseline_params"]})
     trap = CVTrapParams(**{k: meta["baseline_trap_params"][k] for k in asdict(CVTrapParams()).keys() if k in meta["baseline_trap_params"]})
-    norm = Normalizer(FEATURE_NAMES, meta["kan_config"]["iv_kan"]["center"], meta["kan_config"]["iv_kan"]["scale"])
+    iv_kan_cfg = _resolve_kan_config(meta, "iv")
+    cv_kan_cfg = _resolve_kan_config(meta, "cv")
+    norm = Normalizer(FEATURE_NAMES, iv_kan_cfg["center"], iv_kan_cfg["scale"])
     kan = V2StyleKAN(
         norm,
         width=[len(FEATURE_NAMES), meta["training_args"]["kan_hidden"], len(CORR_NAMES)],
         grid=meta["training_args"]["kan_grid"],
         k=meta["training_args"]["kan_k"],
-        ranges=meta["kan_config"]["iv_kan"]["ranges"],
+        ranges=iv_kan_cfg["ranges"],
         device=device,
         dtype=dtype,
         output_names=CORR_NAMES,
@@ -5502,7 +5545,7 @@ def load_trained_base(model_dir: Path, device: torch.device, dtype: torch.dtype)
         width=[len(FEATURE_NAMES), meta["training_args"]["kan_hidden"], len(CV_CORR_NAMES)],
         grid=meta["training_args"]["kan_grid"],
         k=meta["training_args"]["kan_k"],
-        ranges=meta["kan_config"]["cv_kan"]["ranges"],
+        ranges=cv_kan_cfg["ranges"],
         device=device,
         dtype=dtype,
         output_names=CV_CORR_NAMES,
@@ -5525,7 +5568,8 @@ def make_residual_kan(
     names: list[str],
     hidden_override: int | None = None,
 ) -> V2StyleKAN:
-    norm = Normalizer(FEATURE_NAMES, meta["kan_config"]["iv_kan"]["center"], meta["kan_config"]["iv_kan"]["scale"])
+    iv_kan_cfg = _resolve_kan_config(meta, "iv")
+    norm = Normalizer(FEATURE_NAMES, iv_kan_cfg["center"], iv_kan_cfg["scale"])
     hidden = int(hidden_override if hidden_override is not None else meta["training_args"]["kan_hidden"])
     return V2StyleKAN(
         norm,

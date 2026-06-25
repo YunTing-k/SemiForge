@@ -61,7 +61,7 @@ The output directory already exists. Write all output files into it.
 - I-t files go to: it/ subdirectory
 
 **Python usage rules**:
-- Use `python -c "..."` for all inline Python code — do NOT write scripts to files
+- Use `{python_exe} -c "..."` for all inline Python code — do NOT write scripts to files
 - Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json`
 - CSV columns may have leading spaces — use `df.columns = df.columns.str.strip()` to clean them
 
@@ -308,12 +308,15 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
     The worker runs synchronously in the current thread with its own
     SubAgent instance and tool loop.
     """
+    modeling_exe = ctx.agent_configs.get("DG_TFT_MODELING_PYTHON_EXE", "python")
+    python_exe = modeling_exe if modeling_exe and Path(modeling_exe).exists() else "python"
     prompt = WORKER_PROMPT_TEMPLATE.format(
         raw_dir=raw_dir, output_dir=output_dir,
         iv_sheet=_PREP_IV_SHEET_NAME,
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
         report_name=_PREP_WORKER_REPORT_NAME,
+        python_exe=python_exe,
     )
     from src.agent.subagent import SubAgent
 
@@ -325,9 +328,13 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
         subject=_PREP_SUBJECT,
         console=None,
     )
+    ctx.agent_list[agent.agent_id] = agent.progress
     agent.build_tools()
     agent.build_messages()
-    result = agent.run()
+    try:
+        result = agent.run()
+    finally:
+        ctx.agent_list.pop(agent.agent_id, None)
 
     if agent.status.value == "done":
         sys_log.info("Data prep worker completed: %s", result[:200] if result else "(empty)")
