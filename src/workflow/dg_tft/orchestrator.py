@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import time
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -92,18 +93,28 @@ def run_workflow(
     run.current_stage = ""
     run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    _console(ctx, f"Run #{run_id} [bold]DG-TFT workflow[/bold] 开始 ({len(stages)} 阶段)")
+    _console(ctx, f"  数据: {run.dataset_dir}")
+    _console(ctx, f"  输出: {output_dir}")
+    t_start = time.monotonic()
+
+    idx = 0
     for sd in stages:
+        idx += 1
+
         if _noop_stage(sd):
             sys_log.info("Stage [%s] is a no-op placeholder, skipping", sd.name)
             continue
 
         if _stage_done(run, sd.name):
             sys_log.info("Stage [%s] already completed, skipping (resume)", sd.name)
+            _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]⊘ 跳过 (已完成)[/bright_black]")
             continue
 
         run.current_stage = sd.name
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING)
         sys_log.info("--- Stage [%s] starting ---", sd.name)
+        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]开始...[/bright_black]")
 
         timeout = stage_timeout or sd.timeout
 
@@ -117,6 +128,7 @@ def run_workflow(
                 )
                 wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
                 sys_log.info("Stage [%s] skipped: %s", sd.name, sr.skip_reason)
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [bright_black]⊘ 跳过 ({sr.skip_reason})[/bright_black]")
                 run = wm.get_run(run_id)  # refresh after manager mutation
                 continue
 
@@ -135,12 +147,15 @@ def run_workflow(
                     "Run %d failed at required stage [%s]: %s",
                     run_id, sd.name, sr.error,
                 )
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [red]✗[/red] [bright_black]({sr.error})[/bright_black]")
+                _console(ctx, f"[red]✗ Run #{run_id} FAILED at {sd.name}[/red]")
                 return False, f"Failed at {sd.name}: {sr.error}"
             else:
                 wm.add_warning(run_id, f"Optional stage {sd.name} failed: {sr.error}")
                 sys_log.warning(
                     "Optional stage [%s] failed for run %d, continuing", sd.name, run_id,
                 )
+                _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [yellow]⚠ 失败（非必需，继续）[/yellow]")
                 run = wm.get_run(run_id)
                 continue
 
@@ -159,10 +174,13 @@ def run_workflow(
                 wm.attach_artifact(run_id, p, str(full_path))
 
         sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
+        _console(ctx, f"  [{idx}/{len(stages)}] {sd.name} [green]✓[/green]")
         run = wm.get_run(run_id)
 
     wm.mark_done(run_id)
+    elapsed = time.monotonic() - t_start
     sys_log.info("Workflow run %d completed successfully", run_id)
+    _console(ctx, f"[green]✓ Run #{run_id} DONE[/green] [bright_black]({elapsed:.0f}s, {len(stages)} 阶段)[/bright_black]")
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
 
@@ -208,3 +226,11 @@ def _verify_artifacts(sd: StageDef, output_dir: str) -> list[str]:
 
 def _noop_stage(sd: StageDef) -> bool:
     return sd.name == StageName.FINAL_REPORT
+
+
+def _console(ctx: AgentContext, message: str) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is not None:
+        c.print(message)

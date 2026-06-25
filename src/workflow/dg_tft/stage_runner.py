@@ -17,6 +17,7 @@ import logging
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -84,6 +85,7 @@ def run_stage(
     stage_name = action
 
     sys_log.info("Stage [%s] starting: %s", stage_name, " ".join(shlex.quote(str(x)) for x in command))
+    _console_start(ctx, stage_name)
 
     try:
         result = subprocess.run(
@@ -96,9 +98,11 @@ def run_stage(
 
         stdout = result.stdout
         stderr = result.stderr
+        elapsed = time.monotonic()
 
         if result.returncode == 0:
             sys_log.info("Stage [%s] succeeded (rc=0)", stage_name)
+            _console_done(ctx, stage_name)
             return StageResult(
                 ok=True,
                 stage=stage_name,
@@ -107,6 +111,7 @@ def run_stage(
             )
         else:
             sys_log.error("Stage [%s] failed (rc=%d): %s", stage_name, result.returncode, stderr[:500] if stderr else "")
+            _console_fail(ctx, stage_name, f"exit code {result.returncode}")
             return StageResult(
                 ok=False,
                 stage=stage_name,
@@ -117,6 +122,7 @@ def run_stage(
 
     except subprocess.TimeoutExpired:
         sys_log.error("Stage [%s] timed out after %s s", stage_name, timeout)
+        _console_fail(ctx, stage_name, f"timeout ({timeout}s)")
         return StageResult(
             ok=False,
             stage=stage_name,
@@ -127,6 +133,7 @@ def run_stage(
             "Stage [%s] failed: modeling python not found at %s",
             stage_name, modeling_python,
         )
+        _console_fail(ctx, stage_name, "modeling python not found")
         return StageResult(
             ok=False,
             stage=stage_name,
@@ -134,6 +141,7 @@ def run_stage(
         )
     except Exception as e:
         sys_log.error("Stage [%s] unexpected error: %s", stage_name, e)
+        _console_fail(ctx, stage_name, str(e)[:80])
         return StageResult(
             ok=False,
             stage=stage_name,
@@ -150,3 +158,30 @@ def _extract_warnings(stderr: str) -> list[str]:
         if "warning" in line.lower():
             warnings.append(line.strip())
     return warnings
+
+
+def _console_start(ctx: AgentContext, stage_name: str) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  {stage_name} [bright_black]执行中...[/bright_black]")
+
+
+def _console_done(ctx: AgentContext, stage_name: str) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  {stage_name} [green]✓[/green]")
+
+
+def _console_fail(ctx: AgentContext, stage_name: str, reason: str) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  {stage_name} [red]✗[/red] [bright_black]({reason})[/bright_black]")
