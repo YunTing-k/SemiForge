@@ -33,7 +33,7 @@
 → subprocess 版固定工作流
 → agent 工具接入
 → 结果汇总
-→ 失败诊断
+→ 失败诊断 + 质量守卫（自动调参重试）
 → 脚本函数化
 → subagent 深度接入
 ```
@@ -583,7 +583,10 @@
 ---
 
 ### P4-T2 实现 workflow tool handler
-- [ ] 在 `tool_def.py` 中实现三个工具对应函数；
+- [ ] 在 `tool_def.py` 中实现三个工具对应函数：
+  - [ ] `start_dg_tft_workflow` 内部串联：`create_run() → inspect_dataset() → build_runtime_config() → run_workflow()`；
+  - [ ] `query_dg_tft_workflow` 读取 `workflow_man.get_run(run_id)` 返回状态；
+  - [ ] `read_dg_tft_workflow_report` 读取 run 输出目录下的 summary 文件；
 - [ ] 调用 `workflow_man` 和 `orchestrator`；
 - [ ] 返回结构化结果。
 
@@ -595,19 +598,34 @@
 
 ---
 
-### P4-T3 注册 workflow tool dispatch
+### P4-T3 实现后台异步执行模式
+- [ ] `start_dg_tft_workflow` 立即返回 `run_id`，不阻塞等待训练完成；
+- [ ] 在 `workflow_man` 中新增 `RunningRunTracker`（存储正在执行的 subprocess 句柄）；
+- [ ] `query_dg_tft_workflow` 可实时查询 run status 并返回最新 stage；
+- [ ] 考虑超长时间运行的看护（心跳检测 / 超时 kill）；
+- [ ] 确保多个 run 并发隔离（输出目录、config 文件不冲突）。
+
+**依赖**
+- `P4-T2`。
+
+**验收标准**
+- 用户启动 workflow 后可立即继续其他操作，通过 query 获取进度。
+
+---
+
+### P4-T4 注册 workflow tool dispatch
 - [ ] 修改 `src/tool/tool_dispatch.py`；
 - [ ] 加入三个工具的 dispatch 分支。
 
 **依赖**
-- `P4-T2`。
+- `P4-T3`。
 
 **验收标准**
 - 工具调用不落入 undefined 分支。
 
 ---
 
-### P4-T4 增加内建命令
+### P4-T5 增加内建命令
 - [ ] 在 `src/utility/command.py` 增加：
   - [ ] `/workflow_list`
   - [ ] `/workflow_get <run_id>`
@@ -615,14 +633,14 @@
 - [ ] 在命令系统中注册。
 
 **依赖**
-- `P4-T2`。
+- `P4-T3`。
 
 **验收标准**
 - 不走 LLM 也可查询 workflow 运行结果。
 
 ---
 
-### P4-T5 优化 prompt 路由逻辑
+### P4-T6 优化 prompt 路由逻辑
 - [ ] 在 `src/context/prompt.py` 中增加“识别 DG-TFT 自动建模请求时优先用 workflow tool”的提示约束；
 - [ ] 避免主 agent 将该类请求拆成大量零散工具调用。
 
@@ -697,6 +715,20 @@
 
 **验收标准**
 - 用户不需要自己翻目录找结果。
+
+---
+
+### P5-T5 端到端烟雾测试
+- [ ] 使用 `example_dataset` 跑完整闭环：check-data → fit-physical → train-base-pkan → train-static；
+- [ ] 验证所有产物文件生成正确；
+- [ ] 验证 `RUN_SUMMARY.md` / `ARTIFACT_MANIFEST.json` 内容完整；
+- [ ] 此项为每个 Phase 完成后的回归检查项。
+
+**依赖**
+- `P5-T4`（报告生成完成后才能验证）。
+
+**验收标准**
+- example_dataset 一次完整跑通，产物齐全，报告可读。
 
 ---
 
@@ -828,7 +860,7 @@ orchestrator.py (阶段执行后)
 - [ ] 允许从 DatasetProfile 的 data scale 动态调整阈值（大电流器件 vs 小电流器件）。
 
 **依赖**
-- Phase 5（需要 metrics 收集能力）。
+- Phase 3（需要 orchestrator 产出的 stage results）。
 
 **验收标准**
 - 每个阶段都有可配置的质量门槛。
@@ -873,16 +905,19 @@ orchestrator.py (阶段执行后)
 
 ### P7-T4 集成到 orchestrator
 - [ ] 在 `orchestrator.py` 的阶段完成与下一阶段之间插入质量门禁；
+- [ ] 重试期间每次调参后写新的 `model_config_retry_N.ini`，后续阶段始终使用最新 retry config 的路径；
 - [ ] 处理重试循环（最多 N 次，每次调参 + 重跑）；
 - [ ] 重试期间更新 `run.stage_results`，保留每次 attempt 的结果；
 - [ ] 记录重试历史到 `run.extra["retry_history"]`；
-- [ ] 最终指标取所有 attempts 中的最优值。
+- [ ] 最终指标取所有 attempts 中的最优值；
+- [ ] 所有重试均不达标时，触发 Phase 6 诊断（调用 `diagnostics.py` 归类为 `QUALITY_UNSATISFIED`）并标记为失败。
 
 **依赖**
-- `P7-T3`。
+- `P7-T3`、`P6-T1`（诊断归类）。
 
 **验收标准**
-- `run_workflow()` 自动处理效果不好 → 调参 → 重跑 → 收敛的完整闭环。
+- `run_workflow()` 自动处理效果不好 → 调参 → 重跑 → 收敛的完整闭环；
+- 重试耗尽后用户得到明确的诊断说明而非只是 WARNING。
 
 ---
 
@@ -893,7 +928,7 @@ orchestrator.py (阶段执行后)
 - [ ] 敏感参数（如数据路径、output_dir）禁止自动修改。
 
 **依赖**
-- `P7-T3`。
+- `P7-T3`、`P6-T1`（诊断归类）。
 
 **验收标准**
 - 自动调参不会写入危险值或破坏性路径。
@@ -915,11 +950,11 @@ orchestrator.py (阶段执行后)
 
 ## 12. Phase 8：脚本函数化重构
 
-## 11.1 目标
+## 12.1 目标
 
 把 DG-TFT 建模代码从“脚本集合”升级为“可 import API”，降低 workflow 对 subprocess 的依赖。
 
-## 11.2 TODO
+## 12.2 TODO
 
 ### P8-T1 函数化 `validate_dataset.py`
 - [ ] 提供 `validate_dataset(...) -> dict`；
@@ -992,11 +1027,11 @@ orchestrator.py (阶段执行后)
 
 ## 13. Phase 9：测试、稳定性与文档收尾
 
-## 12.1 目标
+## 13.1 目标
 
-把整个能力从“能跑”提升到“能维护、能验证、能交付”。
+把整个能力从"能跑"提升到"能维护、能验证、能交付"。
 
-## 12.2 TODO
+## 13.2 TODO
 
 ### P9-T1 新增 workflow 单元测试
 - [ ] `test/dg_tft_workflow_manager_test.py`
@@ -1077,20 +1112,23 @@ orchestrator.py (阶段执行后)
 - [x] `P1-T1` ~ `P1-T6`
 - [x] `P2-T1` ~ `P2-T7`
 - [x] `P3-T1` ~ `P3-T9`
-- [ ] `P4-T1` ~ `P4-T3`
+- [ ] `P4-T1` ~ `P4-T4`
 
 这部分做完，就已经有“给路径即可全自动跑”的第一版闭环。
 
-### 第二优先级
-- [ ] `P4-T4`
-- [ ] `P4-T5`
-- [ ] `P5-T1` ~ `P5-T4`
-- [ ] `P6-T1` ~ `P6-T5`
 
-这部分做完，系统会更像真正的 Agent 产品，而不是单纯脚本调度器。
+### 第二优先级
+- [ ] `P4-T5`
+- [ ] `P4-T6`
+- [ ] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
+- [ ] `P6-T1` ~ `P6-T2`（诊断基础：分类 + subagent hooks）
+- [ ] `P7-T1` ~ `P7-T5`（质量守卫核心 — 不依赖 P5/P6，可直接接在 Phase 3 后）
+
+这部分做完，Agent 不仅知道“跑崩了为什么”，还能自动调参重试直到效果达标。
 
 ### 第三优先级
-- [ ] `P7-T1` ~ `P7-T6`
+- [ ] `P7-T6`（质量报告 — 依赖 P5-T2）
+- [ ] `P6-T3` ~ `P6-T5`（诊断的 subagent 增强）
 - [ ] `P8-T1` ~ `P8-T6`
 - [ ] `P9-T1` ~ `P9-T5`
 
