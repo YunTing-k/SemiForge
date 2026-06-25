@@ -20,3 +20,4 @@
 /src/device_modeling/**/__pycache__
 /src/workflow/**/__pycache__
 /test/__pycache__
+/testdata/
