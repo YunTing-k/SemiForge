@@ -45,6 +45,9 @@ class MockContext:
         self.workflow_man = WorkflowManager()
         self.agent_list = {}
         self.workflow_man.session_uuid = "test_session"
+        self.agent_id = "test_agent"
+        self.subagent_mute = False
+        self.console = None
 
 
 class TestStageDefinitions(unittest.TestCase):

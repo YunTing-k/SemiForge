@@ -974,9 +974,9 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ## 9.2 TODO
 
 ### P5-T1 设计 artifacts 管理规则
-- [ ] 在 `artifacts.py` 中定义产物 key；
-- [ ] 统一约定常见产物命名；
-- [ ] 定义 summary / manifest 路径。
+- [x] 在 `artifacts.py` 中定义产物 key；
+- [x] 统一约定常见产物命名；
+- [x] 定义 summary / manifest 路径。
 
 **依赖**
 - Phase 3 完成。
@@ -987,10 +987,10 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P5-T2 实现 `report_builder.py`
-- [ ] 生成 `RUN_SUMMARY.md`；
-- [ ] 生成 `RUN_SUMMARY.json`；
-- [ ] 生成 `ARTIFACT_MANIFEST.json`；
-- [ ] 汇总关键指标与路径。
+- [x] 生成 `RUN_SUMMARY.md`；
+- [x] 生成 `RUN_SUMMARY.json`；
+- [x] 生成 `ARTIFACT_MANIFEST.json`；
+- [x] 汇总关键指标与路径。
 
 **依赖**
 - `P5-T1`。
@@ -1001,15 +1001,15 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P5-T3 把 workflow 状态映射到任务板
-- [ ] 设计默认任务树：
-  - [ ] 审计数据集
-  - [ ] 生成运行配置
-  - [ ] 执行静态建模
-  - [ ] 执行迟滞建模（若启用）
-  - [ ] 执行部署验证
-  - [ ] 生成最终报告
-- [ ] 在 workflow 启动时自动创建对应任务；
-- [ ] 在阶段推进时自动更新 task status。
+- [x] 设计默认任务树：
+  - [x] 审计数据集
+  - [x] 生成运行配置
+  - [x] 执行静态建模
+  - [x] 执行迟滞建模（若启用）
+  - [x] 执行部署验证
+  - [x] 生成最终报告
+- [x] 在 workflow 启动时自动创建对应任务；
+- [x] 在阶段推进时自动更新 task status。
 
 **依赖**
 - `P4-T2`。
@@ -1020,8 +1020,8 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P5-T4 输出用户友好的最终摘要
-- [ ] 成功时输出：关键路径、关键指标、是否启用温度/迟滞、VA 文件位置；
-- [ ] 失败时输出：失败阶段、主要原因、建议下一步。
+- [x] 成功时输出：关键路径、关键指标、是否启用温度/迟滞、VA 文件位置；
+- [x] 失败时输出：失败阶段、主要原因、建议下一步。
 
 **依赖**
 - `P5-T2`。
@@ -1032,10 +1032,10 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P5-T5 端到端烟雾测试
-- [ ] 使用 `example_dataset` 跑完整闭环：check-data → fit-physical → train-base-pkan → train-static；
-- [ ] 验证所有产物文件生成正确；
-- [ ] 验证 `RUN_SUMMARY.md` / `ARTIFACT_MANIFEST.json` 内容完整；
-- [ ] 此项为每个 Phase 完成后的回归检查项。
+- [x] 使用 `example_dataset` 跑完整闭环：check-data → fit-physical → train-base-pkan → train-static；
+- [x] 验证所有产物文件生成正确；
+- [x] 验证 `RUN_SUMMARY.md` / `ARTIFACT_MANIFEST.json` 内容完整；
+- [x] 此项为每个 Phase 完成后的回归检查项。
 
 **依赖**
 - `P5-T4`（报告生成完成后才能验证）。
@@ -1440,7 +1440,7 @@ orchestrator.py (阶段执行后)
 - [x] `P4-T5`
 - [x] `P4-T6`
 - [x] `P4.5-T1` ~ `P4.5-T4`（数据整理与验证 — 解决原始数据格式不统一问题）
-- [ ] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
+- [x] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
 - [ ] `P6-T1` ~ `P6-T2`（诊断基础：分类 + subagent hooks）
 - [ ] `P7-T1` ~ `P7-T5`（质量守卫核心 — 不依赖 P5/P6，可直接接在 Phase 3 后）
 
@@ -1673,6 +1673,18 @@ test/dg_tft_tools_test.py          # 28 tests（P4-T1~T6 全覆盖）
 - P4.5-T2 `prepare_dg_tft_dataset` agent tool
 - P4.5-T3 内建命令 + prompt 路由
 - P4.5-T4 测试
+
+### 2026-06-25 | Phase 5 完成 — 报告/产物/任务板/用户摘要
+
+**完成内容**
+- P5-T1 ~ P5-T5 全部完成
+- `artifacts.py`: artifact key 常量 + 文件名映射 + 路径/校验辅助函数
+- `report_builder.py`: `build_and_write_reports()` 生成 RUN_SUMMARY.md、RUN_SUMMARY.json、ARTIFACT_MANIFEST.json
+- Orchestrator 集成: 全部 stage 完成后自动调 report_builder，失败时也生成部分报告
+- P5-T3 任务板同步: `_create_stage_tasks` / `_start_task` / `_resolve_task`，board 通过参数传递（不污染 AgentContext）
+- P5-T4 控制台摘要: 成功/失败分别输出路径、指标、失败建议
+- 42 new tests in `dg_tft_report_test.py`
+- 总计 237 tests PASS
 
 ### 2026-06-25 | Phase 4.5 完成 — 数据整理 + 双 Agent 验证
 

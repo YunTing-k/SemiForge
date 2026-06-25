@@ -2771,7 +2771,8 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
     }
 
 
-def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
+                          board=None) -> dict[str, Any]:
     """tool realization of starting a DG-TFT auto-modeling workflow"""
     func_name = TOOL_NAME_START_WORKFLOW
     try:
@@ -2803,7 +2804,7 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
 
         thread = threading.Thread(
             target=_run_workflow_thread,
-            args=(ctx, run_id, wm),
+            args=(ctx, run_id, wm, board),
             daemon=True,
         )
         wm._running_threads[str(run_id)] = thread
@@ -2822,7 +2823,7 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         return {"status": FAIL_LABEL, "info": f"Start workflow failed: {e}"}
 
 
-def _run_workflow_thread(ctx: AgentContext, run_id: int, wm) -> None:
+def _run_workflow_thread(ctx: AgentContext, run_id: int, wm, board=None) -> None:
     """Background thread that runs the full DG-TFT pipeline."""
     try:
         from src.workflow.dg_tft.dataset_inspector import inspect_dataset
@@ -2840,7 +2841,7 @@ def _run_workflow_thread(ctx: AgentContext, run_id: int, wm) -> None:
                                             output_root=run.output_root, run_id=run_id)
         config_path = build_result["config_path"]
 
-        run_workflow(ctx, run_id, config_path)
+        run_workflow(ctx, run_id, config_path, board=board)
 
     except Exception as e:
         sys_log.error("Workflow run %d thread failed: %s", run_id, e)
