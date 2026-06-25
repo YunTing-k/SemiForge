@@ -58,7 +58,7 @@ The output directory already exists. Write all output files into it.
 - Required columns: {iv_columns}
 - Report filename: {report_name}
 - CV output: CV_train.xlsx (expected sheets: {cv_sheets})
-- I-t files go to: it/ subdirectory
+- I-t files go to: it/ subdirectory (or root if found directly under `{raw_dir}`)
 
 **Python usage rules**:
 - Use `{python_exe} -c "..."` for all inline Python code — do NOT write scripts to files
@@ -68,7 +68,7 @@ The output directory already exists. Write all output files into it.
 
 **Step-by-step instructions**:
 
-1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. One brief `glob_file` call is enough.
+1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. One brief `glob_file` call is enough. Also scan for I-t files in root: look for files whose name starts with `I-t` in the root listing.
 
 2. Process each file by data type:
 
@@ -92,8 +92,10 @@ The output directory already exists. Write all output files into it.
    - Read and save as `CV_train.xlsx` with original sheets unchanged
    - `df = pd.read_excel("{raw_dir}/CV_wide_tables.xlsx", sheet_name=None); with pd.ExcelWriter("{output_dir}/CV_train.xlsx") as writer: for name, sheet in df.items(): sheet.to_excel(writer, sheet_name=name[:31], index=False)`
 
-4. **I-t files** in `{raw_dir}/it/`:
-   - Copy all files to `{output_dir}/it/`: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
+4. **I-t files**:
+   - Priority 1: If `{raw_dir}/it/` exists and contains files, copy all: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
+   - Priority 2: If no `it/` subdirectory (or it's empty), scan `{raw_dir}/` for files matching `I-t*` pattern. Create `{output_dir}/it/` and copy each matching file: `os.makedirs("{output_dir}/it", exist_ok=True); for f in glob.glob("{raw_dir}/I-t*.xlsx"): shutil.copy(f, "{output_dir}/it/")`
+   - Omit this step if no I-t files are found anywhere.
 
 5. Write `{report_name}` in `{output_dir}` with this exact format:
 ```json
