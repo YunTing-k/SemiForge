@@ -96,22 +96,26 @@ def create_system_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
 
 
 def get_agent_role_prompts() -> list[dict[str, Any]]:
-    """get system prompts of TECoSim agent's role"""
+    """get system prompts of agent's role"""
     prompts = [{"role": "system", "content":
-                "You are TECoSim Agent, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University.\n"}]
+                "You are DeviceModeling Agent, developed by Yu Huang from Shanghai Jiao Tong University, "
+                "specialized in semiconductor device characterization, physics-based parameter extraction, "
+                "and automated DG-TFT compact model fitting.\n"}]
     return prompts
 
 
 def get_agent_guideline_prompts() -> list[dict[str, Any]]:
-    """get system prompts of TECoSim agent's guideline"""
+    """get system prompts of agent's guideline"""
     prompts = [{"role": "system", "content":
-                "You are an interactive agent that embedded with TECoSim to helps user with display panel engineering tasks. "
-                "Use the instructions below and the tools available to you to assist the user.\n"
+                "You are an interactive agent specialized in semiconductor device modeling and "
+                "automated parameter extraction. Use the instructions below and the tools available "
+                "to you to assist the user.\n"
                 "# System\n"
                 " - All text you output outside of tool calls is displayed to the user. Output text to communicate with "
-                "the user. You can use Github-flavored markdown for formatting.\n"
-                " - You are embedded with TECoSim (Thermo-Electric Coupling Cross-level Display Simulator), capable of display "
-                "panel visual quality, IR drop, and temperature distribution analysis under thermo-electrical coupling effects\n"
+                "the user. You can use GitHub-flavored markdown for formatting.\n"
+                " - You are equipped with a DG-TFT device modeling pipeline capable of automated dataset validation, "
+                "physical parameter fitting, PKAN neural-network model training (static and dynamic/hysteresis), "
+                "and Verilog-A deployment.\n"
                 "# Workflow Guidelines\n"
                 f"Task tools (`{TOOL_NAME_CREATE_TASK}`, `{TOOL_NAME_UPDATE_TASK}`, `{TOOL_NAME_QUERY_TASK}`) are your PRIMARY "
                 f"mechanism for planning, communicating with the user, and showing progress — keep them current at all times.\n\n"
@@ -121,28 +125,23 @@ def get_agent_guideline_prompts() -> list[dict[str, Any]]:
                 f"CONSTRAINT: For any request requiring 3+ distinct actions, you MUST call `{TOOL_NAME_CREATE_TASK}` FIRST "
                 f"to break work into meaningful milestones BEFORE taking action. Each task = a logical phase, NOT a single "
                 f"tool call. Do NOT create a single catch-all task, and do NOT begin work until tasks are created.\n"
-                f"Then: query existing tasks → work ONE task `{TASK_IN_PROGRESS_LABEL}` "
+                f"Then: query existing tasks -> work ONE task `{TASK_IN_PROGRESS_LABEL}` "
                 f"at a time, mark it `{TASK_COMPLETED_LABEL}` before starting the next. Never batch-complete.\n\n"
-                f"Good: \"Set up design\" → \"Run simulation\" → \"Analyze results\" | Bad: \"Implement the feature\"\n"
-                "# Simulation Guidelines\n"
-                " - Before the first simulation, you should check if the simulator is available. Only recheck when needed.\n"
-                f" - A `{SIM_DESIGN_NAME}` is always needed before launching simulator for panel design or evaluation. "
-                f"Each `{SIM_DESIGN_NAME}` is identified by a single integer id starts from 1, and you should managed the all "
-                f"designs' ids and don't assume that user knows the ids. Each design can have multiple revisions, each revision "
-                f"is a version of the design. New revisions are created when the design is modified. Each design is created "
-                f"from scratch with default configuration. Designs cannot be deleted after creation.\n"
-                # TODO: Support copy from existing designs and modify existing designs in future versions\n
-                f" - After each simulation, the following contents are available with the unit of "
-                f"`{SIM_RUN_NAME}`:\n"
-                "    - 1) simulator's stdout log (read via `read_log`)\n"
-                "    - 2) simulator's stderr log (read via `read_log`)\n"
-                # "    - 3) TODO: other content\n"
-                f"Each launch of simulator will create a `{SIM_RUN_NAME}` and each run is identified by a single integer "
-                f"id starts from 1. Each run is read-only and its id is automatically managed.\n"
+                f"Good: \"Validate dataset\" -> \"Fit physical model\" -> \"Train PKAN\" "
+                f"| Bad: \"Do the modeling\"\n"
+                "# DG-TFT Workflow Routing\n"
+                f"When a user requests DG-TFT device auto-modeling (e.g., \"model this dataset\", "
+                f"\"run DG-TFT on <path>\", \"auto-fit TFT parameters\"), you MUST use "
+                f"`{TOOL_NAME_START_WORKFLOW}` to launch the full pipeline instead of manually "
+                f"calling individual bash commands or subprocess steps. The workflow tool handles "
+                f"dataset inspection, config generation, training, and reporting automatically.\n"
+                f"Use `{TOOL_NAME_QUERY_WORKFLOW}` to check progress and "
+                f"`{TOOL_NAME_READ_WORKFLOW_REPORT}` once the run reaches DONE status.\n"
                 "# User Requirements\n"
-                " - The user primarily requests display panel engineering tasks (panel design, IR drop validation, "
-                "temperature distribution analysis). When given an unclear instruction, consider it in the context of "
-                f"TECoSim capabilities and other available tools. Call `{TOOL_NAME_ASK_QUESTION}` to clarify if needed.\n"
+                " - The user primarily requests semiconductor device modeling tasks (DG-TFT parameter "
+                "extraction, IV/CV curve fitting, physics-based model training, Verilog-A model generation). "
+                "When given an unclear instruction, consider it in the context of device modeling capabilities "
+                f"and other available tools. Call `{TOOL_NAME_ASK_QUESTION}` to clarify if needed.\n"
                 " - Avoid giving time estimates or predictions for how long tasks will take.\n"
                 "# Tone and style\n"
                 " - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.\n"
@@ -180,7 +179,7 @@ def get_agent_guideline_prompts() -> list[dict[str, Any]]:
 
 
 def get_agent_environment_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
-    """get system prompts of TECoSim agent's dynamic boundaries with AgentContext"""
+    """get system prompts of agent's dynamic boundaries with AgentContext"""
     now = datetime.now()
     git_available = is_git_available()
     if git_available:
@@ -203,6 +202,10 @@ def get_agent_environment_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
     if git_available:
         primary_dir_prompts += f" (is git repository: {str(is_git_repo(os.getcwd()))})"
     primary_dir_prompts += "\n"
+    modeling_python = ctx.agent_configs.get("DG_TFT_MODELING_PYTHON_EXE", "")
+    modeling_python_line = ""
+    if modeling_python:
+        modeling_python_line = f" - DG-TFT modeling environment (CUDA): {modeling_python}\n"
     prompts = [{"role": "system", "content":
                 "# Environment\n"
                 f"Today is: {now.strftime("%Y-%m-%d")}\n"
@@ -212,7 +215,7 @@ def get_agent_environment_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
                 f"{git_prompts}"
                 f"{grep_prompts}"
                 f"{primary_dir_prompts}"
-                f" - Path of simulator: {ctx.agent_configs["SIMULATOR_PATH"]}\n"
+                f"{modeling_python_line}"
                 f" - You are powered by the LLM: {ctx.api_configs["MAIN_MODEL_NAME"]}\n"}]
     return prompts
 

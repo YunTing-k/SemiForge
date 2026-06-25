@@ -89,7 +89,6 @@ SUPPORTED_TYPES: dict[str, tuple[str, ...]] = {
         TOOL_NAME_WEB_FETCH,
         TOOL_NAME_WEB_SEARCH,
         TOOL_NAME_BASH,
-        TOOL_NAME_READ_LOG,
         TOOL_NAME_CREATE_TASK,
         TOOL_NAME_UPDATE_TASK,
         TOOL_NAME_QUERY_TASK,
@@ -115,7 +114,6 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         TOOL_NAME_READ_FILE,
         TOOL_NAME_WEB_FETCH,
         TOOL_NAME_WEB_SEARCH,
-        TOOL_NAME_READ_LOG,
         TOOL_NAME_CREATE_TASK,
         TOOL_NAME_UPDATE_TASK,
         TOOL_NAME_QUERY_TASK,
@@ -130,7 +128,6 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         TOOL_NAME_EDIT_FILE,
         TOOL_NAME_WEB_FETCH,
         TOOL_NAME_WEB_SEARCH,
-        TOOL_NAME_READ_LOG,
         TOOL_NAME_CREATE_TASK,
         TOOL_NAME_UPDATE_TASK,
         TOOL_NAME_QUERY_TASK,
@@ -154,7 +151,7 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
 SUPPORTED_TYPES_DESC: dict[str, str] = {
     EXPLORER_AGENT_LABEL: (
         f"Read-only explorer. Can use {TOOL_NAME_GLOB_FILE}, `{TOOL_NAME_GREP_FILE}`, `{TOOL_NAME_READ_FILE}`, "
-        f"`{TOOL_NAME_WEB_FETCH}`, `{TOOL_NAME_WEB_SEARCH}`, `{TOOL_NAME_BASH}`, `{TOOL_NAME_READ_LOG}`, plus task tools "
+        f"`{TOOL_NAME_WEB_FETCH}`, `{TOOL_NAME_WEB_SEARCH}`, `{TOOL_NAME_BASH}`, plus task tools "
         f"(`{TOOL_NAME_CREATE_TASK}` / `{TOOL_NAME_UPDATE_TASK}` / `{TOOL_NAME_QUERY_TASK}`) for own workflow (independent "
         f"scoreboard)."
     ),

@@ -136,6 +136,10 @@ TOOL_NAME_QUERY_DESIGN: str = "query_design"
 TOOL_NAME_LAUNCH_SIM: str = "launch_sim"
 TOOL_NAME_QUERY_RUN: str = "query_run"
 TOOL_NAME_READ_LOG: str = "read_log"
+# DG-TFT workflow tools
+TOOL_NAME_START_WORKFLOW: str = "start_dg_tft_workflow"
+TOOL_NAME_QUERY_WORKFLOW: str = "query_dg_tft_workflow"
+TOOL_NAME_READ_WORKFLOW_REPORT: str = "read_dg_tft_workflow_report"
 """Tool calls params"""
 ASK_USER_QUESTION_MAX_QUESTION: int = 4
 ASK_USER_QUESTION_MIN_QUESTION: int = 1

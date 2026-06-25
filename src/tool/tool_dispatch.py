@@ -112,6 +112,15 @@ def call_tools(func_name: str, arguments: dict[str, Any], ctx: AgentContext, boa
         elif func_name == TOOL_NAME_READ_LOG:
             results = tool_def.read_log(arguments, ctx, progress)
             user_addon = None
+        elif func_name == TOOL_NAME_START_WORKFLOW:
+            results = tool_def.start_dg_tft_workflow(arguments, ctx, progress)
+            user_addon = None
+        elif func_name == TOOL_NAME_QUERY_WORKFLOW:
+            results = tool_def.query_dg_tft_workflow(arguments, ctx, progress)
+            user_addon = None
+        elif func_name == TOOL_NAME_READ_WORKFLOW_REPORT:
+            results = tool_def.read_dg_tft_workflow_report(arguments, ctx, progress)
+            user_addon = None
         elif func_name in ctx.mcp_router.tool_registry:
             results = tool_def.call_mcp(func_name, arguments, ctx, progress)
             user_addon = None

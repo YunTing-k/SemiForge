@@ -66,6 +66,7 @@ tracking; (3) simulation tools - check simulator, init/copy/query design, launch
 import os
 import subprocess
 import logging
+import threading
 import tempfile
 
 from typing import Any
@@ -119,13 +120,17 @@ def create_tools_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
         tool_skill_def(),
         tool_web_fetch_def(),
         tool_web_search_def(),
-        # simulation tools
-        tool_check_simulator_def(),
-        tool_init_design_def(),
-        tool_query_design_def(),
-        tool_launch_sim_def(),
-        tool_query_run_def(),
-        tool_read_log_def(),
+        # simulation tools (disabled — LLM should not see simulator)
+        # tool_check_simulator_def(),
+        # tool_init_design_def(),
+        # tool_query_design_def(),
+        # tool_launch_sim_def(),
+        # tool_query_run_def(),
+        # tool_read_log_def(),
+        # DG-TFT workflow tools
+        tool_start_dg_tft_workflow_def(),
+        tool_query_dg_tft_workflow_def(),
+        tool_read_dg_tft_workflow_report_def(),
     ]
     # MCP tools
     prompts.extend(ctx.mcp_router.reg_tools)
@@ -2722,3 +2727,278 @@ def read_log(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -
         sys_log.error(f"{func_name} {FAIL_LABEL}: Read log failed with error: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: Read log failed with error: {e}", style="bold red")
         return {"status": FAIL_LABEL, "info": f"Read log failed with error: {e}"}
+
+
+# ── DG-TFT Workflow Tools ──
+
+
+def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
+    """tool definition of starting a DG-TFT auto-modeling workflow (TOOL_NAME_START_WORKFLOW)"""
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME_START_WORKFLOW,
+            "description": (
+                f"Start a DG-TFT automatic modeling workflow for a given dataset directory. "
+                f"Returns immediately with a run_id; the workflow executes asynchronously "
+                f"in the background. Use `{TOOL_NAME_QUERY_WORKFLOW}` to monitor progress "
+                f"and `{TOOL_NAME_READ_WORKFLOW_REPORT}` to read the final report.\n"
+                f"The workflow includes: dataset validation, physical fit, base PKAN "
+                f"training, static training, hysteresis training (if hysteresis data is "
+                f"available), deployment validation, and a final report."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_dir": {
+                        "type": "string",
+                        "description": "Absolute path to the static IV/CV dataset directory.",
+                    },
+                    "hysteresis_dir": {
+                        "type": "string",
+                        "description": "Optional. Absolute path to the I-t (hysteresis) data directory.",
+                    },
+                    "device_name": {
+                        "type": "string",
+                        "description": "Optional. A human-readable label for this run.",
+                    },
+                },
+                "required": ["dataset_dir"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+    """tool realization of starting a DG-TFT auto-modeling workflow"""
+    func_name = TOOL_NAME_START_WORKFLOW
+    try:
+        pause_for_permission(progress)
+        token, info = ask_permission_tui(ctx, func_name,
+                                         f"dataset: {arguments['dataset_dir']}", progress.console)
+        resume_from_permission(progress)
+        if not token:
+            reason = f"Permission denied" + (f": {info}" if info else "")
+            return {"status": DENIED_LABEL, "info": reason}
+
+        dataset_dir = arguments["dataset_dir"]
+        hysteresis_dir = arguments.get("hysteresis_dir")
+        device_name = arguments.get("device_name", "")
+
+        from src.workflow.dg_tft.manager import WorkflowManager
+        wm: WorkflowManager = ctx.workflow_man
+
+        output_root = ctx.agent_configs.get("DG_TFT_OUTPUT_ROOT", "")
+
+        ok, run_id, now = wm.create_run(
+            dataset_dir=dataset_dir,
+            hysteresis_dir=hysteresis_dir,
+            output_root=output_root,
+            device_name=device_name,
+        )
+        if not ok:
+            return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
+
+        thread = threading.Thread(
+            target=_run_workflow_thread,
+            args=(ctx, run_id, wm),
+            daemon=True,
+        )
+        wm._running_threads[str(run_id)] = thread
+        thread.start()
+
+        sys_log.info("%s: workflow run %d started for %s", func_name, run_id, dataset_dir)
+        return {
+            "status": SUCCESS_LABEL,
+            "info": f"Workflow started. Run ID: {run_id}. Use {TOOL_NAME_QUERY_WORKFLOW} to monitor progress.",
+            "run_id": run_id,
+            "created_at": now,
+        }
+    except Exception as e:
+        sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
+        progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
+        return {"status": FAIL_LABEL, "info": f"Start workflow failed: {e}"}
+
+
+def _run_workflow_thread(ctx: AgentContext, run_id: int, wm) -> None:
+    """Background thread that runs the full DG-TFT pipeline."""
+    try:
+        from src.workflow.dg_tft.dataset_inspector import inspect_dataset
+        from src.workflow.dg_tft.config_builder import build_runtime_config
+        from src.workflow.dg_tft.orchestrator import run_workflow
+
+        run = wm.get_run(run_id)
+        if run is None:
+            return
+
+        profile, _ = inspect_dataset(ctx, run.dataset_dir, hysteresis_dir=run.hysteresis_dir)
+        wm.set_dataset_profile(run_id, profile)
+
+        build_result = build_runtime_config(ctx, profile, run.dataset_dir,
+                                            output_root=run.output_root, run_id=run_id)
+        config_path = build_result["config_path"]
+
+        run_workflow(ctx, run_id, config_path)
+
+    except Exception as e:
+        sys_log.error("Workflow run %d thread failed: %s", run_id, e)
+        wm.mark_failed(run_id, str(e))
+    finally:
+        wm._running_threads.pop(str(run_id), None)
+
+
+def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
+    """tool definition of querying a DG-TFT workflow run status (TOOL_NAME_QUERY_WORKFLOW)"""
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME_QUERY_WORKFLOW,
+            "description": (
+                "Query the status and progress of a DG-TFT automatic modeling workflow run. "
+                "Returns the current stage, status, collected artifacts, metrics, "
+                "warnings, and errors for the given run_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "integer",
+                        "description": "The workflow run ID to query.",
+                    },
+                },
+                "required": ["run_id"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def query_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+    """tool realization of querying a DG-TFT workflow run status"""
+    func_name = TOOL_NAME_QUERY_WORKFLOW
+    try:
+        run_id = arguments["run_id"]
+        run = ctx.workflow_man.get_run(run_id)
+        if run is None:
+            return {"status": FAIL_LABEL, "info": f"Workflow run {run_id} not found"}
+
+        stage_results = {}
+        for name, sr in run.stage_results.items():
+            stage_results[name] = {
+                "ok": sr.ok if hasattr(sr, "ok") else sr.get("ok", False),
+                "summary": sr.summary if hasattr(sr, "summary") else sr.get("summary", ""),
+                "warnings": sr.warnings if hasattr(sr, "warnings") else sr.get("warnings", []),
+                "error": sr.error if hasattr(sr, "error") else sr.get("error"),
+            }
+
+        return {
+            "status": SUCCESS_LABEL,
+            "run_id": run.run_id,
+            "workflow_status": run.status.value,
+            "dataset_dir": run.dataset_dir,
+            "current_stage": run.current_stage,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+            "artifacts": dict(run.artifacts),
+            "metrics": dict(run.metrics),
+            "warnings": list(run.warnings),
+            "errors": list(run.errors),
+            "hspice_available": run.hspice_available,
+            "temperature_enabled": run.temperature_enabled,
+            "hysteresis_enabled": run.hysteresis_enabled,
+            "stage_results": stage_results,
+        }
+    except Exception as e:
+        sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
+        progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
+        return {"status": FAIL_LABEL, "info": f"Query workflow failed: {e}"}
+
+
+def tool_read_dg_tft_workflow_report_def() -> dict[str, Any]:
+    """tool definition of reading a DG-TFT workflow final report (TOOL_NAME_READ_WORKFLOW_REPORT)"""
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME_READ_WORKFLOW_REPORT,
+            "description": (
+                "Read the final report and summary files from a completed DG-TFT "
+                "workflow run's output directory. Use this after the workflow reaches "
+                "DONE status to review modeling results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "integer",
+                        "description": "The workflow run ID to read the report for.",
+                    },
+                },
+                "required": ["run_id"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def read_dg_tft_workflow_report(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+    """tool realization of reading a DG-TFT workflow final report"""
+    func_name = TOOL_NAME_READ_WORKFLOW_REPORT
+    try:
+        run_id = arguments["run_id"]
+        run = ctx.workflow_man.get_run(run_id)
+        if run is None:
+            return {"status": FAIL_LABEL, "info": f"Workflow run {run_id} not found"}
+
+        import configparser
+        output_dir = run.output_root or ""
+        if run.artifacts:
+            for key, path in run.artifacts.items():
+                if "config" in key.lower() or key.endswith(".ini"):
+                    try:
+                        cfg = configparser.ConfigParser()
+                        cfg.read(path, encoding="utf-8")
+                        raw = cfg.get("paths", "output_dir", fallback="")
+                        if raw:
+                            output_dir = raw
+                            break
+                    except Exception:
+                        pass
+
+        report_files = []
+        from pathlib import Path
+        if output_dir:
+            base = Path(output_dir)
+            if base.exists():
+                summary_file = base / "summary.json"
+                if summary_file.exists():
+                    report_files.append(str(summary_file))
+                stage_results_dir = base / "stage_results"
+                if stage_results_dir.exists():
+                    for f in sorted(stage_results_dir.glob("*.json")):
+                        report_files.append(str(f))
+
+        stage_summaries = {}
+        for name, sr in run.stage_results.items():
+            stage_summaries[name] = {
+                "ok": sr.ok if hasattr(sr, "ok") else sr.get("ok", False),
+                "summary": sr.summary if hasattr(sr, "summary") else sr.get("summary", ""),
+                "metrics": sr.metrics if hasattr(sr, "metrics") else sr.get("metrics", {}),
+            }
+
+        return {
+            "status": SUCCESS_LABEL,
+            "run_id": run.run_id,
+            "workflow_status": run.status.value,
+            "output_dir": output_dir,
+            "report_files": report_files,
+            "artifacts": dict(run.artifacts),
+            "metrics": dict(run.metrics),
+            "stage_summaries": stage_summaries,
+            "warnings": list(run.warnings),
+            "errors": list(run.errors),
+        }
+    except Exception as e:
+        sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
+        progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
+        return {"status": FAIL_LABEL, "info": f"Read workflow report failed: {e}"}

@@ -996,6 +996,135 @@ def cmd_task_list_all(args: list[str], ctx: AgentContext, board: Scoreboard, con
     console.print("\n")
 
 
+def cmd_workflow_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+    """query all DG-TFT workflow runs"""
+    runs = ctx.workflow_man.list_runs()
+    title = f"DG-TFT Workflow Runs ({len(runs)})"
+    cmd_str = Text()
+    for run in runs:
+        cmd_str.append(f"Run ID: ", style="white")
+        cmd_str.append(f"{run['run_id']}", style=f"bold {MAJOR_COLOR1}")
+        cmd_str.append(f", Status: ", style="white")
+        cmd_str.append(f"{run['status']}", style=f"bold {MAJOR_COLOR2}")
+        cmd_str.append(f", Stage: ", style="white")
+        cmd_str.append(f"{run.get('current_stage', '')}\n", style=f"bright_black")
+        cmd_str.append(f"  Dataset: ", style="white")
+        cmd_str.append(f"{run['dataset_dir']}", style=f"{MAJOR_COLOR2}")
+        cmd_str.append(f", Created: ", style="white")
+        cmd_str.append(f"{run['created_at']}\n\n", style="bright_black")
+    if cmd_str.plain.endswith("\n"):
+        cmd_str.rstrip()
+    console.print(Panel.fit(cmd_str, title=title, title_align="left",
+                            padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
+    console.print("\n")
+
+
+def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+    """query details of a DG-TFT workflow run by run_id"""
+    if not args:
+        console.print("Usage: /workflow_get <run_id>", style="bold yellow")
+        return
+    try:
+        run_id = int(args[0])
+    except ValueError:
+        console.print(f"Invalid run_id: {args[0]}", style="bold yellow")
+        return
+    run = ctx.workflow_man.get_run(run_id)
+    if run is None:
+        console.print(f"Workflow run {run_id} not found", style="bold yellow")
+        return
+    title = f"DG-TFT Workflow Run {run_id}"
+    cmd_str = Text()
+    cmd_str.append(f"Status: ", style="white")
+    cmd_str.append(f"{run.status.value}\n", style=f"bold {MAJOR_COLOR2}")
+    cmd_str.append(f"Dataset: ", style="white")
+    cmd_str.append(f"{run.dataset_dir}\n", style=f"{MAJOR_COLOR2}")
+    cmd_str.append(f"Current Stage: ", style="white")
+    cmd_str.append(f"{run.current_stage}\n", style=f"bright_black")
+    cmd_str.append(f"Created: ", style="white")
+    cmd_str.append(f"{run.created_at}", style=f"bright_black")
+    cmd_str.append(f", Updated: ", style="white")
+    cmd_str.append(f"{run.updated_at}\n", style=f"bright_black")
+    if run.artifacts:
+        cmd_str.append(f"Artifacts:\n", style=f"bold {MAJOR_COLOR1}")
+        for key, path in run.artifacts.items():
+            cmd_str.append(f"  {key}: {path}\n", style="bright_black")
+    if run.metrics:
+        cmd_str.append(f"Metrics:\n", style=f"bold {MAJOR_COLOR1}")
+        for key, val in run.metrics.items():
+            cmd_str.append(f"  {key}: {val}\n", style="bright_black")
+    if run.warnings:
+        cmd_str.append(f"Warnings ({len(run.warnings)}):\n", style="bold yellow")
+        for w in run.warnings:
+            cmd_str.append(f"  - {w}\n", style="bright_black")
+    if run.errors:
+        cmd_str.append(f"Errors ({len(run.errors)}):\n", style="bold red")
+        for e in run.errors:
+            cmd_str.append(f"  - {e}\n", style="bright_black")
+    stage_results = run.stage_results
+    if stage_results:
+        cmd_str.append(f"Stage Results:\n", style=f"bold {MAJOR_COLOR1}")
+        for name, sr in stage_results.items():
+            ok = sr.ok if hasattr(sr, "ok") else sr.get("ok", False)
+            summary = sr.summary if hasattr(sr, "summary") else sr.get("summary", "")
+            state = "[green]OK[/green]" if ok else "[red]FAILED[/red]"
+            cmd_str.append(f"  {name}: {state}", style="bright_black")
+            cmd_str.append(f" - {summary}\n", style="bright_black")
+    if cmd_str.plain.endswith("\n"):
+        cmd_str.rstrip()
+    console.print(Panel.fit(cmd_str, title=title, title_align="left",
+                            padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
+    console.print("\n")
+
+
+def cmd_workflow_report(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+    """read the final report of a DG-TFT workflow run by run_id"""
+    if not args:
+        console.print("Usage: /workflow_report <run_id>", style="bold yellow")
+        return
+    try:
+        run_id = int(args[0])
+    except ValueError:
+        console.print(f"Invalid run_id: {args[0]}", style="bold yellow")
+        return
+    run = ctx.workflow_man.get_run(run_id)
+    if run is None:
+        console.print(f"Workflow run {run_id} not found", style="bold yellow")
+        return
+    title = f"DG-TFT Report for Run {run_id} (Status: {run.status.value})"
+    cmd_str = Text()
+    stage_results = run.stage_results
+    if stage_results:
+        for name, sr in stage_results.items():
+            ok = sr.ok if hasattr(sr, "ok") else sr.get("ok", False)
+            summary = sr.summary if hasattr(sr, "summary") else sr.get("summary", "")
+            metrics = sr.metrics if hasattr(sr, "metrics") else sr.get("metrics", {})
+            warn = sr.warnings if hasattr(sr, "warnings") else sr.get("warnings", [])
+            err = sr.error if hasattr(sr, "error") else sr.get("error")
+            icon = "[green]OK[/green]" if ok else "[red]FAILED[/red]"
+            cmd_str.append(f"{name}: {icon}\n", style="white")
+            if summary:
+                cmd_str.append(f"  Summary: {summary}\n", style="bright_black")
+            if metrics:
+                cmd_str.append(f"  Metrics:\n", style="bright_black")
+                for k, v in metrics.items():
+                    cmd_str.append(f"    {k}: {v}\n", style="bright_black")
+            if warn:
+                cmd_str.append(f"  Warnings:\n", style="bold yellow")
+                for w in warn:
+                    cmd_str.append(f"    - {w}\n", style="bright_black")
+            if err:
+                cmd_str.append(f"  Error: {err}\n", style="bold red")
+            cmd_str.append("\n")
+    else:
+        cmd_str.append("No stage results available yet.\n", style="bright_black")
+    if cmd_str.plain.endswith("\n"):
+        cmd_str.rstrip()
+    console.print(Panel.fit(cmd_str, title=title, title_align="left",
+                            padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
+    console.print("\n")
+
+
 class BuiltinCommands:
     """builtin command class"""
     def __init__(self, console: Console):
@@ -1028,6 +1157,12 @@ class BuiltinCommands:
             "task_list": (cmd_task_list, "list agent tasks", "list all agent tasks that are not archived"),
             "task_list_all": (cmd_task_list_all, "list all agent tasks", "list all history agent tasks"),
             "agent_list": (cmd_agent_list, "list subagents", "list all active and archived subagents with status"),
+            "workflow_list": (cmd_workflow_list, "list all DG-TFT workflow runs",
+                              "list all DG-TFT workflow runs with status and stage"),
+            "workflow_get": (cmd_workflow_get, "query a DG-TFT workflow run",
+                             "query status and details of a DG-TFT workflow run by run_id"),
+            "workflow_report": (cmd_workflow_report, "read a DG-TFT workflow report",
+                                "read the final report of a completed DG-TFT workflow run by run_id"),
         }
         self._request_commands: list[str] = []
         sys_log.debug(f"{len(self._commands)} builtin commands initialized")

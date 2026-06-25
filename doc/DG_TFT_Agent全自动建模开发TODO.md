@@ -590,11 +590,11 @@
 ## 8.2 TODO
 
 ### P4-T1 新增 workflow tool schema
-- [ ] 在 `src/tool/tool_def.py` 新增：
+- [x] 在 `src/tool/tool_def.py` 新增：
   - [ ] `start_dg_tft_workflow`
   - [ ] `query_dg_tft_workflow`
   - [ ] `read_dg_tft_workflow_report`
-- [ ] 明确定义参数与返回结构。
+- [x] 明确定义参数与返回结构。
 
 **依赖**
 - Phase 3 完成。
@@ -605,12 +605,12 @@
 ---
 
 ### P4-T2 实现 workflow tool handler
-- [ ] 在 `tool_def.py` 中实现三个工具对应函数：
-  - [ ] `start_dg_tft_workflow` 内部串联：`create_run() → inspect_dataset() → build_runtime_config() → run_workflow()`；
-  - [ ] `query_dg_tft_workflow` 读取 `workflow_man.get_run(run_id)` 返回状态；
-  - [ ] `read_dg_tft_workflow_report` 读取 run 输出目录下的 summary 文件；
-- [ ] 调用 `workflow_man` 和 `orchestrator`；
-- [ ] 返回结构化结果。
+- [x] 在 `tool_def.py` 中实现三个工具对应函数：
+  - [x] `start_dg_tft_workflow` 内部串联：`create_run() → inspect_dataset() → build_runtime_config() → run_workflow()`；
+  - [x] `query_dg_tft_workflow` 读取 `workflow_man.get_run(run_id)` 返回状态；
+  - [x] `read_dg_tft_workflow_report` 读取 run 输出目录下的 summary 文件；
+- [x] 调用 `workflow_man` 和 `orchestrator`；
+- [x] 返回结构化结果。
 
 **依赖**
 - `P4-T1`。
@@ -621,11 +621,11 @@
 ---
 
 ### P4-T3 实现后台异步执行模式
-- [ ] `start_dg_tft_workflow` 立即返回 `run_id`，不阻塞等待训练完成；
-- [ ] 在 `workflow_man` 中新增 `RunningRunTracker`（存储正在执行的 subprocess 句柄）；
-- [ ] `query_dg_tft_workflow` 可实时查询 run status 并返回最新 stage；
+- [x] `start_dg_tft_workflow` 立即返回 `run_id`，不阻塞等待训练完成；
+- [x] 在 `workflow_man` 中新增 `RunningRunTracker`（存储正在执行的 subprocess 句柄）；
+- [x] `query_dg_tft_workflow` 可实时查询 run status 并返回最新 stage；
 - [ ] 考虑超长时间运行的看护（心跳检测 / 超时 kill）；
-- [ ] 确保多个 run 并发隔离（输出目录、config 文件不冲突）。
+- [x] 确保多个 run 并发隔离（输出目录、config 文件不冲突）。
 
 **依赖**
 - `P4-T2`。
@@ -636,8 +636,8 @@
 ---
 
 ### P4-T4 注册 workflow tool dispatch
-- [ ] 修改 `src/tool/tool_dispatch.py`；
-- [ ] 加入三个工具的 dispatch 分支。
+- [x] 修改 `src/tool/tool_dispatch.py`；
+- [x] 加入三个工具的 dispatch 分支。
 
 **依赖**
 - `P4-T3`。
@@ -648,11 +648,11 @@
 ---
 
 ### P4-T5 增加内建命令
-- [ ] 在 `src/utility/command.py` 增加：
-  - [ ] `/workflow_list`
-  - [ ] `/workflow_get <run_id>`
-  - [ ] `/workflow_report <run_id>`
-- [ ] 在命令系统中注册。
+- [x] 在 `src/utility/command.py` 增加：
+  - [x] `/workflow_list`
+  - [x] `/workflow_get <run_id>`
+  - [x] `/workflow_report <run_id>`
+- [x] 在命令系统中注册。
 
 **依赖**
 - `P4-T3`。
@@ -663,8 +663,8 @@
 ---
 
 ### P4-T6 优化 prompt 路由逻辑
-- [ ] 在 `src/context/prompt.py` 中增加“识别 DG-TFT 自动建模请求时优先用 workflow tool”的提示约束；
-- [ ] 避免主 agent 将该类请求拆成大量零散工具调用。
+- [x] 在 `src/context/prompt.py` 中增加“识别 DG-TFT 自动建模请求时优先用 workflow tool”的提示约束；
+- [x] 避免主 agent 将该类请求拆成大量零散工具调用。
 
 **依赖**
 - `P4-T2`。
@@ -1140,14 +1140,14 @@ orchestrator.py (阶段执行后)
 - [x] `P1-T1` ~ `P1-T6`
 - [x] `P2-T1` ~ `P2-T7`
 - [x] `P3-T1` ~ `P3-T10`
-- [ ] `P4-T1` ~ `P4-T4`
+- [x] `P4-T1` ~ `P4-T4`
 
 这部分做完，就已经有“给路径即可全自动跑”的第一版闭环。
 
 
 ### 第二优先级
-- [ ] `P4-T5`
-- [ ] `P4-T6`
+- [x] `P4-T5`
+- [x] `P4-T6`
 - [ ] `P5-T1` ~ `P5-T5`（报告/产物 + 烟雾测试）
 - [ ] `P6-T1` ~ `P6-T2`（诊断基础：分类 + subagent hooks）
 - [ ] `P7-T1` ~ `P7-T5`（质量守卫核心 — 不依赖 P5/P6，可直接接在 Phase 3 后）
@@ -1178,7 +1178,7 @@ orchestrator.py (阶段执行后)
 - [x] `P3-T2` 实现统一 `stage_runner.py`
 - [x] `P3-T8` 实现 `orchestrator.py`
 - [x] `P3-T10` 接入 console 用户可见输出
-- [ ] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
+- [x] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
 
 这 11 项完成后，你就会拥有一版真正可用的第一代系统。
 
@@ -1427,11 +1427,12 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 
 **修复方案**：`WorkflowRun.to_dict()` 改用手动 dict 构造，逐字段赋值，避免 `asdict` 的 deepcopy 行为。`StageResult` 同样使用 `getattr` + 手动 dict 构造。
 
-### 18.10 下一步 Phase 4 关键点
+### 18.10 Phase 4 完成要点
 
-1. P4-T1：新增 workflow tool schema（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`）在 `src/tool/tool_def.py`
-2. P4-T2：实现工具 handler，内部串联 create_run() inspect_dataset() build_runtime_config() run_workflow() `workflow_man` 和 `orchestrator`
-3. P4-T3：实现后台异步执行模式（启动不阻塞，RunningRunTracker）
-4. P4-T4：注册 dispatch 分支
-4. 增加 `/workflow_list`、`/workflow_get`、`/workflow_report` 内建命令
-6. P4-T6：优化 prompt 路由（识别"全自动建模"请求 → 优先走 workflow tool）
+1. P4-T1：新增 workflow tool schema（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`），含完整 OpenAI function-calling 参数定义
+2. P4-T2：实现工具 handler（`start_dg_tft_workflow` / `query_dg_tft_workflow` / `read_dg_tft_workflow_report`），`start` 内部串联 `create_run() → inspect_dataset() → build_runtime_config() → run_workflow()`，全部在后台线程执行
+3. P4-T3：异步执行模型 — `start_dg_tft_workflow` 立即返回 `run_id`，工作由 `threading.Thread` 在后台跑；`WorkflowManager._running_threads` dict 追踪活跃线程；线程异常 → `mark_failed`；`finally` 清理 tracker
+4. P4-T4：`call_tools()` dispatch 三个新工具名 → 对应 handler
+5. P4-T5：`/workflow_list` / `/workflow_get <run_id>` / `/workflow_report <run_id>` 三个内建命令注册在 `BuiltinCommands`
+6. P4-T6：system prompt 添加 "DG-TFT Workflow Routing" 段落，引导 LLM 优先使用 `start_dg_tft_workflow` 而非逐条 bash 调用；prompt 整体从 display panel/simulator 重写为 DeviceModeling agent
+7. 额外：simulator 六个工具（`check_simulator`/`init_design`/`query_design`/`launch_sim`/`query_run`/`read_log`）从 `create_tools_prompts()` 中注释掉，从 `SUPPORTED_TYPES` explorer allowlist 移除 `read_log`，从 `SUPPORTED_TYPES_DESC` 和 `PERMISSION_PRESETS` 中清理；LLM 完全无感 simulator

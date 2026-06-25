@@ -43,6 +43,7 @@ class WorkflowManager:
         self._lock = threading.Lock()
         self._runs: dict[int, WorkflowRun] = {}
         self._next_run_id: int = 1
+        self._running_threads: dict[str, threading.Thread] = {}
 
     # ──────────────────── CRUD ────────────────────
 
