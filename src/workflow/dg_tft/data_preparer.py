@@ -74,25 +74,81 @@ Do NOT ask the user any questions — work autonomously. Do NOT explore files ex
 """
 
 VERIFIER_PROMPT_TEMPLATE = """\
-You are a verification specialist for DG-TFT data preparation. A worker has processed raw measurement data into standardized training files. Your job is to inspect the output and report structural findings.
+You are a verification specialist for DG-TFT data preparation. A worker has processed raw measurement data into standardized training files. Your job is to inspect the output directory and report findings in a structured format via the report_verification tool.
 
 **Prepared data directory**: {output_dir}
 
 **Instructions**:
-1. List the contents of `{output_dir}` (including `it/` subdirectory if it exists).
-2. For each `*_train.xlsx` IV family file, check:
-   - Does the file exist?
-   - Does it contain a "long" sheet?
-   - Does the "long" sheet have columns: VD_V, VBG_V, VTG_V, ID_A?
-3. For `CV_train.xlsx`, check:
-   - Does the file exist?
-   - Does it contain sheets: cgg, cbg, ctg, vds?
-4. For I-t data, check:
-   - Does the `it/` subdirectory exist?
-   - How many files does it contain?
+1. Use `glob_file` to list all files in the output directory (including the it/ subdirectory).
+2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `read_file` to check that it has a "long" sheet with columns: VD_V, VBG_V, VTG_V, ID_A.
+3. For `CV_train.xlsx`, check that it exists and report its sheets.
+4. For the `it/` subdirectory, check if it exists and how many files it contains.
+5. After inspecting, call `report_verification` with your structured findings.
 
-**CRITICAL**: You MUST call the `report_verification` tool to report your structured findings. Do not output free-text conclusions — use the tool. Call it exactly once.
+**CRITICAL**: You MUST call the `report_verification` tool exactly once at the end. Do not output free text.
 """
+
+
+def _build_verifier_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "glob_file",
+                "description": "List files in a directory matching a pattern.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["path", "pattern"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory path to search."},
+                        "pattern": {"type": "string", "description": "Glob pattern, e.g. * or *.xlsx."},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read first few lines of an xlsx file to inspect sheet names and headers.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["file_path"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Absolute path to the .xlsx file."},
+                    },
+                },
+            },
+        },
+        build_report_verification_tool(),
+    ]
+
+
+def _execute_verifier_tool(func_name: str, arguments: dict) -> str:
+    """Execute a verifier tool inline — returns JSON string result."""
+    if func_name == "glob_file":
+        base = Path(arguments["path"])
+        pattern = arguments.get("pattern", "*")
+        matches = sorted(base.glob(pattern))
+        result = [str(m.relative_to(base)) if m.is_relative_to(base) else str(m) for m in matches]
+        return json.dumps({"files": result, "count": len(result)})
+    elif func_name == "read_file":
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(arguments["file_path"], read_only=True, data_only=True)
+            sheets = {}
+            for name in wb.sheetnames:
+                ws = wb[name]
+                headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+                sheets[name] = {"columns": [str(h) for h in headers]}
+            wb.close()
+            return json.dumps(({"sheets": sheets, "sheet_count": len(sheets)}))
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+    else:
+        return json.dumps({"error": f"Unknown tool: {func_name}"})
 
 
 def build_report_verification_tool() -> dict[str, Any]:
@@ -240,86 +296,88 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
 
 
 def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
-    """Run an independent LLM call to verify the prepared data structure.
+    """Run a lightweight LLM verifier with a mini tool execution loop.
 
-    Uses a custom report_verification tool to force structured output.
-    Includes retry logic for APIs that don't support tool_choice.
+    The verifier has glob_file, read_file (xlsx), and report_verification tools.
+    It inspects the output directory and produces a structured report.
     """
-    messages = [
-        {"role": "system", "content": "You are a verification assistant. Always call the report_verification tool to output structured results."},
-        {"role": "user", "content": VERIFIER_PROMPT_TEMPLATE.format(output_dir=output_dir)},
-    ]
+    system = {"role": "system", "content": "You are a data verification assistant. Use glob_file and read_file to inspect the output directory, then call report_verification with your structured findings."}
+    user = {"role": "user", "content": VERIFIER_PROMPT_TEMPLATE.format(output_dir=output_dir)}
+    messages = [system, user]
 
-    tools = [build_report_verification_tool()]
+    tools = _build_verifier_tools()
     model_tier: str = ctx.agent_configs.get("LLM_SUMMARY_MODEL", "fast")
     branch_func, deepseek_key = client.select_branch_func(model_tier)
-    if ctx.api_configs.get(deepseek_key, False):
-        tool_choice = None
-    else:
-        tool_choice = {
-            "type": "function",
-            "function": {"name": "report_verification"},
-        }
 
-    max_retries = 3
-    tool_calls_result: list[dict[str, Any]] | None = None
+    max_turns = 6
+    verifier_result = None
 
-    for attempt in range(1, max_retries + 1):
+    for turn in range(max_turns):
         try:
-            response = branch_func(
-                ctx.llm_client,
-                messages,
-                tools,
-                ctx.api_configs,
-                tool_choice=tool_choice,
-            )
+            response = branch_func(ctx.llm_client, messages, tools, ctx.api_configs)
         except Exception as e:
-            sys_log.warning("Verifier LLM call attempt %d failed: %s", attempt, e)
-            if attempt == max_retries:
-                break
-            continue
+            sys_log.warning("Verifier LLM call failed at turn %d: %s", turn, e)
+            break
 
         dumped = response.choices[0].message.model_dump(mode="json")
         if ctx.api_configs.get(deepseek_key, False):
             dumped = deepseek_support(dumped)
 
-        tc_list: list[dict[str, Any]] | None = dumped.get("tool_calls")
-        if tc_list and len(tc_list) > 0:
-            tool_calls_result = []
-            for tc in tc_list:
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                    tc["function"]["parsed_args"] = args
-                except Exception:
-                    pass
-                tool_calls_result.append(tc)
-            break
+        assistant_content = dumped.get("content", "")
+        tc_list = dumped.get("tool_calls")
 
-        if attempt < max_retries:
-            sys_log.warning("Verifier did not call report_verification, retry %d/%d", attempt, max_retries)
+        if tc_list:
+            for tc in tc_list:
+                func_name = tc["function"]["name"]
+                try:
+                    func_args = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    func_args = {}
+
+                if func_name == "report_verification":
+                    verifier_result = func_args
+                    break
+
+                tool_result = _execute_verifier_tool(func_name, func_args)
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tc],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_result,
+                })
+
+            if verifier_result is not None:
+                break
+        elif assistant_content:
+            sys_log.info("Verifier returned text without tool call: %s", assistant_content[:200])
+            messages.append({"role": "assistant", "content": assistant_content})
             messages.append({
                 "role": "user",
-                "content": "You MUST call the `report_verification` tool to report your results. Do not output free text. Call it now.",
+                "content": "You must call the report_verification tool to submit your findings. Do not output free text.",
             })
+            continue
+        else:
+            sys_log.warning("Verifier returned empty response at turn %d", turn)
+            break
 
     verifier_path = os.path.join(output_dir, "verifier_result.json")
-    if tool_calls_result:
-        for tc in tool_calls_result:
-            parsed = tc.get("function", {}).get("parsed_args")
-            if parsed:
-                try:
-                    with open(verifier_path, "w", encoding="utf-8") as f:
-                        json.dump(parsed, f, indent=2, ensure_ascii=False)
-                    return
-                except Exception:
-                    pass
-
-    fallback = {"overall_ok": False, "summary": "LLM refused to call report_verification tool after max retries"}
-    try:
-        with open(verifier_path, "w", encoding="utf-8") as f:
-            json.dump(fallback, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    if verifier_result:
+        try:
+            with open(verifier_path, "w", encoding="utf-8") as f:
+                json.dump(verifier_result, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    else:
+        fallback = {"overall_ok": False, "summary": "Verifier did not call report_verification tool"}
+        try:
+            with open(verifier_path, "w", encoding="utf-8") as f:
+                json.dump(fallback, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
 
 def _check_output(output_dir: str) -> tuple[bool, list[str]]:
