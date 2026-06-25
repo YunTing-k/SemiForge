@@ -84,7 +84,7 @@ The output directory already exists. Write all output files into it.
    - `IDVD_*VBG*` -> `IDVD_VBG<Vvalue>_V_train.xlsx` (CRITICAL: check for VBG in name)
    - `IDVD_*VTG*` -> `IDVD_VTG<Vvalue>_V_train.xlsx` (CRITICAL: check for VTG in name)
    - Skip: `DUAL_REF_*.csv`, `Refernce.xlsx`
-   - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version (it's cleaner). Check if output file already exists before writing and skip duplicates.
+   - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version. Normalize V values: 01V = 0.1V, 05V = 0.5V, 5V = 5V. Check if output file already exists before writing and skip duplicates.
 
 3. **CV file** (e.g., `CV_wide_tables.xlsx`):
    - Read and save as `CV_train.xlsx` with original sheets
@@ -354,6 +354,18 @@ def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
     finished = False
 
     for turn in range(max_turns):
+        turns_left = max_turns - turn - 1
+        if turns_left == 1:
+            messages.append({
+                "role": "user",
+                "content": "WARNING — Only 1 turn remaining. Call report_verification with your findings NOW. Do not call any other tools.",
+            })
+        elif turns_left == 2:
+            messages.append({
+                "role": "user",
+                "content": "Only 2 turns remaining. Begin wrapping up — call report_verification soon.",
+            })
+
         try:
             response = branch_func(ctx.llm_client, messages, tools, ctx.api_configs)
         except Exception as e:
