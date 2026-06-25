@@ -3035,13 +3035,10 @@ def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
             "name": TOOL_NAME_PREPARE_DATASET,
             "description": (
                 "Prepare a raw dataset directory for DG-TFT auto-modeling. "
-                "This tool returns IMMEDIATELY with a prep_id and output_dir — "
-                "preparation runs in the background. "
-                f"Use `{TOOL_NAME_QUERY_WORKFLOW}` with prep_id to poll for completion. "
                 "A worker subagent converts raw CSV/XLSX files into standardized "
                 "*_train.xlsx format, then an automated verification runs. "
-                "When ok becomes true, preparation is complete and you can proceed "
-                "to start_dg_tft_workflow."
+                "This is a BLOCKING call — it returns the final result with ok and issues. "
+                "After success, call start_dg_tft_workflow with the returned output_dir as dataset_dir."
             ),
             "parameters": {
                 "type": "object",
@@ -3076,37 +3073,24 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, "")
         output_dir = os.path.join("session", ctx.session_uuid, "prepared_data", str(prep_id))
         os.makedirs(output_dir, exist_ok=True)
-
         wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
 
-        import threading
-        thread = threading.Thread(
-            target=_run_prep_thread,
-            args=(ctx, raw_dataset_dir, output_dir),
-            daemon=True,
-        )
-        wm._running_threads[f"prep_{prep_id}"] = thread
-        thread.start()
+        from src.workflow.dg_tft.data_preparer import run_data_preparation
+        run_data_preparation(ctx, raw_dataset_dir, output_dir)
 
-        sys_log.info("%s: data prep %d started for %s", func_name, prep_id, raw_dataset_dir)
+        prep = wm.preparation_tracker.get_prep(prep_id)
+        ok = prep["ok"] if prep else False
+        issues = prep["issues"] if prep else []
+        sys_log.info("%s: data prep %d done: ok=%s issues=%s", func_name, prep_id, ok, issues)
         return {
             "status": SUCCESS_LABEL,
-            "info": f"Data preparation started. Prep ID: {prep_id}. Use query_dg_tft_workflow with prep_id={prep_id} to check results.",
+            "info": f"Data preparation complete. Prep ID: {prep_id}. OK: {ok}.",
             "prep_id": prep_id,
             "output_dir": output_dir,
+            "ok": ok,
+            "issues": issues,
         }
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
         return {"status": FAIL_LABEL, "info": f"Data preparation failed: {e}"}
-
-
-def _run_prep_thread(ctx: AgentContext, raw_dataset_dir: str, output_dir: str) -> None:
-    """Background thread that runs data preparation pipeline."""
-    try:
-        from src.workflow.dg_tft.data_preparer import run_data_preparation
-        run_data_preparation(ctx, raw_dataset_dir, output_dir)
-    except Exception as e:
-        sys_log.error("Data prep thread failed: %s", e)
-    finally:
-        ctx.workflow_man._running_threads.pop(f"prep_{output_dir.split(os.sep)[-1]}", None)
