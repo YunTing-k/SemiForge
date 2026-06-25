@@ -21,7 +21,7 @@ from scipy.optimize import least_squares
 
 
 ROOT = Path(__file__).resolve().parent
-RESULTS = ROOT / "results_long_timescale"
+RESULTS = Path(os.environ.get("DG_TFT_DYNAMIC_WORK_DIR", ROOT / "results_long_timescale"))
 OUT = RESULTS / "srh_history_kan"
 HSPICE = Path("hspice.com")
 
