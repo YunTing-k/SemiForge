@@ -559,6 +559,27 @@
 
 ---
 
+### P3-T10 用户可见的 Console 进度输出
+- [ ] 在 `orchestrator.py` / `stage_runner.py` 中接入 `ctx.console`（已存在于 AgentContext）：
+  - [ ] 流程启动时：`console.print(f"DG-TFT workflow run #{run_id} 开始")`
+  - [ ] 每阶段启动时：`console.print(f"  [{n}/{total}] {stage_name} 执行中...")`
+  - [ ] 每阶段完成时：`console.print(f"  [{n}/{total}] {stage_name} ✓ ({elapsed}s)")`
+  - [ ] 质量门禁触发时：`console.print(f"  ⚠ {metric_name} {value} > 阈值 {thresh}, 重试 {attempt}/{max}...")`
+  - [ ] 调参重试时：`console.print(f"  → 调整 {param}: {old} → {new}, 重跑...")`
+  - [ ] 阶段跳过时：`console.print(f"  [{n}/{total}] {stage_name} ⊘ 跳过 ({reason})")`
+  - [ ] 流程成功时：`console.print(f"✓ Run #{run_id} DONE  |  {key_metrics}")`
+  - [ ] 流程失败时：`console.print(f"✗ Run #{run_id} FAILED at {stage}: {error}")`
+- [ ] `ctx.console` 已在 `AgentContext` 中（`main.py:93`），无需新增参数；
+- [ ] `sys_log` 继续保留作为完整审计日志，两者互补不替代。
+
+**依赖**
+- `P3-T8`。
+
+**验收标准**
+- 用户无需 `--log` 参数也能在终端实时看到 pipeline 进度和结果。
+
+---
+
 ## 8. Phase 4：接入 Agent 工具与命令
 
 ## 8.1 目标
@@ -1118,6 +1139,7 @@ orchestrator.py (阶段执行后)
 - [x] `P1-T1` ~ `P1-T6`
 - [x] `P2-T1` ~ `P2-T7`
 - [x] `P3-T1` ~ `P3-T9`
+- [ ] `P3-T10`（用户可见 console 输出）
 - [ ] `P4-T1` ~ `P4-T4`
 
 这部分做完，就已经有“给路径即可全自动跑”的第一版闭环。
@@ -1144,7 +1166,7 @@ orchestrator.py (阶段执行后)
 
 ## 14. 第一批建议直接开工的任务
 
-如果你要马上进入编码，我建议第一批只做下面 10 项：
+如果你要马上进入编码，我建议第一批只做下面 11 项：
 
 - [x] `P0-T1` 确认 DG-TFT 建模代码正式位置
 - [x] `P0-T2` 建立 `src/device_modeling/dg_tft/`
@@ -1155,9 +1177,10 @@ orchestrator.py (阶段执行后)
 - [x] `P2-T6` 实现 `config_builder.py`
 - [x] `P3-T2` 实现统一 `stage_runner.py`
 - [x] `P3-T8` 实现 `orchestrator.py`
+- [ ] `P3-T10` 接入 console 用户可见输出
 - [ ] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
 
-这 10 项完成后，你就会拥有一版真正可用的第一代系统。
+这 11 项完成后，你就会拥有一版真正可用的第一代系统。
 
 ---
 
@@ -1386,6 +1409,7 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 3. **条件 skip 两层过滤**：`get_stages(profile)` 在阶段列表构建阶段过滤掉不需要的阶段（如无 hysteresis 数据则移除 `TRAIN_HYSTERESIS`）；`orchestrator` 中另有 `skip_if_profile_false` 检查作为第二道防线。
 4. **Fail-fast vs optional**：`required=True` 的阶段失败立即停止整个 run 并标记 FAILED；`required=False` 的阶段失败记录 warning 后继续。
 5. **mock 测试的签名陷阱**：使用 `unittest.mock.patch` 替换 `run_stage()` 时，mock 函数的第一个参数是 `ctx`（AgentContext），而非 `action`。签名应为 `(self, ctx, action, *args, **kwargs)`。
+6. **用户可见性**：workflow 模块只有 `sys_log`（默认仅写文件），`ctx.console`（Rich TUI）未接入。P3-T10 需补全，利用已有的 `ctx.console`（`main.py:93` 已注入）在各关键节点输出进度，无需新增参数。
 
 ### 18.9 `asdict` 序列化兼容性问题
 
