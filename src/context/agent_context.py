@@ -49,6 +49,7 @@ from typing import Any, TypedDict, TYPE_CHECKING
 from rich.console import Console
 from src.tool.mcps_support import MCPToolRouter
 from src.tool.simulator_support import DesignManager, RunManager
+from src.workflow.dg_tft.manager import WorkflowManager
 from src.agent.progress import SubAgentProgress, AgentStatus
 if TYPE_CHECKING: from src.agent.subagent import SubAgent
 from src.constants import *
@@ -114,6 +115,7 @@ class AgentContext:
         self.active_cron: int = 0  # (don't dump)
         self.design_man: DesignManager = DesignManager() # (shared)
         self.run_man: RunManager = RunManager() # (shared)
+        self.workflow_man: WorkflowManager = WorkflowManager()  # (shared)
         self.agent_list: dict[str, SubAgentProgress] = {}  # agent_id -> SubAgentProgress
         self.background_agents: list[tuple[dict[str, Any], "SubAgent", threading.Thread, float]] = []  # (don't dump) (tc, agent, thread, start_time)
         # params
@@ -282,6 +284,7 @@ class AgentContext:
             "loaded_skills": self.loaded_skills,
             "permissions": self.permissions,
             "agent_list": {aid: p.to_dict() for aid, p in self.agent_list.items()},
+            "workflow_runs": self.workflow_man.to_dict(),
         }
         if not mute:
             sys_log.debug(f"Context of session {self.session_uuid} converted to dict")
@@ -320,6 +323,8 @@ class AgentContext:
                     if not p.if_archived:
                         p.status = AgentStatus.ERROR
                         p.if_archived = True
+            if "workflow_runs" in in_dict:
+                self.workflow_man.from_dict(in_dict["workflow_runs"])
             if not mute:
                 sys_log.debug(f"Context of session {self.session_uuid} converted from dict")
                 console.print(f"[{MAJOR_COLOR2}]Context[/{MAJOR_COLOR2}] of session [bright_black]{self.session_uuid}"
@@ -341,6 +346,8 @@ class AgentContext:
                 json.dump(self.to_dict(console, mute), f, indent=2, ensure_ascii=False)
             """durable and session cron tasks save"""
             self.save_cron_task()
+            """workflow runs save"""
+            self.workflow_man.save_runs()
             if not mute:
                 sys_log.debug(f"Context of session {self.session_uuid} saved")
                 console.print(f"[{MAJOR_COLOR2}]Context[/{MAJOR_COLOR2}] of session [bright_black]{self.session_uuid}[/bright_black] saved")
@@ -367,6 +374,8 @@ class AgentContext:
                         self.session_crons = json.load(f)
                 else:
                     self.session_crons = []
+            """workflow runs load"""
+            self.workflow_man.load_runs()
             if not mute:
                 sys_log.debug(f"Context of session {self.session_uuid} loaded")
                 console.print(f"[{MAJOR_COLOR2}]Context[/{MAJOR_COLOR2}] of session [bright_black]{self.session_uuid}[/bright_black] loaded")

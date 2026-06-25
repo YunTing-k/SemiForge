@@ -17,3 +17,6 @@
 /src/tool/__pycache__
 /src/utility/__pycache__
 /src/agent/__pycache__
+/src/device_modeling/**/__pycache__
+/src/workflow/**/__pycache__
+/test/__pycache__

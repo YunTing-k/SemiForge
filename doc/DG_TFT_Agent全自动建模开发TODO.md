@@ -1,0 +1,1134 @@
+# DG-TFT Agent 全自动建模开发 TODO
+
+## 1. 文档用途
+
+这份文档不是架构说明，而是**后续实际开发执行清单**。
+
+建议使用方式：
+
+- 每完成一个任务就在代码仓库或项目管理工具里标记；
+- 每个 Phase 尽量形成单独可运行里程碑；
+- 每个任务都尽量能明确到文件、模块、接口或测试项；
+- 不要一上来就重构全部建模代码，优先保证“能跑通全自动闭环”。
+
+---
+
+## 2. 执行原则
+
+### 2.1 总原则
+
+1. **先闭环，后优雅**；
+2. **先 workflow 包装，后脚本函数化**；
+3. **先保证用户只给路径即可启动，后增强诊断和总结质量**；
+4. **训练执行由规则工作流控制，Agent 只负责柔性解释和辅助判断**。
+
+### 2.2 开发顺序原则
+
+推荐顺序：
+
+```text
+迁移代码落点确认
+→ workflow 数据结构与管理器
+→ runtime config 自动生成
+→ subprocess 版固定工作流
+→ agent 工具接入
+→ 结果汇总
+→ 失败诊断
+→ 脚本函数化
+→ subagent 深度接入
+```
+
+---
+
+## 3. 里程碑总览
+
+| Phase | 目标 | 结果 |
+|---|---|---|
+| Phase 0 | 确认代码落点和边界 | 明确 DG-TFT 建模代码的正式位置和依赖边界 |
+| Phase 1 | 建立工作流基础设施 | 有 `WorkflowRun` / `WorkflowManager` / session 持久化 |
+| Phase 2 | 自动生成 runtime config | 给定数据路径即可得到独立配置 |
+| Phase 3 | 打通 subprocess 版全自动流程 | 能自动跑 `check-data → static → hysteresis(optional)` |
+| Phase 4 | 接入 Agent 工具和命令 | 用户可通过自然语言或命令启动 workflow |
+| Phase 5 | 完善报告和产物管理 | 自动输出 summary / manifest / metrics |
+| Phase 6 | 完善诊断和 subagent 协作 | 失败时可自动解释和给建议 |
+| Phase 7 | 脚本函数化重构 | 建模模块从 CLI 脚本升级为可调用 API |
+| Phase 8 | 测试、稳定性、收尾 | 有完整单测、集成测试和使用文档 |
+
+---
+
+## 4. Phase 0：代码落点确认与仓库整理
+
+## 4.1 目标
+
+确认 DG-TFT 建模代码是否已经完整迁移到 `src`，以及后续开发使用的正式目录。
+
+## 4.2 TODO
+
+### P0-T1 确认 DG-TFT 建模代码正式位置
+- [ ] 检查 `src/` 下是否已有完整 DG-TFT 建模代码；
+- [ ] 如果没有，确认当前唯一可信版本是否仍是 `ref/DG_TFT_v90_USER_FRIENDLY_MODELING_RELEASE_20260622/modeling_code/`；
+- [ ] 明确后续开发到底以 `ref` 还是 `src/device_modeling/dg_tft` 为准。（推荐统一都放在src路径下，`ref`只是参考）
+
+**输出**
+- 一条明确结论：后续开发使用哪个目录作为正式代码源。
+
+**依赖**
+- 无。
+
+**验收标准**
+- 团队内部对“代码从哪里改”没有歧义。
+
+---
+
+### P0-T2 建立 DG-TFT 建模正式目录
+- [ ] 若 `src/device_modeling/` 不存在，则创建；
+- [ ] 创建 `src/device_modeling/dg_tft/`；
+- [ ] 创建子目录：
+  - [ ] `config/`
+  - [ ] `engine/`
+  - [ ] `dynamic/`
+  - [ ] `deployment/`
+  - [ ] `reporting/`
+- [ ] 增加必要的 `__init__.py`。
+
+**输出**
+- 标准化后的建模代码目录骨架。
+
+**依赖**
+- `P0-T1`。
+
+**验收标准**
+- 后续 workflow 层引用路径稳定。
+
+---
+
+### P0-T3 迁移或镜像现有脚本到正式目录
+- [ ] 迁移/复制 `run_model.py`；
+- [ ] 迁移/复制 `engine/*.py`；
+- [ ] 迁移/复制 `dynamic/*.py`；
+- [ ] 迁移/复制配置模板 `.ini`；
+- [ ] 检查 import 路径是否仍可运行；
+- [ ] 保证最小可执行性，不要求这一阶段重构内部实现。
+
+**输出**
+- `src/device_modeling/dg_tft/` 下拥有一套可执行的 DG-TFT 建模代码。
+
+**依赖**
+- `P0-T2`。
+
+**验收标准**
+- 在新路径下执行 `run_model.py --help` 能正常工作；
+- 核心脚本无明显 import 崩溃。
+
+---
+
+### P0-T4 记录外部依赖与环境要求
+- [ ] 明确 Python 依赖包列表；
+- [ ] 明确 KAN 依赖；
+- [ ] 明确 HSPICE 是否为可选依赖；
+- [ ] 明确当前默认 Conda 环境；
+- [ ] 形成一份简短环境说明。
+
+**输出**
+- 一份可执行环境依赖清单。
+
+**依赖**
+- `P0-T3`。
+
+**验收标准**
+- 新开发人员可以知道跑通 workflow 需要什么环境。
+
+### P0-T5 记录已验证环境边界
+- [ ] 记录 Agent 运行解释器为 `G:/Anaconda3/envs/AGI/python.exe`；
+- [ ] 记录 DG-TFT 建模解释器为 `G:/Anaconda3/envs/CUDA/python.exe`；
+- [ ] 记录 `AGI` 与 `CUDA` 分离，不共享业务依赖；
+- [ ] 记录 `CUDA` 环境已验证支持 `torch.cuda` 与 `kan` 的 GPU 前向；
+- [ ] 记录 `check-data` 已对示例数据验证通过；
+- [ ] 记录当前继续训练的主要阻塞已从“环境依赖”转为“项目文件完整性”。
+
+**输出**
+- 环境策略说明，可直接用于后续 workflow 配置。
+
+**依赖**
+- `P0-T4`。
+
+**验收标准**
+- 之后开发时不会再混淆 Agent 环境和建模环境。
+
+---
+
+### P0-T6 固化解释器路由策略
+- [ ] 在 `config/agent_configs.json` 中增加：
+  - [ ] `DG_TFT_AGENT_PYTHON_EXE`
+  - [ ] `DG_TFT_MODELING_PYTHON_EXE`
+  - [ ] `DG_TFT_MODELING_CONDA_ENV`
+- [ ] 明确 workflow 第一版以 `DG_TFT_MODELING_PYTHON_EXE` 作为唯一真实建模解释器来源；
+- [ ] 明确禁止在建模阶段执行中默认使用 `sys.executable`；
+- [ ] 明确禁止依赖环境变量里的裸 `python` 去跑建模脚本。
+
+**输出**
+- 一套不会混淆 `AGI` 与 `CUDA` 的解释器执行约束。
+
+**依赖**
+- `P0-T5`。
+
+**验收标准**
+- 后续进入 workflow 开发时，解释器选择逻辑已经被设计成显式配置，而不是隐式行为。
+
+---
+
+## 5. Phase 1：工作流基础设施
+
+## 5.1 目标
+
+建立独立于 task scoreboard 的 DG-TFT workflow 状态管理能力。
+
+## 5.2 TODO
+
+### P1-T1 新建 workflow 目录骨架
+- [ ] 创建 `src/workflow/`
+- [ ] 创建 `src/workflow/dg_tft/`
+- [ ] 新建：
+  - [ ] `__init__.py`
+  - [ ] `schema.py`
+  - [ ] `manager.py`
+  - [ ] `orchestrator.py`
+  - [ ] `stages.py`
+  - [ ] `artifacts.py`
+  - [ ] `dataset_inspector.py`
+  - [ ] `config_builder.py`
+  - [ ] `stage_runner.py`
+  - [ ] `diagnostics.py`
+  - [ ] `report_builder.py`
+  - [ ] `subagent_hooks.py`
+
+**依赖**
+- Phase 0 完成。
+
+**验收标准**
+- 目录完整、模块可 import。
+
+---
+
+### P1-T2 定义核心数据结构
+- [ ] 在 `schema.py` 定义 `WorkflowRun`；
+- [ ] 定义 `StageResult`；
+- [ ] 定义 `DatasetProfile`；
+- [ ] 定义 workflow 状态枚举，例如：
+  - [ ] `PENDING`
+  - [ ] `RUNNING`
+  - [ ] `DONE`
+  - [ ] `FAILED`
+  - [ ] `CANCELLED`
+- [ ] 定义 stage 名称常量。
+
+**依赖**
+- `P1-T1`。
+
+**验收标准**
+- 数据结构足以表达一次完整 run 的状态、产物、错误和指标。
+
+---
+
+### P1-T3 实现 `WorkflowManager`
+- [ ] 在 `manager.py` 中实现 run 创建；
+- [ ] 实现 `get_run(run_id)`；
+- [ ] 实现 `list_runs()`；
+- [ ] 实现 `update_stage(...)`；
+- [ ] 实现 `attach_artifact(...)`；
+- [ ] 实现 `attach_metric(...)`；
+- [ ] 实现 `mark_done(...)`；
+- [ ] 实现 `mark_failed(...)`；
+- [ ] 增加线程锁，保证并发安全。
+
+**依赖**
+- `P1-T2`。
+
+**验收标准**
+- 可以独立用代码创建、更新和查询 workflow run。
+
+---
+
+### P1-T4 增加 session 持久化
+- [ ] 设计持久化文件：`session/<uuid>/workflow_runs.json`；
+- [ ] 在 `WorkflowManager` 中实现 save/load；
+- [ ] 确认 JSON 结构稳定；
+- [ ] 处理恢复时的兼容问题。
+
+**依赖**
+- `P1-T3`。
+
+**验收标准**
+- session 恢复后，workflow run 状态仍可查询。
+
+---
+
+### P1-T5 将 `WorkflowManager` 挂到 `AgentContext`
+- [ ] 修改 `src/context/agent_context.py`；
+- [ ] 增加 `workflow_man` 成员；
+- [ ] 视需要增加后台 workflow registry；
+- [ ] 确保上下文保存/恢复时不破坏现有逻辑。
+
+**依赖**
+- `P1-T4`。
+
+**验收标准**
+- 主 agent 生命周期内可直接访问 workflow manager。
+
+---
+
+### P1-T6 在 `main.py` 中初始化 workflow manager
+- [ ] 在启动阶段配置 `workflow_man`；
+- [ ] 在 session resume 时加载 workflow runs；
+- [ ] 在 save session 时写回 workflow 状态。
+
+**依赖**
+- `P1-T5`。
+
+**验收标准**
+- 主程序启动后 workflow manager 处于可用状态。
+
+---
+
+### P1-T7 在 `stage_runner` 中集中实现解释器解析
+- [ ] 设计统一函数，例如 `resolve_modeling_python(ctx)`；
+- [ ] 该函数优先读取 `DG_TFT_MODELING_PYTHON_EXE`；
+- [ ] 统一返回建模阶段实际调用的解释器绝对路径；
+- [ ] 记录当前 Agent 解释器与建模解释器的差异。
+
+**依赖**
+- `P1-T6`。
+
+**验收标准**
+- 解释器解析逻辑只有一个入口，不分散在各个阶段实现中。
+
+---
+
+## 6. Phase 2：数据审计与 runtime config 自动生成
+
+## 6.1 目标
+
+输入一个数据路径，系统可以自动识别数据能力并生成本次 run 的独立配置文件。
+
+## 6.2 TODO
+
+### P2-T1 实现 `DatasetProfile`
+- [ ] 在 `dataset_inspector.py` 中定义 profile 构造流程；
+- [ ] 收集：
+  - [ ] 静态 IV 是否齐全；
+  - [ ] CV 是否齐全；
+  - [ ] 是否有温度列；
+  - [ ] 温度跨度；
+  - [ ] 是否有 I-t 数据；
+  - [ ] I-t 候选目录和文件列表；
+  - [ ] 问题列表。
+
+**依赖**
+- `P1-T2`。
+
+**验收标准**
+- 给定一个数据目录，能输出结构化 profile。
+
+---
+
+### P2-T2 包装现有 `validate_dataset.py`
+- [ ] 优先以 subprocess 或 import 方式调用现有 `validate_dataset.py`；
+- [ ] 将输出 JSON 解析为 workflow 可用结构；
+- [ ] 保留原始校验结果文件。
+
+**依赖**
+- `P2-T1`。
+
+**验收标准**
+- `dataset_validation.json` 可以被 workflow 正常消费。
+
+---
+
+### P2-T3 实现 I-t 目录自动发现逻辑
+- [ ] 支持用户显式指定 `hysteresis_dir`；
+- [ ] 支持在 `dataset_dir` 内查找；
+- [ ] 支持 `dataset_dir/hysteresis_it`；
+- [ ] 支持同级目录中包含 `it` / `hysteresis` 的候选路径；
+- [ ] 当存在多个候选时，保留候选列表。
+
+**依赖**
+- `P2-T1`。
+
+**验收标准**
+- 大部分常见目录组织方式下可以自动找到 I-t 数据。
+
+---
+
+### P2-T4 实现温度模型自动判定
+- [ ] 根据校验结果判断是否存在温度列；
+- [ ] 计算温度跨度；
+- [ ] 输出 `temperature_enabled` 推荐值；
+- [ ] 输出推荐的 `temperature.mode`。
+
+**依赖**
+- `P2-T2`。
+
+**验收标准**
+- 能自动判断 `on/off/auto` 建议。
+
+---
+
+### P2-T5 实现 HSPICE 可用性自动判定
+- [ ] 检查配置中的 `hspice_exe` 是否存在；
+- [ ] 如不存在，自动标记 `run_hspice = no`；
+- [ ] 记录为 warning，而不是直接 fail。
+
+**依赖**
+- `P2-T2`。
+
+**验收标准**
+- 无 HSPICE 环境时，workflow 可降级继续。
+
+---
+
+### P2-T6 实现 `config_builder.py`
+- [ ] 读取模板配置；
+- [ ] 生成本次 run 的 runtime config；
+- [ ] 自动填充：
+  - [ ] `data_dir`
+  - [ ] `hysteresis_data_dir`
+  - [ ] `output_dir`
+  - [ ] `hspice_exe`
+  - [ ] `hysteresis.enabled`
+  - [ ] `temperature.mode`
+  - [ ] `deployment.run_hspice`
+- [ ] 不覆盖原模板文件。
+
+**依赖**
+- `P2-T3`
+- `P2-T4`
+- `P2-T5`
+
+**验收标准**
+- 能在 run 工作目录下生成独立配置文件。
+
+---
+
+### P2-T7 保存配置解析结果
+- [ ] 生成 `config_resolution.json`；
+- [ ] 生成 `dataset_profile.json`；
+- [ ] 把这些路径挂到 workflow artifacts。
+
+**依赖**
+- `P2-T6`。
+
+**验收标准**
+- 用户和开发者都能回看本次自动判定依据。
+
+---
+
+## 7. Phase 3：固定工作流执行器（subprocess 版）
+
+## 7.1 目标
+
+不改动太多原数值脚本的前提下，先打通“给路径即可全自动跑”的闭环。
+
+## 7.2 TODO
+
+### P3-T1 定义 workflow stage 顺序
+- [ ] 在 `stages.py` 中定义标准阶段列表；
+- [ ] 明确每个阶段的前置条件；
+- [ ] 明确 optional 阶段（迟滞、HSPICE 验证）。
+
+**依赖**
+- Phase 2 完成。
+
+**验收标准**
+- 工作流阶段图固定且可配置。
+
+---
+
+### P3-T2 实现 `stage_runner.py` 的 subprocess 执行能力
+- [ ] 封装统一命令执行函数；
+- [ ] 支持超时；
+- [ ] 支持 stdout/stderr 捕获；
+- [ ] 支持阶段输出目录检查；
+- [ ] 返回 `StageResult`；
+- [ ] 所有阶段命令都必须通过 `resolve_modeling_python(ctx)` 取解释器；
+- [ ] 禁止在阶段命令构造中直接使用 `sys.executable`；
+- [ ] 在阶段日志中打印实际使用的建模解释器路径。
+
+**依赖**
+- `P3-T1`。
+
+**验收标准**
+- 任一阶段都能以统一方式执行和收集结果。
+
+---
+
+### P3-T3 实现 `check-data` 阶段执行
+- [ ] 调用 `run_model.py check-data --config ...`；
+- [ ] 收集 `dataset_validation.json`；
+- [ ] 将结果写入 workflow run。
+
+**依赖**
+- `P3-T2`。
+
+**验收标准**
+- 静态数据检查可自动完成。
+
+---
+
+### P3-T4 实现 `fit-physical` 阶段执行
+- [ ] 调用 `fit-physical`；
+- [ ] 检查 `fitted_params.json`；
+- [ ] 校验关键产物是否存在；
+- [ ] 将输出目录登记到 artifacts。
+
+**依赖**
+- `P3-T3`。
+
+**验收标准**
+- 物理内核阶段自动完成并可判断成功/失败。
+
+---
+
+### P3-T5 实现 `train-base-pkan` 阶段执行
+- [ ] 调用 `train-base-pkan`；
+- [ ] 检查 `pkan_torch_model.pt`；
+- [ ] 挂接阶段 summary。
+
+**依赖**
+- `P3-T4`。
+
+**验收标准**
+- 基础 KAN 训练可自动完成。
+
+---
+
+### P3-T6 实现 `train-static` 阶段执行
+- [ ] 调用 `train-static`；
+- [ ] 检查静态模型产物；
+- [ ] 检查静态 Verilog-A 输出；
+- [ ] 读取关键精度结果。
+
+**依赖**
+- `P3-T5`。
+
+**验收标准**
+- 静态全模型可自动完成。
+
+---
+
+### P3-T7 实现 `train-hysteresis` 条件执行
+- [ ] 仅当 `DatasetProfile.has_hysteresis == True` 时执行；
+- [ ] 调用 `train-hysteresis`；
+- [ ] 检查动态 bank / `.va` / `.inc` 产物；
+- [ ] 若关闭则记录 skip 原因。
+
+**依赖**
+- `P3-T6`。
+
+**验收标准**
+- 有 I-t 数据时自动跑，无 I-t 数据时自动跳过。
+
+---
+
+### P3-T8 实现 `orchestrator.py`
+- [ ] 串联全部阶段；
+- [ ] 支持阶段状态更新；
+- [ ] 支持失败即停；
+- [ ] 支持 optional 阶段 skip；
+- [ ] 支持最终状态收敛。
+
+**依赖**
+- `P3-T3` ~ `P3-T7`。
+
+**验收标准**
+- 一次 workflow run 可以完整推进到 done 或 failed。
+
+---
+
+### P3-T9 生成 run 工作目录结构
+- [ ] 约定输出根目录结构；
+- [ ] 创建 `runtime_config/`；
+- [ ] 创建 `artifacts/` 或 summary 文件位置；
+- [ ] 保证不同 run 相互隔离。
+
+**依赖**
+- `P3-T8`。
+
+**验收标准**
+- 每次 run 的文件组织清晰且互不覆盖。
+
+---
+
+## 8. Phase 4：接入 Agent 工具与命令
+
+## 8.1 目标
+
+让主 agent 能优先调用固定 workflow，而不是自己临场拼 bash。
+
+## 8.2 TODO
+
+### P4-T1 新增 workflow tool schema
+- [ ] 在 `src/tool/tool_def.py` 新增：
+  - [ ] `start_dg_tft_workflow`
+  - [ ] `query_dg_tft_workflow`
+  - [ ] `read_dg_tft_workflow_report`
+- [ ] 明确定义参数与返回结构。
+
+**依赖**
+- Phase 3 完成。
+
+**验收标准**
+- 工具定义可被主 agent 正常看到。
+
+---
+
+### P4-T2 实现 workflow tool handler
+- [ ] 在 `tool_def.py` 中实现三个工具对应函数；
+- [ ] 调用 `workflow_man` 和 `orchestrator`；
+- [ ] 返回结构化结果。
+
+**依赖**
+- `P4-T1`。
+
+**验收标准**
+- 工具可被实际调用并返回结果。
+
+---
+
+### P4-T3 注册 workflow tool dispatch
+- [ ] 修改 `src/tool/tool_dispatch.py`；
+- [ ] 加入三个工具的 dispatch 分支。
+
+**依赖**
+- `P4-T2`。
+
+**验收标准**
+- 工具调用不落入 undefined 分支。
+
+---
+
+### P4-T4 增加内建命令
+- [ ] 在 `src/utility/command.py` 增加：
+  - [ ] `/workflow_list`
+  - [ ] `/workflow_get <run_id>`
+  - [ ] `/workflow_report <run_id>`
+- [ ] 在命令系统中注册。
+
+**依赖**
+- `P4-T2`。
+
+**验收标准**
+- 不走 LLM 也可查询 workflow 运行结果。
+
+---
+
+### P4-T5 优化 prompt 路由逻辑
+- [ ] 在 `src/context/prompt.py` 中增加“识别 DG-TFT 自动建模请求时优先用 workflow tool”的提示约束；
+- [ ] 避免主 agent 将该类请求拆成大量零散工具调用。
+
+**依赖**
+- `P4-T1`。
+
+**验收标准**
+- 用户说“对某目录做全自动建模”时，主 agent倾向直接调用 workflow tool。
+
+---
+
+## 9. Phase 5：报告、产物与任务板协同
+
+## 9.1 目标
+
+每次 run 完成后，自动输出清晰、可复盘的结果文件，并且与 task scoreboard 协同展示进度。
+
+## 9.2 TODO
+
+### P5-T1 设计 artifacts 管理规则
+- [ ] 在 `artifacts.py` 中定义产物 key；
+- [ ] 统一约定常见产物命名；
+- [ ] 定义 summary / manifest 路径。
+
+**依赖**
+- Phase 3 完成。
+
+**验收标准**
+- 各阶段产物的记录格式统一。
+
+---
+
+### P5-T2 实现 `report_builder.py`
+- [ ] 生成 `RUN_SUMMARY.md`；
+- [ ] 生成 `RUN_SUMMARY.json`；
+- [ ] 生成 `ARTIFACT_MANIFEST.json`；
+- [ ] 汇总关键指标与路径。
+
+**依赖**
+- `P5-T1`。
+
+**验收标准**
+- 一次 run 结束后一定有 summary 和 manifest。
+
+---
+
+### P5-T3 把 workflow 状态映射到任务板
+- [ ] 设计默认任务树：
+  - [ ] 审计数据集
+  - [ ] 生成运行配置
+  - [ ] 执行静态建模
+  - [ ] 执行迟滞建模（若启用）
+  - [ ] 执行部署验证
+  - [ ] 生成最终报告
+- [ ] 在 workflow 启动时自动创建对应任务；
+- [ ] 在阶段推进时自动更新 task status。
+
+**依赖**
+- `P4-T2`。
+
+**验收标准**
+- 用户能在 scoreboard 中看到 workflow 的阶段进度。
+
+---
+
+### P5-T4 输出用户友好的最终摘要
+- [ ] 成功时输出：关键路径、关键指标、是否启用温度/迟滞、VA 文件位置；
+- [ ] 失败时输出：失败阶段、主要原因、建议下一步。
+
+**依赖**
+- `P5-T2`。
+
+**验收标准**
+- 用户不需要自己翻目录找结果。
+
+---
+
+## 10. Phase 6：失败诊断与 subagent 协作
+
+## 10.1 目标
+
+当 workflow 失败或存在模糊情况时，自动调用 subagent 做解释、诊断和总结。
+
+## 10.2 TODO
+
+### P6-T1 实现 `diagnostics.py`
+- [ ] 定义错误分类：
+  - [ ] `DATA_ERROR`
+  - [ ] `CONFIG_ERROR`
+  - [ ] `TRAINING_NUMERICAL_ERROR`
+  - [ ] `MISSING_ARTIFACT_ERROR`
+  - [ ] `HSPICE_ENV_ERROR`
+  - [ ] `UNKNOWN_ERROR`
+- [ ] 实现日志归类规则。
+
+**依赖**
+- Phase 5 完成。
+
+**验收标准**
+- 失败 run 可以被归入有限类别。
+
+---
+
+### P6-T2 实现 `subagent_hooks.py`
+- [ ] 定义何时调用 `explorer` subagent；
+- [ ] 定义何时调用 `worker` subagent；
+- [ ] 定义 prompt 模板。
+
+**依赖**
+- `P6-T1`。
+
+**验收标准**
+- subagent 调用点明确且不滥用。
+
+---
+
+### P6-T3 数据异常自动解释
+- [ ] 数据审计失败时自动读取 JSON/日志；
+- [ ] 调用 `explorer` subagent 生成可读说明；
+- [ ] 将说明写入 workflow summary。
+
+**依赖**
+- `P6-T2`。
+
+**验收标准**
+- 数据错误不再只是原始报错堆栈。
+
+---
+
+### P6-T4 训练失败自动解释
+- [ ] `fit-physical` / `train-base-pkan` / `train-static` / `train-hysteresis` 任意阶段失败时，自动分析 stdout/stderr；
+- [ ] 用 `explorer` subagent 归纳失败原因。
+
+**依赖**
+- `P6-T3`。
+
+**验收标准**
+- 用户能直接看到“可能原因”和“建议处理方式”。
+
+---
+
+### P6-T5 最终报告增强
+- [ ] 使用 `worker` subagent 生成更自然的最终摘要草稿；
+- [ ] 规则模板作为兜底；
+- [ ] 避免让 LLM 决定事实，只让它组织语言。
+
+**依赖**
+- `P6-T2`。
+
+**验收标准**
+- 总结质量提升，但仍保持可控。
+
+---
+
+## 11. Phase 7：脚本函数化重构
+
+## 11.1 目标
+
+把 DG-TFT 建模代码从“脚本集合”升级为“可 import API”，降低 workflow 对 subprocess 的依赖。
+
+## 11.2 TODO
+
+### P7-T1 函数化 `validate_dataset.py`
+- [ ] 提供 `validate_dataset(...) -> dict`；
+- [ ] CLI 只保留为包装层；
+- [ ] workflow 优先调用函数，不再依赖 stdout 解析。
+
+**依赖**
+- Phase 6 完成。
+
+**验收标准**
+- 数据校验可直接通过 Python 调用。
+
+---
+
+### P7-T2 函数化 `fit_physical_kernel.py`
+- [ ] 提供 `fit_physical(...)->StageResult`；
+- [ ] 保留 CLI 入口兼容；
+- [ ] 把关键结果结构化返回。
+
+**依赖**
+- `P7-T1`。
+
+**验收标准**
+- 物理内核阶段可直接函数调用。
+
+---
+
+### P7-T3 函数化 `train_base_pkan.py`
+- [ ] 提供 `train_base_pkan(...)->StageResult`；
+- [ ] 结构化返回 best metrics 和模型路径。
+
+**依赖**
+- `P7-T2`。
+
+**验收标准**
+- base pkan 阶段可脱离 subprocess。
+
+---
+
+### P7-T4 函数化 `dg_tft_full_model.py`
+- [ ] 提供 `train_full_model(...)->StageResult`；
+- [ ] 提取静态关键指标；
+- [ ] 返回 VA 产物信息。
+
+**依赖**
+- `P7-T3`。
+
+**验收标准**
+- 静态训练阶段可函数调用。
+
+---
+
+### P7-T5 函数化动态模块
+- [ ] 函数化 `analyze_it_hysteresis.py`；
+- [ ] 函数化 `train_srh_top2_regime_banks.py`；
+- [ ] 函数化导出和验证脚本；
+- [ ] 统一返回 `StageResult`。
+
+**依赖**
+- `P7-T4`。
+
+**验收标准**
+- 动态阶段也可脱离 subprocess。
+
+---
+
+### P7-T6 切换 workflow 到 import API 模式
+- [ ] 在 `config/agent_configs.json` 中支持 `DG_TFT_USE_IMPORT_API=true`；
+- [ ] 在 `stage_runner.py` 中新增 import 执行分支；
+- [ ] 保留 subprocess fallback。
+
+**依赖**
+- `P7-T5`。
+
+**验收标准**
+- 工作流默认走函数调用，必要时仍可回退 CLI。
+
+---
+
+## 12. Phase 8：测试、稳定性与文档收尾
+
+## 12.1 目标
+
+把整个能力从“能跑”提升到“能维护、能验证、能交付”。
+
+## 12.2 TODO
+
+### P8-T1 新增 workflow 单元测试
+- [ ] `test/dg_tft_workflow_manager_test.py`
+- [ ] `test/dg_tft_dataset_inspector_test.py`
+- [ ] `test/dg_tft_config_builder_test.py`
+- [ ] `test/dg_tft_stage_runner_test.py`
+- [ ] `test/dg_tft_diagnostics_test.py`
+
+**依赖**
+- Phase 7 基本完成。
+
+**验收标准**
+- 核心 workflow 组件有基础单元测试覆盖。
+
+---
+
+### P8-T2 新增 Agent 集成测试
+- [ ] `test/dg_tft_workflow_tool_test.py`
+- [ ] `test/dg_tft_workflow_background_test.py`
+- [ ] 测试主 agent 是否优先用 workflow tool；
+- [ ] 测试任务板联动。
+
+**依赖**
+- `P8-T1`。
+
+**验收标准**
+- workflow 已真正接入 agent，而不是只在模块层可跑。
+
+---
+
+### P8-T3 准备三类测试数据集
+- [ ] 仅静态示例数据；
+- [ ] 静态 + I-t 完整数据；
+- [ ] 故意损坏的数据。
+
+**依赖**
+- `P8-T1`。
+
+**验收标准**
+- 覆盖 success / partial / fail 三类典型场景。
+
+---
+
+### P8-T4 更新使用文档
+- [ ] 更新 `doc/` 中的用户使用说明；
+- [ ] 增加“如何启动 DG-TFT 自动建模 workflow”；
+- [ ] 增加“失败后如何查看报告”。
+
+**依赖**
+- `P8-T2`。
+
+**验收标准**
+- 用户知道如何使用新能力。
+
+---
+
+### P8-T5 收尾检查
+- [ ] 清理临时调试代码；
+- [ ] 检查 import 路径一致性；
+- [ ] 检查 session 持久化兼容性；
+- [ ] 检查命名统一性；
+- [ ] 检查产物路径是否有硬编码问题。
+
+**依赖**
+- `P8-T4`。
+
+**验收标准**
+- 功能可持续维护，不依赖开发时临时假设。
+
+---
+
+## 13. 推荐优先级
+
+如果你希望按投入产出比排序，建议优先级如下：
+
+### 第一优先级
+- [ ] `P0-T1` ~ `P0-T5`
+- [ ] `P1-T1` ~ `P1-T6`
+- [ ] `P2-T1` ~ `P2-T7`
+- [ ] `P3-T1` ~ `P3-T9`
+- [ ] `P4-T1` ~ `P4-T3`
+
+这部分做完，就已经有“给路径即可全自动跑”的第一版闭环。
+
+### 第二优先级
+- [ ] `P4-T4`
+- [ ] `P4-T5`
+- [ ] `P5-T1` ~ `P5-T4`
+- [ ] `P6-T1` ~ `P6-T5`
+
+这部分做完，系统会更像真正的 Agent 产品，而不是单纯脚本调度器。
+
+### 第三优先级
+- [ ] `P7-T1` ~ `P7-T6`
+- [ ] `P8-T1` ~ `P8-T5`
+
+这部分做完，系统才进入“可维护、可扩展”的工程化成熟阶段。
+
+---
+
+## 14. 第一批建议直接开工的任务
+
+如果你要马上进入编码，我建议第一批只做下面 10 项：
+
+- [ ] `P0-T1` 确认 DG-TFT 建模代码正式位置
+- [ ] `P0-T2` 建立 `src/device_modeling/dg_tft/`
+- [ ] `P0-T3` 迁移/镜像现有脚本
+- [ ] `P1-T1` 新建 `src/workflow/dg_tft/` 骨架
+- [ ] `P1-T2` 定义 `WorkflowRun / StageResult / DatasetProfile`
+- [ ] `P1-T3` 实现 `WorkflowManager`
+- [ ] `P2-T6` 实现 `config_builder.py`
+- [ ] `P3-T2` 实现统一 `stage_runner.py`
+- [ ] `P3-T8` 实现 `orchestrator.py`
+- [ ] `P4-T1` + `P4-T2` 接 `start_dg_tft_workflow`
+
+这 10 项完成后，你就会拥有一版真正可用的第一代系统。
+
+---
+
+## 15. 后续追踪建议
+
+建议后续追踪时，不要只写“开始做 workflow”。建议按下面粒度追踪：
+
+- 数据层是否可用；
+- 配置层是否稳定；
+- stage runner 是否统一；
+- summary 是否能自动落地；
+- 失败是否可解释；
+- agent 是否优先走 workflow tool；
+- 是否保留 subprocess fallback；
+- 是否已经开始函数化迁移。
+
+这样后续每次开发回顾都会更清晰。
+
+---
+
+## 16. 一句总结
+
+这份 TODO 的核心顺序就是：
+
+```text
+先把 DG-TFT 旧脚本包装成稳定 workflow
+再把 workflow 接入 DeviceAgent
+最后再把 DG-TFT 建模模块逐步重构成可调用 API
+```
+
+这是风险最低、最容易持续推进的路线。
+
+---
+
+## 17. 开发日志
+
+### 2026-06-25 | Phase 0 + Phase 1 完成
+
+**完成内容**
+- P0-T1 ~ P0-T6：DG-TFT 建模代码迁移至 `src/device_modeling/dg_tft/`，创建环境文档，固化解释器路由到 `config/agent_configs.json`
+- P1-T1 ~ P1-T7：建立 `src/workflow/dg_tft/` 工作流骨架，实现 `WorkflowRun`/`StageResult`/`DatasetProfile` 数据结构、`WorkflowManager` 线程安全 CRUD、session 持久化、挂载到 `AgentContext`、`main.py` 初始化、`stage_runner` 解释器解析
+
+**新增文件清单**
+
+```
+src/device_modeling/dg_tft/           # 建模代码迁移
+  run_model.py
+  ENVIRONMENT.md
+  config/{model_config.ini, model_config_new_device_template.ini, 关键参数说明.csv}
+  engine/{dg_tft_ekv_level2.va, dg_tft_full_model.py, fit_physical_kernel.py, train_base_pkan.py, validate_dataset.py}
+  dynamic/{analyze_it_hysteresis.py, train_srh_top2_regime_banks.py, ...}
+  deployment/{README.md}
+  reporting/{build_*.py, ...}
+
+src/workflow/dg_tft/                 # 工作流引擎
+  schema.py              # 数据结构定义
+  manager.py             # 工作流管理器
+  stage_runner.py        # 统一阶段执行 + 解释器解析
+  orchestrator.py        # (占位)
+  stages.py              # (占位)
+  artifacts.py           # (占位)
+  dataset_inspector.py   # (占位)
+  config_builder.py      # (占位)
+  diagnostics.py         # (占位)
+  report_builder.py      # (占位)
+  subagent_hooks.py      # (占位)
+
+test/
+  dg_tft_schema_test.py          # 18 tests
+  dg_tft_manager_test.py         # 24 tests
+  dg_tft_stage_runner_test.py    # 13 tests
+  dg_tft_integration_test.py     # 14 tests (含闭环集成)
+```
+
+**修改文件清单**
+
+| 文件 | 修改内容 |
+|------|---------|
+| `config/agent_configs.json` | 新增 9 项 DG_TFT 配置（解释器路径、输出目录、HSPICE 开关等） |
+| `src/context/agent_context.py` | 新增 `workflow_man: WorkflowManager` 成员 + `to_dict`/`from_dict`/`save_context`/`load_context` 中融入 workflow 持久化 |
+| `src/main.py` | 新增 workflow_man 初始化 + session resume 加载 |
+
+---
+
+## 18. 经验总结与注意事项
+
+### 18.1 Python 模块双重导入陷阱
+
+**问题**：`from src.workflow.dg_tft.schema import StageResult` 和 `from workflow.dg_tft.schema import StageResult`（当 `sys.path` 含 `src/` 时）被 Python 识别为**两个不同的模块**，导致 `isinstance(v, StageResult)` 返回 False，进而引发序列化/反序列化失败。
+
+**表现**：`asdict` / `to_dict` 看起来正确，但序列化后的 dict 中仍包含原始对象（而非 dict），`from_dict` 时 `StageResult(**v)` 报错 `argument after ** must be a mapping, not StageResult`。
+
+**根本原因**：
+- 包内模块（`manager.py`）使用 `from src.workflow.dg_tft.schema import ...`（绝对导入）
+- 测试代码使用 `from workflow.dg_tft.schema import ...`（相对导入，依赖 `sys.path`）
+- Python 的 `sys.modules` 会为两条路径注册两个独立 module 对象
+
+**修复方案**：
+1. 包内模块统一使用**相对导入**：`from .schema import ...`
+2. 类型检查避免 `isinstance`，改用 `hasattr(v, "__dataclass_fields__")` 鸭子类型检测
+3. 所有 `WorkflowRun`/`StageResult` 等交叉引用的类，尽量从同一模块路径 import
+
+**教训**：在 `src/` 内的模块之间互引用，统一使用相对导入（`from .xxx import`）。对外部调用方（如 `main.py`、`agent_context.py`）保持现有的绝对导入约定（`from src.xxx.yyy import`）。
+
+### 18.2 `dataclass.asdict` 行为注意
+
+- `asdict` 递归转换嵌套 dataclass 实例为 dict
+- 对于 `dict[str, StageResult]` 类型字段，`asdict` 会将其值（StageResult 对象）递归转换为 dict
+- 但如果 `isinstance` 因模块双重导入失效，`asdict` 本身仍然能正确递归（因为它遍历 `__dataclass_fields__`）
+- **结论**：在 `to_dict()` 实现中，直接使用 `asdict` 比依赖 `isinstance` 更健壮
+
+### 18.3 StageResult 与 WorkflowRun 的 metrics 分离
+
+`WorkflowRun` 有两个 metrics 来源：
+1. `workflow_run.metrics` — 工作流级别的聚合指标，通过 `attach_metric()` 写入
+2. `stage_result.metrics` — 单个阶段内部的指标，仅在该阶段记录中可见
+
+两者**独立维护**，聚合需由调用方负责。设计如此，避免阶段内部指标自动污染 workflow 级指标。
+
+### 18.4 `__pycache__` 缓存问题
+
+开发过程中发现旧的 `__pycache__` 会导致代码修改不生效。建议：
+- 每次模块重构后，清除对应 `__pycache__/`
+- 可在提交前运行 `clean.bat` 清理
+
+### 18.5 测试策略建议
+
+当前测试覆盖：
+- **单元测试**（`dg_tft_schema_test` / `dg_tft_manager_test` / `dg_tft_stage_runner_test`）：覆盖数据结构序列化、CRUD、解释器解析
+- **集成测试**（`dg_tft_integration_test`）：覆盖 AgentContext ↔ WorkflowManager 集成、完整工作流生命周期模拟（成功/失败/无迟滞）、JSON 文件持久化
+
+运行命令：
+```bash
+# 全部 DG-TFT 测试
+python -m unittest test.dg_tft_schema_test test.dg_tft_manager_test test.dg_tft_stage_runner_test test.dg_tft_integration_test -v
+
+# 仅集成测试（需 agent_configs.json 存在）
+python -m unittest test.dg_tft_integration_test -v
+```
+
+后续 Phase 开发建议：每个新模块（`dataset_inspector.py`、`config_builder.py` 等）同步编写对应测试文件，保持 TDD 节奏。
+
+### 18.6 下一步 Phase 2 关键点
+
+1. `dataset_inspector.py` 需要调用 `engine/validate_dataset.py`，注意**解释器分离**：inspector 本身是 Agent 代码（运行在 AGI 环境），但它需要 subprocess 调用 CUDA 环境的 `validate_dataset.py`
+2. `config_builder.py` 需读取 `config/model_config_new_device_template.ini` 模板，按 `DatasetProfile` 填入动态字段
+3. 实现时优先考虑**独立测试**：可 mock 文件系统，不依赖真实数据目录

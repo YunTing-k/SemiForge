@@ -164,6 +164,13 @@ if __name__ == '__main__':
     if ctx.args.resume is not None:
         ctx.run_man.load_from_file(console=console, mute=False)
 
+    """create/resume workflow manager"""
+    ctx.workflow_man.session_uuid = ctx.session_uuid
+    sys_log.debug("Workflow manager of this TECoSim Agent session configured")
+    console.print(f"[{MAJOR_COLOR2}]Workflow manager[/{MAJOR_COLOR2}] of this TECoSim Agent session configured")
+    if ctx.args.resume is not None:
+        ctx.workflow_man.load_runs()
+
     """load durable cron tasks"""
     if not ctx.args.nocrons:
         # cron tasks can be modified in runtime, first read durable tasks

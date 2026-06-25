@@ -1,0 +1,231 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Charge-based EKV double-gate TFT model with static fitting extensions.
+//
+// Included effects:
+//   1. Temperature dependence: phi_t, Vth(T), mu(T), n(T), Rs/Rd(T)
+//   2. Source/drain access resistance through internal nodes di/si
+//   3. Charge-based EKV intrinsic IV/CV core
+//   4. Mobility degradation controlled by average inversion charge
+//   5. Smooth channel-length modulation in saturation
+//   6. Linear overlap/fringe capacitors between gates and external S/D
+//
+// Sign convention:
+//   Ids is positive from drain to source.
+//   Intrinsic terminal charges satisfy Q_tg + Q_bg + Q_d + Q_s = 0.
+
+module dg_tft_ekv_level2(tg, bg, d, s);
+    inout tg, bg, d, s;
+    electrical tg, bg, d, s;
+    electrical di, si;
+
+    // Geometry and intrinsic electrostatics
+    parameter real W       = 20e-6 from (0:inf);
+    parameter real L       = 5e-6  from (0:inf);
+    parameter real Cox_t   = 3.45e-4 from (0:inf); // F/m^2
+    parameter real Cox_b   = 3.45e-4 from (0:inf); // F/m^2
+    parameter real Vth_t0  = 1.0;
+    parameter real Vth_b0  = 1.0;
+    parameter real nfac0   = 1.3 from [1:inf);
+    parameter real Vknee_t = 1.0e6;                // V, top-gate saturation onset
+    parameter real Vknee_b = 1.0e6;                // V, bottom-gate saturation onset
+    parameter real Vmodsat_t = 1.0e6 from (0:inf); // V, top-gate post-knee modulation range
+    parameter real Vmodsat_b = 1.0e6 from (0:inf); // V, bottom-gate post-knee modulation range
+
+    // Transport
+    parameter real mu0       = 10e-4 from (0:inf); // m^2/V/s at Tnom
+    parameter real theta_mu  = 0.0 from [0:inf);   // 1/V, mobility degradation
+    parameter real lambda_clm = 0.0 from [0:inf);  // 1/V, channel-length modulation
+
+    // Series resistance, absolute Ohms
+    parameter real Rs0    = 0.0 from [0:inf);
+    parameter real Rd0    = 0.0 from [0:inf);
+    parameter real rmin   = 1.0e-3 from (0:inf);
+
+    // Temperature
+    parameter real Tnom   = 300.0 from (0:inf);
+    parameter real kvt_t  = -2.0e-3; // V/K
+    parameter real kvt_b  = -2.0e-3; // V/K
+    parameter real ute    = -1.5;    // mu ~ (T/Tnom)^ute
+    parameter real Ea_mu  = 0.0;     // eV, optional activated mobility
+    parameter real knfac  = 0.0;     // 1/K
+    parameter real trs    = 0.0;     // Rs/Rd ~ (T/Tnom)^trs
+    parameter real Ea_rs  = 0.0;     // eV, optional activated contact/access resistance
+
+    // Extrinsic gate overlap/fringe capacitance, per width plus fixed part.
+    parameter real Cov_tgs_w = 0.0 from [0:inf); // F/m
+    parameter real Cov_tgd_w = 0.0 from [0:inf);
+    parameter real Cov_bgs_w = 0.0 from [0:inf);
+    parameter real Cov_bgd_w = 0.0 from [0:inf);
+    parameter real Cfr_tgs   = 0.0 from [0:inf); // F
+    parameter real Cfr_tgd   = 0.0 from [0:inf);
+    parameter real Cfr_bgs   = 0.0 from [0:inf);
+    parameter real Cfr_bgd   = 0.0 from [0:inf);
+
+    // Numerical smoothing and floor parameters
+    parameter real qmin   = 1.0e-30 from (0:inf);
+    parameter real vsoft  = 1.0e-3 from (0:inf);
+
+    real Tdev, phi_t, mu_T, mu_eff, nfac, nraw;
+    real Vth_t, Vth_b, Rs_eff, Rd_eff, tratio;
+    real Vtg, Vbg, Vds;
+    real Cox, at, ab;
+    real Vov_t_raw, Vov_b_raw, Vov_t, Vov_b, Vov, Vp;
+    real ys, yd, qs, qd, qbar, delta;
+    real Ispec, Id0, Ids;
+    real Vmob, Vabs, Vdsat, Vexcess, clm;
+    real Den, Ns, Nd;
+    real Q_tg, Q_bg, Q_d, Q_s;
+    real Ctgs, Ctgd, Cbgs, Cbgd;
+
+    analog function real smooth_pos;
+        input x, s;
+        real x, s;
+        begin
+            smooth_pos = 0.5*(x + sqrt(x*x + s*s));
+        end
+    endfunction
+
+    analog function real one_sided_sat;
+        input x, xknee, xsat, s;
+        real x, xknee, xsat, s, p;
+        begin
+            p = smooth_pos(x - xknee, s);
+            one_sided_sat = x - p + xsat*(1.0 - exp(-p/xsat));
+        end
+    endfunction
+
+    analog function real ekv_qsolve;
+        input y;
+        real y, q, f, fp;
+        begin
+            if (y > 2.0)
+                q = 0.5*y + 1.0e-12;
+            else
+                q = exp((y > -80.0) ? y : -80.0);
+
+            if (q < qmin) q = qmin;
+
+            f = 2.0*q + ln(q) - y;
+            fp = 2.0 + 1.0/q;
+            q = q - f/fp;
+            if (q < qmin) q = qmin;
+
+            f = 2.0*q + ln(q) - y;
+            fp = 2.0 + 1.0/q;
+            q = q - f/fp;
+            if (q < qmin) q = qmin;
+
+            f = 2.0*q + ln(q) - y;
+            fp = 2.0 + 1.0/q;
+            q = q - f/fp;
+            if (q < qmin) q = qmin;
+
+            f = 2.0*q + ln(q) - y;
+            fp = 2.0 + 1.0/q;
+            q = q - f/fp;
+            if (q < qmin) q = qmin;
+
+            f = 2.0*q + ln(q) - y;
+            fp = 2.0 + 1.0/q;
+            q = q - f/fp;
+            if (q < qmin) q = qmin;
+
+            ekv_qsolve = q;
+        end
+    endfunction
+
+    analog begin
+        Tdev   = $temperature;
+        tratio = Tdev/Tnom;
+        phi_t  = `P_K*Tdev/`P_Q;
+
+        Vth_t = Vth_t0 + kvt_t*(Tdev - Tnom);
+        Vth_b = Vth_b0 + kvt_b*(Tdev - Tnom);
+        nraw  = nfac0 + knfac*(Tdev - Tnom);
+        nfac  = 1.0 + smooth_pos(nraw - 1.0, 1.0e-6);
+
+        mu_T   = mu0*pow(tratio, ute)
+               * exp(-(Ea_mu/(`P_K/`P_Q))*(1.0/Tdev - 1.0/Tnom));
+        Rs_eff = Rs0*pow(tratio, trs)
+               * exp( (Ea_rs/(`P_K/`P_Q))*(1.0/Tdev - 1.0/Tnom));
+        Rd_eff = Rd0*pow(tratio, trs)
+               * exp( (Ea_rs/(`P_K/`P_Q))*(1.0/Tdev - 1.0/Tnom));
+        Rs_eff = sqrt(Rs_eff*Rs_eff + rmin*rmin);
+        Rd_eff = sqrt(Rd_eff*Rd_eff + rmin*rmin);
+
+        // Access resistances. The small rmin avoids singular internal nodes.
+        I(d, di) <+ V(d, di)/Rd_eff;
+        I(s, si) <+ V(s, si)/Rs_eff;
+
+        Vtg = V(tg, si);
+        Vbg = V(bg, si);
+        Vds = V(di, si);
+
+        Cox = Cox_t + Cox_b;
+        at  = Cox_t/Cox;
+        ab  = Cox_b/Cox;
+
+        Vov_t_raw = Vtg - Vth_t;
+        Vov_b_raw = Vbg - Vth_b;
+        Vov_t = one_sided_sat(Vov_t_raw, Vknee_t, Vmodsat_t, vsoft);
+        Vov_b = one_sided_sat(Vov_b_raw, Vknee_b, Vmodsat_b, vsoft);
+        Vov   = at*Vov_t + ab*Vov_b;
+        Vp    = Vov/nfac;
+
+        ys = Vp/phi_t;
+        yd = (Vp - Vds)/phi_t;
+        qs = ekv_qsolve(ys);
+        qd = ekv_qsolve(yd);
+
+        qbar = ((2.0/3.0)*(qs*qs + qs*qd + qd*qd) + 0.5*(qs + qd))
+             / (qs + qd + 1.0);
+
+        // Mobility degradation uses average inversion-charge overdrive.
+        Vmob   = 2.0*nfac*phi_t*qbar;
+        mu_eff = mu_T/(1.0 + theta_mu*Vmob);
+
+        Ispec = 2.0*nfac*mu_eff*Cox*phi_t*phi_t*W/L;
+        Id0   = Ispec*((qs*qs + qs) - (qd*qd + qd));
+
+        // Smooth, sign-symmetric channel-length modulation.
+        Vabs    = sqrt(Vds*Vds + vsoft*vsoft);
+        Vdsat   = smooth_pos(Vp, vsoft);
+        Vexcess = smooth_pos(Vabs - Vdsat, vsoft);
+        clm     = 1.0 + lambda_clm*Vexcess;
+        Ids     = Id0*clm;
+
+        delta = Vov_t - Vov_b;
+        Q_tg = W*L*Cox_t*( ab*delta + 2.0*nfac*phi_t*qbar);
+        Q_bg = W*L*Cox_b*(-at*delta + 2.0*nfac*phi_t*qbar);
+
+        Den = 60.0*(qs + qd + 1.0)*(qs + qd + 1.0);
+        Ns = 24.0*qs*qs*qs + 48.0*qs*qs*qd + 32.0*qs*qd*qd + 16.0*qd*qd*qd
+           + 45.0*qs*qs    + 50.0*qs*qd    + 25.0*qd*qd
+           + 20.0*qs       + 10.0*qd;
+        Nd = 16.0*qs*qs*qs + 32.0*qs*qs*qd + 48.0*qs*qd*qd + 24.0*qd*qd*qd
+           + 25.0*qs*qs    + 50.0*qs*qd    + 45.0*qd*qd
+           + 10.0*qs       + 20.0*qd;
+        Q_s = -2.0*nfac*Cox*phi_t*W*L*Ns/Den;
+        Q_d = -2.0*nfac*Cox*phi_t*W*L*Nd/Den;
+
+        I(di, si) <+ Ids;
+
+        // Intrinsic terminal charges.
+        I(tg) <+ ddt(Q_tg);
+        I(bg) <+ ddt(Q_bg);
+        I(di) <+ ddt(Q_d);
+        I(si) <+ ddt(Q_s);
+
+        // Extrinsic overlap/fringe capacitors to external source/drain metals.
+        Ctgs = Cov_tgs_w*W + Cfr_tgs;
+        Ctgd = Cov_tgd_w*W + Cfr_tgd;
+        Cbgs = Cov_bgs_w*W + Cfr_bgs;
+        Cbgd = Cov_bgd_w*W + Cfr_bgd;
+        I(tg, s) <+ ddt(Ctgs*V(tg, s));
+        I(tg, d) <+ ddt(Ctgd*V(tg, d));
+        I(bg, s) <+ ddt(Cbgs*V(bg, s));
+        I(bg, d) <+ ddt(Cbgd*V(bg, d));
+    end
+endmodule

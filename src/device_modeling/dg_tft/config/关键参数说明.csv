@@ -1,0 +1,23 @@
+section,parameter,default,unit,meaning,when_to_adjust,risk
+runtime,device,auto,-,CPU/GPU selection,Set cuda only when CUDA PyTorch works,Wrong device prevents startup
+runtime,dtype,float32,-,Training numerical precision,Use float64 only for numerical diagnosis,Float64 is much slower
+physical_fit,max_nfev_scale,1.0,-,Physical least-squares effort,Increase to 2-5 when physical kernel has not converged,Longer runtime
+base_pkan,kan_hidden,12,count,KAN hidden width,Increase modestly when parameter correction clearly underfits,Too large reduces identifiability
+base_pkan,kan_grid,5,count,Spline grid resolution,Keep 5 for normal devices,Large grid may create local oscillation
+base_pkan,kan_k,3,order,Spline order,Keep cubic unless doing an ablation,Higher order complicates symbolic distillation
+full_model,epochs,700,epoch,Joint training upper limit,Increase only when validation loss is still falling,Overfitting and longer runtime
+full_model,learning_rate,0.002,-,Joint optimizer learning rate,Reduce to 0.0005-0.001 for unstable loss,Too high can distort physical parameters
+full_model,cv_weight,8.0,-,Relative importance of CV in joint loss,Increase if IV is good but all CV families underfit,Too high damages IV
+full_model,cv_residual_level,1,level,Charge-domain residual complexity,Use 2 only when tied/single-gate consistency is systematically wrong,Level 2 can weaken identifiability
+full_model,enable_cv_residual,yes,bool,Enable bounded missing-physics terminal-charge residual,Disable for physical-kernel ablation,Residual must stay below acceptance ratio
+full_model,finetune_base_pkan,yes,bool,Allow small correction of physical-parameter KAN,Disable when transferring a frozen signed-off core,May drift parameters if data are poor
+full_model,early_stop_patience,5,checks,Validation checks without improvement before stop,Increase for noisy datasets,Too low may stop early
+full_model,symbolic_training_weight,0.015,-,Pull spline edges toward VA-friendly analytic functions,Increase slightly if Top-1 accuracy is poor,Too high reduces neural fit
+temperature,mode,auto,-,Temperature KAN control,Use on only with measured multi-temperature data,Forcing on without data is non-identifiable
+temperature,minimum_span_K,20,K,Minimum measured span for automatic temperature KAN,Lower only with high-quality dense data,Small span gives unreliable activation energies
+temperature,kan_scale,0.35,-,Bound on temperature coefficient correction,Increase only after physical coefficients are fitted,Large values damage extrapolation
+hysteresis,epochs,1800,epoch,Top-2 SRH-KAN distillation epochs,Increase if student-teacher error is still decreasing,Long runtime
+hysteresis,hidden_capture,16,count,Capture parameter-network width,Increase only when capture cases underfit,Complex symbolic model
+hysteresis,hidden_emission,20,count,Emission parameter-network width,Increase only when emission cases underfit,Complex symbolic model
+hysteresis,amp_parameterization,conservative,-,Conservation-based fast/slow amplitude decomposition,Keep for deployable model,Independent amplitudes can overfit
+deployment,maxstep_tau_divisor,20,-,Transient time-step requirement,Use 50 for fastest emission validation,Too small increases HSPICE runtime
