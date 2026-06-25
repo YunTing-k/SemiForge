@@ -37,7 +37,7 @@ _PREP_IV_SHEET_NAME = "long"
 _PREP_CV_EXPECTED_SHEETS = ("cgg", "cbg", "ctg", "vds")
 
 # ── Configurable defaults ──
-_PREP_VERIFIER_MAX_TURNS = 6
+_PREP_VERIFIER_MAX_TURNS = 12
 _PREP_VERIFIER_MODEL_TIER = "fast"
 _PREP_OUTPUT_BASE_DIR = "prepared_data"
 _PREP_AGENT_ID_PREFIX = "prep_worker"
@@ -84,6 +84,7 @@ The output directory already exists. Write all output files into it.
    - `IDVD_*VBG*` -> `IDVD_VBG<Vvalue>_V_train.xlsx` (CRITICAL: check for VBG in name)
    - `IDVD_*VTG*` -> `IDVD_VTG<Vvalue>_V_train.xlsx` (CRITICAL: check for VTG in name)
    - Skip: `DUAL_REF_*.csv`, `Refernce.xlsx`
+   - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version (it's cleaner). Check if output file already exists before writing and skip duplicates.
 
 3. **CV file** (e.g., `CV_wide_tables.xlsx`):
    - Read and save as `CV_train.xlsx` with original sheets
@@ -111,7 +112,7 @@ You are a verification specialist for DG-TFT data preparation. A worker has proc
 4. For the `it/` subdirectory, check if it exists and how many files it contains.
 5. After inspecting, call `report_verification` with your structured findings.
 
-**CRITICAL**: You MUST call the `report_verification` tool exactly once at the end. Do not output free text.
+**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Be efficient — check a few representative files, not every single one.
 """
 
 
@@ -246,15 +247,15 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     sys_log.info("Data prep %d started: raw=%s output=%s", prep_id, raw_dataset_dir, output_dir)
 
     if console and not getattr(ctx, "subagent_mute", False):
-        console.print(f"[bold]DG-TFT Data Preparation {prep_id}[/bold] — converting raw measurements to *_train.xlsx format")
+        console.print(f"[bold]DG-TFT Data Preparation {prep_id}[/bold] [bright_black]— converting raw measurements to *_train.xlsx format[/bright_black]")
 
     try:
         if console and not getattr(ctx, "subagent_mute", False):
-            console.print("  [bold]Step 1/3[/bold]: Worker subagent processing raw files ...")
+            console.print("  [bold]Step 1/3[/bold] [bright_black]Worker subagent processing raw files ...[/bright_black]")
         _run_worker(ctx, raw_dataset_dir, output_dir)
 
         if console and not getattr(ctx, "subagent_mute", False):
-            console.print("  [bold]Step 2/3[/bold]: Verifier checking output structure ...")
+            console.print("  [bold]Step 2/3[/bold] [bright_black]Verifier checking output structure ...[/bright_black]")
         _run_verifier(ctx, output_dir)
 
     except Exception as e:
@@ -273,9 +274,9 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
 
     if console and not getattr(ctx, "subagent_mute", False):
         if ok:
-            console.print(f"  [bold green]Step 3/3[/bold green]: Verification passed [green]({len(issues)} warnings)[/green]")
+            console.print(f"  [bold green]Step 3/3[/bold green] [bright_black]Verification passed ({len(issues)} warnings)[/bright_black]")
         else:
-            console.print(f"  [bold red]Step 3/3[/bold red]: Verification failed")
+            console.print(f"  [bold red]Step 3/3[/bold red] [bright_black]Verification failed[/bright_black]")
             for issue in issues:
                 if "CRITICAL" in issue:
                     console.print(f"    [bold red]{issue}[/bold red]")
