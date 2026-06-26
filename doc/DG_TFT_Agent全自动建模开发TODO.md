@@ -1054,14 +1054,14 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ## 10.2 TODO
 
 ### P6-T1 实现 `diagnostics.py`
-- [ ] 定义错误分类：
-  - [ ] `DATA_ERROR`
-  - [ ] `CONFIG_ERROR`
-  - [ ] `TRAINING_NUMERICAL_ERROR`
-  - [ ] `MISSING_ARTIFACT_ERROR`
-  - [ ] `HSPICE_ENV_ERROR`
-  - [ ] `UNKNOWN_ERROR`
-- [ ] 实现日志归类规则。
+- [x] 定义错误分类：
+  - [x] `DATA_ERROR`
+  - [x] `CONFIG_ERROR`
+  - [x] `TRAINING_NUMERICAL_ERROR`
+  - [x] `MISSING_ARTIFACT_ERROR`
+  - [x] `HSPICE_ENV_ERROR`
+  - [x] `UNKNOWN_ERROR`
+- [x] 实现日志归类规则。
 
 **依赖**
 - Phase 5 完成。
@@ -1072,9 +1072,9 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P6-T2 实现 `subagent_hooks.py`
-- [ ] 定义何时调用 `explorer` subagent；
-- [ ] 定义何时调用 `worker` subagent；
-- [ ] 定义 prompt 模板。
+- [x] 定义何时调用 `explorer` subagent；
+- [x] 定义何时调用 `worker` subagent；
+- [x] 定义 prompt 模板。
 
 **依赖**
 - `P6-T1`。
@@ -1085,9 +1085,9 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P6-T3 数据异常自动解释
-- [ ] 数据审计失败时自动读取 JSON/日志；
-- [ ] 调用 `explorer` subagent 生成可读说明；
-- [ ] 将说明写入 workflow summary。
+- [x] 数据审计失败时自动读取 JSON/日志；
+- [x] 调用 `explorer` subagent 生成可读说明；
+- [x] 将说明写入 workflow summary。
 
 **依赖**
 - `P6-T2`。
@@ -1098,8 +1098,8 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P6-T4 训练失败自动解释
-- [ ] `fit-physical` / `train-base-pkan` / `train-static` / `train-hysteresis` 任意阶段失败时，自动分析 stdout/stderr；
-- [ ] 用 `explorer` subagent 归纳失败原因。
+- [x] `fit-physical` / `train-base-pkan` / `train-static` / `train-hysteresis` 任意阶段失败时，自动分析 stdout/stderr；
+- [x] 用 `explorer` subagent 归纳失败原因。
 
 **依赖**
 - `P6-T3`。
@@ -1110,9 +1110,9 @@ Worker subagent 是质量关键。Prompt 模板必须在设计阶段写定，而
 ---
 
 ### P6-T5 最终报告增强
-- [ ] 使用 `worker` subagent 生成更自然的最终摘要草稿；
-- [ ] 规则模板作为兜底；
-- [ ] 避免让 LLM 决定事实，只让它组织语言。
+- [x] 使用 `worker` subagent 生成更自然的最终摘要草稿；
+- [x] 规则模板作为兜底；
+- [x] 避免让 LLM 决定事实，只让它组织语言。
 
 **依赖**
 - `P6-T2`。
@@ -1820,3 +1820,80 @@ HSPICE 可用性通过读取模板 .ini 中的 `hspice_exe` 路径并检查 `Pat
 5. P4-T5：`/workflow_list` / `/workflow_get <run_id>` / `/workflow_report <run_id>` 三个内建命令注册在 `BuiltinCommands`
 6. P4-T6：system prompt 添加 "DG-TFT Workflow Routing" 段落，引导 LLM 优先使用 `start_dg_tft_workflow` 而非逐条 bash 调用；prompt 整体从 display panel/simulator 重写为 DeviceModeling agent
 7. 额外：simulator 六个工具（`check_simulator`/`init_design`/`query_design`/`launch_sim`/`query_run`/`read_log`）从 `create_tools_prompts()` 中注释掉，从 `SUPPORTED_TYPES` explorer allowlist 移除 `read_log`，从 `SUPPORTED_TYPES_DESC` 和 `PERMISSION_PRESETS` 中清理；LLM 完全无感 simulator
+
+---
+
+### 2026-06-26 | Phase 6 P6-T1 + P6-T2 完成 — 失败诊断 + subagent hooks
+
+**完成内容**
+- P6-T1：实现 `diagnostics.py` — 完整错误分类引擎
+  - 6 大错误类别：`DATA_ERROR` / `CONFIG_ERROR` / `TRAINING_NUMERICAL_ERROR` / `MISSING_ARTIFACT_ERROR` / `HSPICE_ENV_ERROR` / `UNKNOWN_ERROR`
+  - 关键词匹配分类：`_KEYWORD_RULES` 模块级常量表，按 priority 排序（TRAINING_NUMERICAL_ERROR > HSPICE_ENV_ERROR > DATA_ERROR > CONFIG_ERROR > MISSING_ARTIFACT_ERROR）
+  - 启发式规则：`classify_error(stage_name, exit_code, stdout, stderr, error_message, missing_artifacts)`
+  - 出口码 0 + 缺产物 → `MISSING_ARTIFACT_ERROR` (confidence 0.85)
+  - 出口码 ≠ 0 + 无关键字 → 按阶段名推断（check-data → DATA_ERROR 0.5, fit-physical/train-static/train-hysteresis → TRAINING_NUMERICAL_ERROR 0.4）
+  - `classify_from_result()` 便捷包装 — 自动解包 StageResult
+  - `DiagnosticResult` dataclass — category / confidence / evidence / suggestion
+  - 每个阶段有独立 suggestion 文案（`_STAGE_SUGGESTIONS` 模块级常量）
+  - 无硬编码：所有分类规则集中在 `_KEYWORD_RULES`，confidence 作为规则属性
+- P6-T2：实现 `subagent_hooks.py` — 诊断 hook 定义与 prompt 模板
+  - 6 个 HookDefinition（每类别一个），全部使用 `explorer` subagent type
+  - Hook ID：`on_data_error` / `on_training_failure` / `on_unknown_error` / `on_missing_artifact` / `on_config_error` / `on_hspice_error`
+  - 每个 hook 有独立 Prompt 模板（参数化 `{stage_name}` `{category}` `{confidence}` `{evidence}` `{error_message}`），无硬编码阶段名
+  - `get_hook(category)` 快速查表
+  - `build_diagnosis_prompt(hook, ...)` 渲染模板，含 log_snippet 注入和 truncation
+  - Error message 截断上限 2000 chars，log snippet 最多 60 lines
+
+**新增文件清单**
+```
+src/workflow/dg_tft/
+  diagnostics.py       # Error classification engine (P6-T1)
+  subagent_hooks.py    # Hook definitions + prompt templates (P6-T2)
+
+test/
+  dg_tft_diagnostics_test.py   # 66 tests (P6-T1 + P6-T2)
+```
+
+**测试统计**
+- Phase 6 新增：66 tests
+- 累计全部：299 tests PASS
+
+**下阶段：Phase 7 P7-T1 ~ T3**
+- P7-T1：质量门禁阈值设计
+- P7-T2：metrics 解析（stdout/stderr → RMS/loss）
+- P7-T3：调参规则引擎（`quality_guard.py`）
+
+---
+
+### 2026-06-26 | Phase 6 P6-T3 ~ T5 完成 — 诊断集成 + 报告增强
+
+**完成内容**
+- P6-T3 + P6-T4：orchestrator 诊断集成
+  - `orchestrator.py` 新增 `_run_stage_diagnosis()` — 阶段失败时自动分类 + 可选 explorer subagent 诊断
+  - 分类结果（`DiagnosticResult`）始终写入 `run.extra["diagnosis"]`（零 LLM 依赖）
+  - Explorer subagent 诊断通过 `DG_TFT_ENABLE_DIAGNOSIS` agent_config 键控制（默认启用）
+  - `_launch_diagnosis_subagent()` — 基于数据准备 worker 模式创建独立 explorer subagent 实例
+  - `_collect_log_snippet()` — 从输出目录收集 log 片段注入 prompt
+  - 诊断失败不传播异常（try/except 兜底）
+  - `_console_summary()` 展示分类结果 + subagent 诊断文本
+- P6-T5：report_builder 诊断集成
+  - `_build_json_summary()` 在 extra.diagnosis 存在时写入 `summary["diagnosis"]`
+  - `_build_md_summary()` 新增 "## 4. Diagnosis" 段落，含 category/confidence/evidence/suggestion/subagent_result
+  - 无诊断时不生成该段落（向后兼容）
+  - 后续 Issues 段落编号自动调整（## 4 或 ## 5）
+
+**修改文件**
+| 文件 | 修改 |
+|------|------|
+| `src/workflow/dg_tft/orchestrator.py` | 新增 imports（diagnostics, subagent_hooks, EXPLORER_AGENT_LABEL）；新增 `_run_stage_diagnosis()` / `_launch_diagnosis_subagent()` / `_collect_log_snippet()` / `_print_diagnosis()`；`_console_summary()` 新增诊断展示 |
+| `src/workflow/dg_tft/report_builder.py` | `_build_json_summary()` 新增 diagnosis 字段；`_build_md_summary()` 新增 "## 4. Diagnosis" 段落 |
+| `test/dg_tft_diagnostics_test.py` | 新增 15 tests（`TestRunStageDiagnosis` 7 + `TestCollectLogSnippet` 3 + `TestReportDiagnosisIntegration` 5） |
+
+**测试统计**
+- Phase 6 累计：81 tests (66 original + 15 new)
+- 累计全部：314 tests PASS
+
+**下阶段：Phase 7 P7-T1 ~ T3**
+- P7-T1：质量门禁阈值设计
+- P7-T2：metrics 解析（stdout/stderr → RMS/loss）
+- P7-T3：调参规则引擎（`quality_guard.py`）

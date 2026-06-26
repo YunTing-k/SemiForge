@@ -216,6 +216,10 @@ def _build_json_summary(
             "issues": prep_info.get("issues", []),
         }
 
+    extra = run_data.get("extra", {})
+    if isinstance(extra, dict) and "diagnosis" in extra:
+        summary["diagnosis"] = extra["diagnosis"]
+
     return summary
 
 
@@ -302,11 +306,35 @@ def _build_md_summary(
             lines.append(f"- {icon} `{it['filename']}` ({size_kb:.1f} KB)")
         lines.append("")
 
+    # ── Diagnosis ──
+    extra = run_data.get("extra", {})
+    if isinstance(extra, dict) and "diagnosis" in extra:
+        diag = extra["diagnosis"]
+        lines.append("## 4. Diagnosis")
+        lines.append("")
+        lines.append(f"- **Category**: {diag.get('category', 'UNKNOWN')}")
+        lines.append(f"- **Confidence**: {diag.get('confidence', 0):.0%}")
+        evidence = diag.get("evidence", [])
+        if evidence:
+            lines.append(f"- **Evidence**: {', '.join(evidence[:5])}")
+        suggestion = diag.get("suggestion", "")
+        if suggestion:
+            lines.append(f"- **Suggestion**: {suggestion}")
+        subagent_text = diag.get("subagent_result", "")
+        if subagent_text:
+            lines.append("")
+            lines.append("### AI Diagnosis")
+            lines.append("")
+            for line in subagent_text.strip().splitlines():
+                lines.append(f"> {line}")
+        lines.append("")
+
     # ── Warnings / Errors ──
     warnings = run_data.get("warnings", [])
     errors = run_data.get("errors", [])
+    issue_section = 5 if (isinstance(extra, dict) and "diagnosis" in extra) else 4
     if warnings or errors:
-        lines.append("## 4. Issues")
+        lines.append(f"## {issue_section}. Issues")
         lines.append("")
         if errors:
             lines.append("### Errors")

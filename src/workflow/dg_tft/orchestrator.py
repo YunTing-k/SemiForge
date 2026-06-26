@@ -7,17 +7,20 @@ Author: Yu Huang
 Create Date: 2026.6.25
 Description: DG-TFT workflow orchestrator — sequential stage execution with
              fail-fast, conditional skip, artifact verification, resume,
-             report generation, task board sync, and console summary.
+             report generation, task board sync, console summary,
+             and automatic failure diagnosis (Phase 6).
 
 Revision:
 ---------
 2026.6.25      Yu Huang      1.0      Initial implementation
 2026.6.25      Yu Huang      1.1      Phase 5: report builder, task board, console summary
+2026.6.26      Yu Huang      1.2      Phase 6: automatic failure diagnosis via subagent hooks
 """
 from __future__ import annotations
 
 import configparser
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -35,7 +38,17 @@ from .stages import get_stages, StageDef
 from .stage_runner import run_stage
 from .artifacts import STAGE_DISPLAY_NAMES, get_report_paths
 from .report_builder import build_and_write_reports
-from src.constants import MAJOR_COLOR2, WF_STATUS_ERROR, WF_STATUS_SUCCESS, WF_STATUS_WARN, WF_MISSING_ITEM, WF_SECTION_TITLE
+from .diagnostics import classify_from_result, DiagnosticResult
+from .subagent_hooks import get_hook, build_diagnosis_prompt
+from src.constants import (
+    MAJOR_COLOR2,
+    WF_STATUS_ERROR,
+    WF_STATUS_SUCCESS,
+    WF_STATUS_WARN,
+    WF_MISSING_ITEM,
+    WF_SECTION_TITLE,
+    EXPLORER_AGENT_LABEL,
+)
 
 if TYPE_CHECKING:
     from src.context.agent_context import AgentContext
@@ -43,6 +56,11 @@ if TYPE_CHECKING:
 sys_log = logging.getLogger("logger")
 
 # ── Constants ──────────────────────────────────────────────────────
+
+_DIAGNOSIS_CONFIG_KEY: str = "DG_TFT_ENABLE_DIAGNOSIS"
+_DIAGNOSIS_SUBAGENT_TIMEOUT_S: int = 300
+_DIAGNOSIS_SUBAGENT_MAX_STEPS: int = 12
+_DIAGNOSIS_SUBAGENT_ID_PREFIX: str = "diag"
 _WF_TASK_PREFIX: str = "[DG-TFT]"
 
 _STAGE_TASK_SUBJECTS: dict[str, str] = {
@@ -186,7 +204,7 @@ def run_workflow(
                 _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
                 failed_stage = sd.name
                 failed_error = sr.error or "unknown error"
-                # Generate partial reports even on failure
+                _run_stage_diagnosis(ctx, run_id, sr, output_dir)
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
                               failed=True, failed_stage=failed_stage, failed_error=failed_error)
                 return False, f"Failed at {sd.name}: {sr.error}"
@@ -376,12 +394,184 @@ def _console_summary(
         for art_key, art_path in run.artifacts.items():
             c.print(f"    [bright_black]{art_key}:[/bright_black] {art_path}")
 
+    # Diagnosis
+    if run.extra.get("diagnosis"):
+        diag = run.extra["diagnosis"]
+        cat = diag.get("category", "UNKNOWN")
+        conf = diag.get("confidence", 0)
+        evidence = diag.get("evidence", [])
+        suggestion = diag.get("suggestion", "")
+        subagent_text = diag.get("subagent_result", "")
+        c.print(f"  Diagnosis : [{WF_STATUS_WARN}]{cat}[/{WF_STATUS_WARN}] (confidence {conf:.0%})")
+        if evidence:
+            c.print(f"  Evidence  : [bright_black]{', '.join(evidence[:3])}[/bright_black]")
+        if suggestion:
+            c.print(f"  Suggestion: [bright_black]{suggestion}[/bright_black]")
+        if subagent_text:
+            c.print("")
+            c.print(f"  [{WF_SECTION_TITLE}]AI Diagnosis[/{WF_SECTION_TITLE}]")
+            for line in subagent_text.strip().splitlines()[:10]:
+                c.print(f"  [bright_black]{line[:120]}[/bright_black]")
+
     # Recommendations
     if failed:
         c.print("")
         c.print(f"  [{WF_STATUS_WARN}]Next steps:[/{WF_STATUS_WARN}]")
         _print_failure_recommendation(c, failed_stage)
     c.print("")
+
+
+def _run_stage_diagnosis(
+    ctx: AgentContext,
+    run_id: int,
+    stage_result: StageResult,
+    output_dir: str,
+) -> None:
+    """Classify a stage failure and optionally invoke an explorer subagent
+    for a natural-language diagnosis.
+
+    The classification result is always stored in ``run.extra["diagnosis"]``.
+    If ``DG_TFT_ENABLE_DIAGNOSIS`` is true in agent_configs, an explorer
+    subagent is launched with the classified hook prompt to read stage output
+    files and produce a human-readable diagnosis.
+
+    Failures inside the subagent call are caught and logged — they never
+    propagate to the caller.
+    """
+    wm = ctx.workflow_man
+    run = wm.get_run(run_id)
+    if run is None:
+        return
+
+    # 1 — Classification (always runs, no LLM)
+    diag = classify_from_result(stage_result, exit_code=1)
+    run.extra["diagnosis"] = diag.to_dict()
+    sys_log.info(
+        "Stage [%s] classified as %s (confidence %.0f%%)",
+        stage_result.stage, diag.category.value, diag.confidence * 100,
+    )
+
+    # 2 — Subagent call (opt-in)
+    enabled = ctx.agent_configs.get(_DIAGNOSIS_CONFIG_KEY, True)
+    if not enabled:
+        sys_log.info("Diagnosis subagent disabled via %s", _DIAGNOSIS_CONFIG_KEY)
+        return
+
+    hook = get_hook(diag.category)
+    if hook is None:
+        sys_log.info("No diagnostic hook for category %s", diag.category.value)
+        return
+
+    prompt = build_diagnosis_prompt(
+        hook,
+        stage_name=stage_result.stage,
+        category=diag.category,
+        confidence=diag.confidence,
+        evidence=diag.evidence,
+        error_message=stage_result.error or "",
+        log_snippet=_collect_log_snippet(output_dir, stage_result.stage),
+    )
+
+    console = getattr(ctx, "console", None)
+    muted = getattr(ctx, "subagent_mute", False)
+    if console and not muted:
+        console.print(
+            f"  [bright_black]Diagnosing [/{diag.category.value}][bright_black] "
+            f"via {hook.subagent_type} subagent ...[/bright_black]"
+        )
+
+    try:
+        diagnosis_text = _launch_diagnosis_subagent(ctx, hook, prompt, stage_result.stage)
+    except Exception:
+        sys_log.exception("Diagnosis subagent failed for stage [%s]", stage_result.stage)
+        diagnosis_text = (
+            f"Diagnosis subagent could not complete. "
+            f"Classification: {diag.category.value} (confidence {diag.confidence:.0%}). "
+            f"Suggestion: {diag.suggestion}"
+        )
+
+    run.extra["diagnosis"]["subagent_result"] = diagnosis_text
+    sys_log.info("Diagnosis for stage [%s] complete", stage_result.stage)
+
+    if console and not muted:
+        _print_diagnosis(console, diagnosis_text)
+
+
+def _launch_diagnosis_subagent(
+    ctx: AgentContext,
+    hook,
+    prompt: str,
+    stage_name: str,
+) -> str:
+    """Launch a short-lived explorer subagent to diagnose a stage failure.
+
+    The subagent has only read_file and glob_file tools so it cannot
+    modify any files.
+    """
+    from src.agent.subagent import SubAgent
+
+    agent_id = f"{_DIAGNOSIS_SUBAGENT_ID_PREFIX}_{stage_name}_{os.urandom(4).hex()}"
+    agent = SubAgent(
+        parent_ctx=ctx,
+        subagent_type=EXPLORER_AGENT_LABEL,
+        prompt=prompt,
+        agent_id=agent_id,
+        subject=hook.subject,
+        console=None,
+    )
+
+    max_steps = ctx.agent_configs.get(
+        "DG_TFT_DIAGNOSIS_MAX_STEPS", _DIAGNOSIS_SUBAGENT_MAX_STEPS,
+    )
+    if isinstance(max_steps, int):
+        agent.max_steps = max_steps
+
+    timeout = ctx.agent_configs.get(
+        "DG_TFT_DIAGNOSIS_TIMEOUT_S", _DIAGNOSIS_SUBAGENT_TIMEOUT_S,
+    )
+    if isinstance(timeout, int):
+        agent.timeout_s = timeout
+
+    ctx.agent_list[agent_id] = agent.progress
+    agent.build_tools()
+    agent.build_messages()
+    try:
+        result = agent.run()
+    finally:
+        ctx.agent_list.pop(agent_id, None)
+
+    if agent.status.value == "done" and result:
+        return result
+    err = agent.error or "unknown error"
+    raise RuntimeError(f"Diagnosis subagent failed: {err}")
+
+
+def _collect_log_snippet(output_dir: str, stage_name: str) -> str:
+    """Collect a short log snippet from the stage output directory.
+
+    Looks for stdout/stderr log files or any .log/.txt files
+    and returns the first few lines.
+    """
+    base = Path(output_dir)
+    candidates = list(base.glob(f"*{stage_name}*.log")) + list(base.glob("*.log")) + list(base.glob("*.txt"))
+    for candidate in candidates[:3]:
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()[:60]
+            return "\n".join(lines)
+        except Exception:
+            continue
+    return ""
+
+
+def _print_diagnosis(console, diagnosis_text: str) -> None:
+    """Print a formatted diagnosis block to the console."""
+    from textwrap import shorten
+
+    console.print("  [bright_black]── Diagnosis ──[/bright_black]")
+    for line in diagnosis_text.strip().splitlines()[:15]:
+        shortened = shorten(line, width=120, placeholder="...")
+        console.print(f"  [bright_black]{shortened}[/bright_black]")
 
 
 def _print_failure_recommendation(c, stage_name: str) -> None:
