@@ -121,6 +121,7 @@ def fit_group(
     hidden_capture: int = 16,
     hidden_emission: int = 20,
     amp_parameterization: str = "independent",
+    print_every: int = 1,
 ) -> tuple[dict, dict]:
     models = init_group(
         rows,
@@ -249,7 +250,7 @@ def fit_group(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 5.0)
         opt.step()
-        if ep % 25 == 0 or ep == epochs - 1:
+        if ep % print_every == 0 or ep == epochs - 1:
             with torch.no_grad():
                 rms = np.asarray(
                     [
@@ -272,20 +273,31 @@ def fit_group(
                         for row in rows
                     ]
                 )
-            score = float(np.mean(rms) + 0.8 * np.quantile(rms, 0.9) + 0.3 * np.max(rms))
+            mean_rms = float(np.mean(rms))
+            p90_rms = float(np.quantile(rms, 0.9))
+            max_rms = float(np.max(rms))
+            score = mean_rms + 0.8 * p90_rms + 0.3 * max_rms
             if score < best_score:
                 best_score = score
                 best_state = {
                     name: copy.deepcopy(model.state_dict())
                     for name, model in models.items()
                 }
+            print(
+                f"Hysteresis ep {ep:5d}/{epochs} "
+                f"loss={loss.item():.5g} "
+                f"soft={float(soft_wave_loss):.4g} hard={float(hard_wave_loss):.4g} "
+                f"endpoint={float(endpoint_loss):.4g} "
+                f"mean={mean_rms:.4g} p90={p90_rms:.4g} max={max_rms:.4g} "
+                f"best={best_score:.4g}"
+            )
             if ep % 200 == 0 or ep == epochs - 1:
                 history.append(
                     {
                         "epoch": ep,
-                        "mean_teacher_rmse_dec": float(np.mean(rms)),
-                        "p90_teacher_rmse_dec": float(np.quantile(rms, 0.9)),
-                        "max_teacher_rmse_dec": float(np.max(rms)),
+                        "mean_teacher_rmse_dec": mean_rms,
+                        "p90_teacher_rmse_dec": p90_rms,
+                        "max_teacher_rmse_dec": max_rms,
                     }
                 )
     for name, state in best_state.items():
@@ -301,6 +313,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=1800)
     parser.add_argument("--regime", choices=("all", "fast", "slow"), default="all")
+    parser.add_argument("--print-every", type=int, default=1)
     parser.add_argument("--hidden-capture", type=int, default=16)
     parser.add_argument("--hidden-emission", type=int, default=20)
     parser.add_argument("--tag", default="")
@@ -340,6 +353,7 @@ def main() -> None:
             hidden_capture=args.hidden_capture,
             hidden_emission=args.hidden_emission,
             amp_parameterization=args.amp_parameterization,
+            print_every=args.print_every,
         )
         all_models[key] = models
         group_reports["|".join(key)] = report

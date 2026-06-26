@@ -388,6 +388,8 @@ def train_hysteresis(cfg, p) -> None:
             hidden_emission,
             "--amp-parameterization",
             section["amp_parameterization"],
+            "--print-every",
+            section.get("print_every", "1"),
         ],
         env=env,
     )
