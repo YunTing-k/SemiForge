@@ -540,6 +540,16 @@ def write_split_modular_continuous_assets(formulas: dict, norm: dict) -> None:
 
     modules = ['`include "disciplines.vams"', '`include "constants.vams"', ""]
     instance_lines = []
+    required_keys = [f"slow|{f}|{p}" for f in ("VTG", "VBG") for p in ("capture", "emission")]
+    missing_keys = [k for k in required_keys if k not in formulas]
+    if missing_keys:
+        available = sorted(formulas.keys())
+        raise KeyError(
+            f"Missing required formula groups: {missing_keys}. "
+            f"Available keys: {available}. "
+            f"The training run may have produced only fast-regime data; "
+            f"try re-running with the full dataset or adjust export to use: {available}"
+        )
     for family, side in (("VTG", "t"), ("VBG", "b")):
         for process, process_code in (("capture", "c"), ("emission", "e")):
             group = formulas[f"slow|{family}|{process}"]
