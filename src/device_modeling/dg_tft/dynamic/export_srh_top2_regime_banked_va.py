@@ -549,9 +549,15 @@ def write_split_modular_continuous_assets(formulas: dict, norm: dict) -> None:
             for output in ("tau_fast", "tau_slow", "amp_fast", "amp_slow"):
                 name = fn_name("slow", family, process, output)
                 output_names[output] = name
+                if output == "amp_fast" and "amp_fast" not in group and "total_amp" in group:
+                    formula_key = "total_amp"
+                elif output == "amp_slow" and "amp_slow" not in group and "exchange_amp" in group:
+                    formula_key = "exchange_amp"
+                else:
+                    formula_key = output
                 decl, stmt = formula_inline(
                     name,
-                    group[output],
+                    group[formula_key],
                     feature_values(norm, family, process, output),
                 )
                 declarations.extend(decl)
