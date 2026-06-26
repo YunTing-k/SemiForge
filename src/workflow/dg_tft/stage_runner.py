@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
+
 from .schema import StageResult
 
 if TYPE_CHECKING:
@@ -212,7 +214,7 @@ def _run_stage_streaming(
             stderr_lines.append(line)
             stripped = line.rstrip()
             if c and not muted and stream_stderr and stripped:
-                c.print(f"    [bold red][engine] {stripped}[/bold red]")
+                c.print(f"    [bold red][engine] {escape(stripped)}[/bold red]")
 
     stderr_thread = threading.Thread(target=_consume_stderr, daemon=True)
     stderr_thread.start()
@@ -223,7 +225,7 @@ def _run_stage_streaming(
             stripped = line.rstrip()
             stdout_lines.append(stripped)
             if c and not muted and stream_stdout and stripped:
-                c.print(f"    [bright_black][engine] {stripped}[/bright_black]")
+                c.print(f"    [bright_black][engine] {escape(stripped)}[/bright_black]")
     except Exception:
         pass
 
