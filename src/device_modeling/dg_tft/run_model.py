@@ -144,7 +144,11 @@ def fit_physical(cfg, p) -> None:
     max_iv = section["max_iv_points"]
     max_cv = section["max_cv_points"]
     max_nfev = section["max_nfev_scale"]
-    if yes(cfg, "runtime", "quick_run"):
+    if yes(cfg, "runtime", "debug_run"):
+        max_iv = "1000"
+        max_cv = "500"
+        max_nfev = "0.1"
+    elif yes(cfg, "runtime", "quick_run"):
         max_iv = "3000"
         max_cv = "2000"
         max_nfev = "0.3"
@@ -331,6 +335,14 @@ def train_full_model(cfg, p) -> None:
         ]
     if yes(cfg, "runtime", "quick_run"):
         command.append("--quick-run")
+    if yes(cfg, "runtime", "debug_run"):
+        command.append("--quick-run")
+        # Override engine --quick-run limits: force absolute minimums
+        command += [
+            "--epochs", "10",
+            "--early-stop-patience", "1",
+            "--early-stop-min-epochs", "1",
+        ]
     run(command)
 
 
@@ -352,7 +364,11 @@ def train_hysteresis(cfg, p) -> None:
     epochs = section["epochs"]
     hidden_capture = section["hidden_capture"]
     hidden_emission = section["hidden_emission"]
-    if yes(cfg, "runtime", "quick_run"):
+    if yes(cfg, "runtime", "debug_run"):
+        epochs = "8"
+        hidden_capture = "4"
+        hidden_emission = "4"
+    elif yes(cfg, "runtime", "quick_run"):
         epochs = "50"
         hidden_capture = "8"
         hidden_emission = "8"
