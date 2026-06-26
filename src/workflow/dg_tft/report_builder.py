@@ -220,6 +220,12 @@ def _build_json_summary(
     if isinstance(extra, dict) and "diagnosis" in extra:
         summary["diagnosis"] = extra["diagnosis"]
 
+    if isinstance(extra, dict) and "quality_retry_history" in extra:
+        summary["quality"] = {
+            "retries": len(extra["quality_retry_history"]),
+            "history": extra["quality_retry_history"],
+        }
+
     return summary
 
 
@@ -308,7 +314,8 @@ def _build_md_summary(
 
     # ── Diagnosis ──
     extra = run_data.get("extra", {})
-    if isinstance(extra, dict) and "diagnosis" in extra:
+    has_diag = isinstance(extra, dict) and "diagnosis" in extra
+    if has_diag:
         diag = extra["diagnosis"]
         lines.append("## 4. Diagnosis")
         lines.append("")
@@ -329,10 +336,65 @@ def _build_md_summary(
                 lines.append(f"> {line}")
         lines.append("")
 
+    # ── Quality (Phase 7) ──
+    has_quality = isinstance(extra, dict) and "quality_retry_history" in extra
+    if has_quality:
+        q_section = 5 if has_diag else 4
+        q_history = extra["quality_retry_history"]
+        lines.append(f"## {q_section}. Quality Gate")
+        lines.append("")
+        lines.append(f"- **Retries attempted**: {len(q_history)}")
+        passes = sum(1 for r in q_history if r.get("quality_pass"))
+        lines.append(f"- **Retries passed**: {passes}")
+        lines.append("")
+        lines.append("### Retry Log")
+        lines.append("")
+        lines.append("| Attempt | Pass | Adjustments | Metrics | Error |")
+        lines.append("|---------|------|-------------|---------|-------|")
+        for entry in q_history:
+            att = entry.get("attempt", "?")
+            passed = "✓" if entry.get("quality_pass") else "✗"
+            if not entry.get("ok"):
+                passed = "✗ (crashed)"
+            adj_list = entry.get("adjustments", {})
+            adj_str = ", ".join(f"{k}={v}" for k, v in adj_list.items()) if adj_list else "—"
+            met_list = entry.get("metrics", {})
+            met_str = ", ".join(f"{k}: {v:.4f}".rstrip("0").rstrip(".") for k, v in met_list.items()) if met_list else "—"
+            err_str = entry.get("error") or "—"
+            if len(err_str) > 60:
+                err_str = err_str[:57] + "..."
+            lines.append(f"| {att} | {passed} | {adj_str} | {met_str} | {err_str} |")
+        lines.append("")
+
+        # Stage metrics section for metrics in stage_results
+        lines.append("### Final Metrics")
+        lines.append("")
+        stage_results = run_data.get("stage_results", {})
+        for sn in ["fit-physical", "train-static", "train-hysteresis"]:
+            sr = stage_results.get(sn)
+            if not isinstance(sr, dict):
+                continue
+            met = sr.get("metrics", {})
+            if not met:
+                continue
+            display = STAGE_DISPLAY_NAMES.get(sn, sn)
+            lines.append(f"**{display}**:")
+            for k, v in met.items():
+                if v != v:
+                    lines.append(f"- {k}: N/A")
+                else:
+                    lines.append(f"- {k}: {v:.6f}")
+            lines.append("")
+
     # ── Warnings / Errors ──
     warnings = run_data.get("warnings", [])
     errors = run_data.get("errors", [])
-    issue_section = 5 if (isinstance(extra, dict) and "diagnosis" in extra) else 4
+    issue_base = 4
+    if has_diag:
+        issue_base += 1
+    if has_quality:
+        issue_base += 1
+    issue_section = issue_base
     if warnings or errors:
         lines.append(f"## {issue_section}. Issues")
         lines.append("")

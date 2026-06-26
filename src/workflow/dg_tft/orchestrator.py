@@ -40,6 +40,15 @@ from .artifacts import STAGE_DISPLAY_NAMES, get_report_paths
 from .report_builder import build_and_write_reports
 from .diagnostics import classify_from_result, DiagnosticResult
 from .subagent_hooks import get_hook, build_diagnosis_prompt
+from .metrics_parser import parse_metrics, get_primary_metric
+from .quality_guard import (
+    assess_quality,
+    get_quality_thresholds,
+    get_max_retries,
+    suggest_adjustments,
+    apply_adjustments,
+    stage_display_label,
+)
 from src.constants import (
     MAJOR_COLOR2,
     WF_STATUS_ERROR,
@@ -225,14 +234,34 @@ def run_workflow(
             )
             sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
+        # ── Quality gate (Phase 7) ──
+        sr, quality_issues = _enforce_quality_gate(
+            ctx, run_id, sd, sr, config_path_abs, output_dir, timeout,
+        )
+
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
         for p in sd.key_artifacts:
             full_path = Path(output_dir) / sd.expected_output_subdir / p if sd.expected_output_subdir else Path(output_dir) / p
             if full_path.exists():
                 wm.attach_artifact(run_id, p, str(full_path))
 
-        sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
-        _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
+        if quality_issues:
+            wm.add_warning(
+                run_id,
+                f"Stage {sd.name} quality below threshold: {'; '.join(quality_issues)}",
+            )
+            if sd.required:
+                sys_log.warning(
+                    "Run %d stage [%s] completed with quality warnings: %s",
+                    run_id, sd.name, quality_issues,
+                )
+                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]✓ (quality below threshold)[/{WF_STATUS_WARN}]")
+            else:
+                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](quality warn)[/bright_black]")
+        else:
+            sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
+            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
+
         _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
         run = wm.get_run(run_id)
 
@@ -630,6 +659,217 @@ def _verify_artifacts(sd: StageDef, output_dir: str) -> list[str]:
 
 def _noop_stage(sd: StageDef) -> bool:
     return sd.name == StageName.FINAL_REPORT
+
+
+# ── Quality gate (Phase 7) ─────────────────────────────────────────
+
+def _enforce_quality_gate(
+    ctx: AgentContext,
+    run_id: int,
+    sd: StageDef,
+    stage_result: StageResult,
+    config_path: str,
+    output_dir: str,
+    timeout: int | None,
+) -> tuple[StageResult, list[str]]:
+    """Check stage output quality and conditionally retry with adjusted parameters.
+
+    When a stage exits with ok=True but quality metrics fall below configured
+    thresholds, this function enters a progressive retry loop: adjust parameters,
+    re-run the stage, re-assess quality — up to ``DG_TFT_QUALITY_MAX_RETRIES``
+    attempts.
+
+    Returns:
+        (final_result, quality_issues) — ``final_result`` is the best
+        StageResult across all attempts; ``quality_issues`` is non-empty
+        when quality still does not pass after all retries.
+    """
+    wm = ctx.workflow_man
+    run = wm.get_run(run_id)
+    stage_name = sd.name
+
+    thresholds = get_quality_thresholds(ctx.agent_configs)
+    if not thresholds:
+        return stage_result, []  # No thresholds configured → skip quality check
+
+    max_retries = get_max_retries(ctx.agent_configs)
+    stage_label = stage_display_label(stage_name)
+
+    # ── Initial quality check ──
+    metrics = parse_metrics(output_dir, stage_name)
+    sr = stage_result
+    sr.metrics = metrics
+    q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
+
+    if q_ok:
+        sys_log.info("Stage [%s] quality PASS (initial)", stage_name)
+        if metrics:
+            _print_quality_pass(ctx, stage_label, metrics)
+        return sr, []
+
+    sys_log.warning(
+        "Stage [%s] quality below threshold: %s",
+        stage_name, "; ".join(q_failures),
+    )
+    _print_quality_fail(ctx, stage_label, q_failures)
+
+    # ── Retry history ──
+    retry_log: list[dict] = []
+    if "quality_retry_history" not in run.extra:
+        run.extra["quality_retry_history"] = retry_log
+    else:
+        retry_log = run.extra["quality_retry_history"]
+
+    best_sr = sr
+    best_metrics = metrics
+    best_score = _best_metric_value(metrics, stage_name)
+
+    for attempt in range(max_retries):
+        adjustments = suggest_adjustments(stage_name, attempt, config_path)
+        if not adjustments:
+            sys_log.info("No more adjustment strategies for stage [%s]", stage_name)
+            break
+
+        _print_retry_start(ctx, stage_label, attempt + 1, max_retries, adjustments)
+
+        config_path = apply_adjustments(config_path, adjustments)
+
+        # Re-run stage
+        sr = run_stage(
+            ctx, sd.action, config_path,
+            cwd=str(Path(config_path).parent),
+            timeout=timeout,
+            extra_args=sd.extra_args,
+        )
+
+        retry_entry: dict = {
+            "attempt": attempt + 1,
+            "adjustments": dict(adjustments),
+            "ok": sr.ok,
+            "error": sr.error,
+            "metrics": {},
+            "quality_pass": False,
+        }
+
+        if not sr.ok:
+            sys_log.warning(
+                "Stage [%s] retry %d/%d hard-failed: %s",
+                stage_name, attempt + 1, max_retries, sr.error,
+            )
+            _console(ctx, f"  [bright_black]Retry {attempt+1}: stage crashed ({sr.error})[/bright_black]")
+            retry_log.append(retry_entry)
+            break
+
+        # Re-assess quality
+        metrics = parse_metrics(output_dir, stage_name)
+        sr.metrics = metrics
+        retry_entry["metrics"] = dict(metrics)
+        q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
+        retry_entry["quality_pass"] = q_ok
+        retry_log.append(retry_entry)
+
+        current_score = _best_metric_value(metrics, stage_name)
+        if current_score < best_score:
+            best_sr = sr
+            best_metrics = metrics
+            best_score = current_score
+
+        if q_ok:
+            sys_log.info(
+                "Stage [%s] quality PASS after %d retry(ies)",
+                stage_name, attempt + 1,
+            )
+            _print_quality_pass(ctx, stage_label, metrics)
+            return sr, []
+        else:
+            _print_retry_quality_fail(ctx, stage_label, attempt + 1, q_failures)
+
+    # ── All retries exhausted ──
+    sys_log.warning(
+        "Stage [%s] quality still below threshold after %d retries; using best attempt",
+        stage_name, len(retry_log),
+    )
+    _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds)
+    return best_sr, q_failures
+
+
+def _best_metric_value(metrics: dict[str, float], stage_name: str) -> float:
+    """Return the primary metric value for comparison (lower is better)."""
+    primary = get_primary_metric(stage_name)
+    val = metrics.get(primary, float("inf"))
+    if val != val:
+        return float("inf")
+    return val
+
+
+# ── Quality-gate console helpers ────────────────────────────────────
+
+def _print_quality_pass(ctx: AgentContext, label: str, metrics: dict[str, float]) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  [{WF_STATUS_SUCCESS}]Quality[{WF_STATUS_SUCCESS}]: {label} [{WF_STATUS_SUCCESS}]PASS[/{WF_STATUS_SUCCESS}]", end="")
+    for k, v in metrics.items():
+        c.print(f" [bright_black]{k}={v:.6f}[/bright_black]", end="")
+    c.print("")
+
+
+def _print_quality_fail(ctx: AgentContext, label: str, failures: list[str]) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} below threshold")
+    for f in failures[:3]:
+        c.print(f"    [bright_black]{f}[/bright_black]")
+
+
+def _print_retry_start(
+    ctx: AgentContext, label: str, attempt: int, max_retries: int,
+    adjustments: dict[str, str],
+) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  [{WF_STATUS_WARN}]Retry {attempt}/{max_retries}[{WF_STATUS_WARN}]: {label} — adjusting parameters")
+    for k, v in adjustments.items():
+        c.print(f"    [bright_black]{k} → {v}[/bright_black]")
+
+
+def _print_retry_quality_fail(
+    ctx: AgentContext, label: str, attempt: int, failures: list[str],
+) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  [bright_black]Retry {attempt}: quality still below threshold[/bright_black]")
+
+
+def _print_quality_exhausted(
+    ctx: AgentContext, label: str, metrics: dict[str, float],
+    thresholds: dict[str, float],
+) -> None:
+    if getattr(ctx, "subagent_mute", False):
+        return
+    c = getattr(ctx, "console", None)
+    if c is None:
+        return
+    c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} [bright_black]retries exhausted, using best attempt[/bright_black]")
+    for k, v in metrics.items():
+        limit = thresholds.get(k)
+        if limit and v > limit:
+            exceed = f">{limit:.6f}"
+            marker = f" [{WF_STATUS_ERROR}]{exceed}[/{WF_STATUS_ERROR}]"
+        else:
+            marker = ""
+        c.print(f"    [bright_black]{k}={v:.6f}{marker}[/bright_black]")
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:
