@@ -187,6 +187,15 @@ MAJOR_COLOR2: str = "#54A0FF"  # common major color
 EDIT_FUZZY_WARN_COLOR: str = "#FFA500"  # fuzzy match warning
 EDIT_SUBTLE_COLOR: str = "bright_black"  # exact-family subtle label
 AGENT_CONSOLE_ICON: str = "✦"
+AGENT_BANNER_ICON: str = (
+    "  ╔══════╗\n"
+    " ╔╝      ╚╗\n"
+    "╔╝  ▐██▌  ╚╗\n"
+    "║   ▐██▌   ║\n"
+    "║   ▐██▌   ║\n"
+    "╚╗        ╔╝\n"
+    " ╚════════╝"
+)
 REASON_ICON: str = "⟡"
 REASON_ICON_SYLTE: str = f"bold {MAJOR_COLOR2}"
 CONTENT_ICON: str = "●"
