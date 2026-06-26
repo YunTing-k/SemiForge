@@ -91,7 +91,7 @@ def formula_function(
     return "\n".join(lines)
 
 
-def load_models(student_source: str = "slow_only") -> tuple[dict, dict]:
+def load_models(student_source: str = "") -> tuple[dict, dict]:
     slow = json.loads(
         (BASE / student_source / "srh_top2_regime_bank_summary.json").read_text(
             encoding="utf-8"
@@ -708,7 +708,7 @@ Xdut tg bg d 0 ntf nts nbf nbs dg_tft_complete_model
     (OUT / "modular_deployment_metadata.json").write_text(
         json.dumps(
             {
-                "student_source": "slow_only",
+                "student_source": "",
                 "student_teacher_rmse_dec_mean": 0.000532962494298772,
                 "student_teacher_rmse_dec_p90": 0.001257803139742464,
                 "student_teacher_rmse_dec_max": 0.0015708078863099217,
@@ -758,7 +758,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--student-source",
-        default="slow_only",
+        default="",
         help="Trained student subdirectory below srh_top2_regime_banks.",
     )
     parser.add_argument(
