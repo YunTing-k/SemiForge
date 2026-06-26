@@ -61,6 +61,7 @@ _CORE_STAGES: list[StageDef] = [
         expected_output_subdir="03_full_model",
         key_artifacts=["v90_safe_residual_state.pt", "v90_veriloga_residual_include.va"],
         timeout=7200,
+        extra_args=["--print-every", "1"],
     ),
     StageDef(
         name=StageName.TRAIN_HYSTERESIS,
