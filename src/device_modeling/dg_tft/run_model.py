@@ -303,6 +303,8 @@ def train_full_model(cfg, p) -> None:
         section["early_stop_min_epochs"],
         "--symbolic-training-weight",
         section["symbolic_training_weight"],
+        "--print-every",
+        section.get("print_every", "80"),
         "--temperature-kan-min-span-K",
         cfg["temperature"]["minimum_span_K"],
         "--temperature-kan-scale",
