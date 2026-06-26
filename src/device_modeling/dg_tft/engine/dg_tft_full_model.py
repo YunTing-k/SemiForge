@@ -13075,7 +13075,6 @@ def apply_quick_run_preset(args):
     args.max_cv_points = min(int(args.max_cv_points), 9000)
     args.epochs = min(int(args.epochs), 100)
     args.eval_every = max(int(args.eval_every), 60)
-    args.print_every = max(int(args.print_every), 60)
     args.deriv_iv_curves = min(int(args.deriv_iv_curves), 18)
     args.deriv_cv_curves = min(int(args.deriv_cv_curves), 6)
     args.idvd_deriv_curves = min(int(args.idvd_deriv_curves), 12)
