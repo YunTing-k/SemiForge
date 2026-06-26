@@ -222,6 +222,8 @@ def _apply_overrides(config_path: Path, overrides: dict[str, str]) -> None:
     Uses line-by-line replacement to avoid configparser formatting issues
     (tab indentation, keyword lowercasing, comment stripping).
     """
+    if not overrides:
+        return
     invalid = []
     for key in overrides:
         if "." not in key:
@@ -231,9 +233,13 @@ def _apply_overrides(config_path: Path, overrides: dict[str, str]) -> None:
             f"Overrides must use section.key format. "
             f"Invalid keys (missing section prefix): {invalid}"
         )
-
-    if not overrides:
-        return
+    debug_set = overrides.get("runtime.debug_run", "").lower()
+    quick_set = overrides.get("runtime.quick_run", "").lower()
+    if debug_set == "yes" and quick_set == "yes":
+        raise ValueError(
+            "runtime.debug_run and runtime.quick_run are mutually exclusive. "
+            "Set only one to yes."
+        )
 
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
     current_section = ""

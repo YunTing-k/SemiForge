@@ -444,6 +444,13 @@ def main() -> int:
     args = parser.parse_args()
     config_path = args.config.resolve()
     cfg = load_config(config_path)
+    debug_on = yes(cfg, "runtime", "debug_run")
+    quick_on = yes(cfg, "runtime", "quick_run")
+    if debug_on and quick_on:
+        raise ValueError(
+            "runtime.debug_run and runtime.quick_run are mutually exclusive. "
+            "Set only one to yes."
+        )
     p = paths(cfg, config_path)
     refuse_accidental_example_training(
         args.action, p["data"], allow_example_data=args.allow_example_data
