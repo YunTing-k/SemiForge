@@ -59,7 +59,7 @@ _CORE_STAGES: list[StageDef] = [
         required=True,
         depends_on=[StageName.FIT_PHYSICAL],
         expected_output_subdir="03_full_model",
-        key_artifacts=["static_model_checkpoint.pt", "model.va"],
+        key_artifacts=["v90_safe_residual_state.pt", "v90_veriloga_residual_include.va"],
         timeout=7200,
     ),
     StageDef(
@@ -68,7 +68,7 @@ _CORE_STAGES: list[StageDef] = [
         required=False,
         depends_on=[StageName.TRAIN_STATIC],
         expected_output_subdir="04_hysteresis",
-        key_artifacts=["dg_tft_dynamic.va", "dg_tft_dynamic.inc"],
+        key_artifacts=["srh_top2_regime_banks/combined/dg_tft_dynamic_srh.va", "srh_top2_regime_banks/combined/dg_tft_dynamic_srh.inc"],
         timeout=7200,
         skip_if_profile_false="has_hysteresis",
     ),
