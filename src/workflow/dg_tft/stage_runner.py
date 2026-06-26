@@ -177,6 +177,8 @@ def _run_stage_streaming(
     """
     muted = getattr(ctx, "subagent_mute", False)
     c = getattr(ctx, "console", None)
+    stream_stdout = ctx.agent_configs.get("DG_TFT_RETRY_STREAM_STDOUT", True)
+    stream_stderr = ctx.agent_configs.get("DG_TFT_RETRY_STREAM_STDERR", True)
 
     try:
         process = subprocess.Popen(
@@ -207,7 +209,7 @@ def _run_stage_streaming(
         for line in process.stderr:
             stderr_lines.append(line)
             stripped = line.rstrip()
-            if c and not muted and stripped:
+            if c and not muted and stream_stderr and stripped:
                 c.print(f"    [bold red][engine] {stripped}[/bold red]")
 
     stderr_thread = threading.Thread(target=_consume_stderr, daemon=True)
@@ -218,7 +220,7 @@ def _run_stage_streaming(
         for line in process.stdout:
             stripped = line.rstrip()
             stdout_lines.append(stripped)
-            if c and not muted and stripped:
+            if c and not muted and stream_stdout and stripped:
                 c.print(f"    [bright_black][engine] {stripped}[/bright_black]")
     except Exception:
         pass
