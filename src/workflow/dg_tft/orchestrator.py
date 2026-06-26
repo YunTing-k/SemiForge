@@ -200,6 +200,7 @@ def run_workflow(
             cwd=str(Path(config_path_abs).parent),
             timeout=timeout,
             extra_args=sd.extra_args,
+            stream_console=True,
         )
 
         if not sr.ok:

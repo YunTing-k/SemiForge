@@ -177,8 +177,8 @@ def _run_stage_streaming(
     """
     muted = getattr(ctx, "subagent_mute", False)
     c = getattr(ctx, "console", None)
-    stream_stdout = ctx.agent_configs.get("DG_TFT_RETRY_STREAM_STDOUT", True)
-    stream_stderr = ctx.agent_configs.get("DG_TFT_RETRY_STREAM_STDERR", True)
+    stream_stdout = ctx.agent_configs.get("DG_TFT_STREAM_STDOUT", True)
+    stream_stderr = ctx.agent_configs.get("DG_TFT_STREAM_STDERR", True)
 
     try:
         process = subprocess.Popen(
