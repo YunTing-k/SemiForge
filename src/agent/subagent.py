@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.6.12
-Description: Subagent module for TECoSim agent
+Description: Subagent module for SemiForge agent
 
 Revision:
 ---------
@@ -283,7 +283,7 @@ class SubAgent:
                 f"`{TOOL_NAME_UPDATE_TASK}` / `{TOOL_NAME_QUERY_TASK}` as needed.\n\n"
             )
         system_text = (
-            f"You are a `{self.subagent_type}` subagent spawned by the main TECoSim agent.\n\n"
+            f"You are a `{self.subagent_type}` subagent spawned by the main SemiForge agent.\n\n"
             f"Your task: {self.prompt}\n\n"
             f"{board_note}"
             "Work step by step. Use tools to gather information or make changes. When you are done, provide your final answer "

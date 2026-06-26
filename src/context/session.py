@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.7
-Description: Session management of the TECoSim agent
+Description: Session management of the SemiForge agent
 
 Revision:
 ---------

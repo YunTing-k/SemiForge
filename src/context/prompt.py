@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.8
-Description: Prompts management of the TECoSim agent
+Description: Prompts management of the SemiForge agent
 
 Revision:
 ---------
@@ -229,7 +229,7 @@ def get_agent_environment_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
 
 
 def get_agent_skills_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
-    """get system prompts of TECoSim agent's skills with AgentContext"""
+    """get system prompts of SemiForge agent's skills with AgentContext"""
     limit = ctx.agent_configs["SKILL_DESC_CHAR_LIMIT"]
     skill_list_str = ""
     for skill in ctx.skills:

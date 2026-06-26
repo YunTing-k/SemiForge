@@ -1105,7 +1105,7 @@ def render_edit_permission(path:str, active_idx: int, user_cache: str, match_mod
     elif match_mode != MATCH_MODE_EXACT:
         title.append(f"  [{MATCH_MODE_DESC[match_mode]}]", style=f"{EDIT_SUBTLE_COLOR}")
     body = Text()
-    body.append(f"TECoSim Agent want to request permission for ", style=f"white")
+    body.append(f"SemiForge want to request permission for ", style=f"white")
     body.append(f"{TOOL_NAME_EDIT_FILE}", style=f"bold {MAJOR_COLOR1}")
     body.append(f" to path: ", style=f"white")
     body.append(f"{path}\n", style=f"bold {MAJOR_COLOR1}")

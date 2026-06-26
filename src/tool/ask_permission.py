@@ -47,7 +47,7 @@ def render_permission(active_idx: int, request_type: str, request_desc: str, use
     panels = []
     header_text = Text("Permission Request", style=f"bold {MAJOR_COLOR1}")
     body = Text()
-    body.append(f"\nTECoSim Agent want to request permission for ", style="white")
+    body.append(f"\nSemiForge want to request permission for ", style="white")
     body.append(f"{request_type}\n", style=f"bold {MAJOR_COLOR1}")
     body.append(f"Request detail: ", style="white")
     limit = PERMISSION_REQUEST_DSEC_CHAR_MAX

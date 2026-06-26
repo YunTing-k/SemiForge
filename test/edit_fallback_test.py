@@ -37,7 +37,7 @@ class TestUnescapeUnicode(unittest.TestCase):
         self.assertEqual(_unescape_unicode(r'\\u201c'), '\u201c')
 
     def test_mixed_text(self):
-        result = _unescape_unicode(r'TECoSim\u2014Agent\u2122')
+        result = _unescape_unicode(r'SemiForge\u2014Agent\u2122')
         self.assertIn('\u2014', result)
         self.assertIn('\u2122', result)
 
@@ -174,11 +174,11 @@ class TestFindActualString(unittest.TestCase):
 
 class TestMatchUnicodeEscape(unittest.TestCase):
     def test_basic(self):
-        raw = 'TECoSim\u2014Agent\n'
-        llm = r'TECoSim\u2014Agent'
+        raw = 'SemiForge\u2014Agent\n'
+        llm = r'SemiForge\u2014Agent'
         lines, actual = match_unicode_escape(raw, llm)
         self.assertEqual(lines, [(1, 1)])
-        self.assertEqual(actual, 'TECoSim\u2014Agent')
+        self.assertEqual(actual, 'SemiForge\u2014Agent')
 
     def test_double_escaped(self):
         raw = '\u201cSim\u201d\n'

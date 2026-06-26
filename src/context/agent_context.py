@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.29
-Description: Context management of the TECoSim agent
+Description: Context management of the SemiForge agent
 
 Revision:
 ---------
@@ -92,7 +92,7 @@ class CronTask(TypedDict):
 
 
 class AgentContext:
-    """context of TECoSim agent"""
+    """context of SemiForge agent"""
     def __init__(self):
         # configs
         self.args: Namespace = Namespace()  # (don't dump, shared)
@@ -341,7 +341,7 @@ class AgentContext:
 
 
     def save_context(self, console: Console, mute: bool = False):
-        """save TECoSim agent's context"""
+        """save SemiForge agent's context"""
         try:
             uuid_obj = uuid.UUID(self.session_uuid)
             uuid_str = uuid_obj.__str__()
@@ -363,7 +363,7 @@ class AgentContext:
 
 
     def load_context(self, console: Console, mute: bool = False):
-        """load TECoSim agent's context"""
+        """load SemiForge agent's context"""
         try:
             uuid_obj = uuid.UUID(self.session_uuid)
             uuid_str = uuid_obj.__str__()

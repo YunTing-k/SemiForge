@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.6.12
-Description: Tool call dispatch for TECoSim agent
+Description: Tool call dispatch for SemiForge agent
 
 Revision:
 ---------

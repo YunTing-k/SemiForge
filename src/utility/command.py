@@ -128,7 +128,7 @@ def cmd_run_list(args: list[str], ctx: AgentContext, board: Scoreboard, console:
 
 def cmd_context(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """query the token usage, message and API requests statistics"""
-    title = "TECoSim Agent Context Usage"
+    title = "SemiForge Context Usage"
     if ctx.total_input_tokens <= 0:
         uncached_rate = 100
     else:
@@ -233,10 +233,10 @@ def cmd_context(args: list[str], ctx: AgentContext, board: Scoreboard, console: 
 
 def cmd_fread_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """query the absolute paths of all read files"""
-    title = "TECoSim Agent Files Read"
+    title = "SemiForge Files Read"
     cmd_str = Text()
     cmd_str.append(f"{len(ctx.files_read)} ", style=f"bold {MAJOR_COLOR2}")
-    cmd_str.append(f" files read by TECoSim Agent\n\n", style=f"white")
+    cmd_str.append(f" files read by SemiForge\n\n", style=f"white")
 
     cmd_str.append("File list: \n", style=f"bold {MAJOR_COLOR2}")
     for path, amount in ctx.files_read.items():
@@ -252,7 +252,7 @@ def cmd_fread_list(args: list[str], ctx: AgentContext, board: Scoreboard, consol
 
 def cmd_readonly_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """query the absolute paths of all readonly paths"""
-    title = (f"TECoSim Agent Readonly Paths "
+    title = (f"SemiForge Readonly Paths "
              f"({len(ctx.system_read_only_paths)} system, {len(ctx.read_only_paths)} custom)")
     cmd_str = Text()
     cmd_str.append(f"System readonly paths (can not edit):\n", style=f"bold {MAJOR_COLOR2}")
@@ -364,7 +364,7 @@ def cmd_readonly_remove(args: list[str], ctx: AgentContext, board: Scoreboard, c
 
 def cmd_permission_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """query the configs of always-allowed-configurable tool calls permission token"""
-    title = "TECoSim Agent Tool Call Permission"
+    title = "SemiForge Tool Call Permission"
     cmd_str = Text()
     cmd_str.append(f"{len(ctx.permissions)} ", style=f"bold {MAJOR_COLOR2}")
     cmd_str.append(f"types of ", style=f"white")

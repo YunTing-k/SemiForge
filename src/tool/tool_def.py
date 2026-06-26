@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.14
-Description: Agent tools for TECoSim agent
+Description: Agent tools for SemiForge agent
 
 Revision:
 ---------
@@ -143,12 +143,12 @@ def create_tools_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
 
 
 def tool_get_agent_version_def() -> dict[str, Any]:
-    """tool definition of getting current version of TECoSim Agent ({TOOL_NAME_VERSION})"""
+    """tool definition of getting current version of SemiForge ({TOOL_NAME_VERSION})"""
     tool_def = {
         "type": "function",
         "function": {
             "name": TOOL_NAME_VERSION,
-            "description": "Get the current version of the TECoSim Agent",
+            "description": "Get the current version of the SemiForge",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -161,7 +161,7 @@ def tool_get_agent_version_def() -> dict[str, Any]:
 
 
 def agent_version(progress: Progress) -> dict[str, Any]:
-    """tool realization of getting the dev version of TECoSim agent"""
+    """tool realization of getting the dev version of SemiForge agent"""
     func_name = TOOL_NAME_VERSION
     sys_log.debug(f"{func_name} {SUCCESS_LABEL}: "
                   f"{TECOSIM_AGENT_MAJOR_VERSION}.{TECOSIM_AGENT_MINOR_VERSION}.{TECOSIM_AGENT_UPDATE_VERSION}")

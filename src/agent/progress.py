@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.6.12
-Description: Agent status and progress types for TECoSim subagent coordination
+Description: Agent status and progress types for SemiForge subagent coordination
 
 Revision:
 ---------

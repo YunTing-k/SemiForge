@@ -38,7 +38,7 @@ from src.context.prompt import deepseek_support, get_reasoning
 sys_log = logging.getLogger('logger')
 
 
-summarize_session_system_prompt = "You are TECoSim Agent, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University."
+summarize_session_system_prompt = "You are SemiForge, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University."
 
 
 def tool_summarize_title_def() -> list[dict[str, Any]]:

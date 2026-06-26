@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.7
-Description: Tools and methods for TECoSim agent UI
+Description: Tools and methods for SemiForge agent UI
 
 Revision:
 ---------
@@ -73,7 +73,7 @@ def set_terminal_title(title: str):
     if title != DEFAULT_SESSION_TITLE and title != ERROR_SESSION_TITLE:
         print(f"\033]0;{AGENT_CONSOLE_ICON} {title}\007", end="", flush=True)
     else:
-        print(f"\033]0;{AGENT_CONSOLE_ICON} TECoSim Agent\007", end="", flush=True)
+        print(f"\033]0;{AGENT_CONSOLE_ICON} SemiForge\007", end="", flush=True)
 
 
 def vertical_color_grad_text(text: str, start_rgb: tuple, end_rgb: tuple) -> Text:
@@ -649,7 +649,7 @@ def render_exit(ctx: AgentContext, active_idx: int):
     panels = []
     header_text = Text("Exit", style=f"bold {MAJOR_COLOR1}")
     body = Text()
-    body.append(f"\nAre you sure to exit TECoSim Agent?\n", style="white")
+    body.append(f"\nAre you sure to exit SemiForge?\n", style="white")
     body.append(f"Tip: You can always resume this session with ", style="white")
     body.append(f"python -m src.main -r ", style=f"bold {MAJOR_COLOR2}")
     body.append(f"{ctx.session_uuid}\n\n", style=f"bold {MAJOR_COLOR1}")
@@ -734,8 +734,8 @@ def normal_exit(ctx: AgentContext, board: Scoreboard, console: Console, exit_str
             ctx.run_man.save_to_file(console)
             board.save_to_file(console)
         except Exception as e:
-            sys_log.error(f"Save messages and context failed with error {e}, TECoSim Agent exits abnormally")
-            console.print(f"Save messages and context failed with error {e}, TECoSim Agent exits abnormally", style="bold red")
+            sys_log.error(f"Save messages and context failed with error {e}, SemiForge exits abnormally")
+            console.print(f"Save messages and context failed with error {e}, SemiForge exits abnormally", style="bold red")
             sys.exit(-1)
         sys_log.debug(exit_str)
         console.print(exit_str, style=MAJOR_COLOR2)
@@ -754,9 +754,9 @@ def error_exit(ctx: AgentContext, board: Scoreboard, console: Console, error: Ex
         ctx.run_man.save_to_file(console)
         board.save_to_file(console)
     except Exception as e:
-        sys_log.error(f"Save messages and context failed with error {e}, TECoSim Agent exits abnormally")
-        console.print(f"Save messages and context failed with error {e}, TECoSim Agent exits abnormally", style="bold red")
+        sys_log.error(f"Save messages and context failed with error {e}, SemiForge exits abnormally")
+        console.print(f"Save messages and context failed with error {e}, SemiForge exits abnormally", style="bold red")
         sys.exit(-1)
-    sys_log.error(f"TECoSim Agent exits with error: {error}")
-    console.print(f"TECoSim Agent exits with error: {error}", style="bold red")
+    sys_log.error(f"SemiForge exits with error: {error}")
+    console.print(f"SemiForge exits with error: {error}", style="bold red")
     sys.exit(-1)

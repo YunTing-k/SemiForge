@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.7
-Description: Main script of the TECoSim agent
+Description: Main script of the SemiForge agent
 
 Revision:
 ---------
@@ -83,7 +83,7 @@ if __name__ == '__main__':
     """Entry point for MCP operations"""
     mcps_support.mcp_entry_cli(arguments, console)
 
-    """start banner and TECoSim agent dev info"""
+    """start banner and SemiForge dev info"""
     ui_info.log_tecosim_agent_info()
     ui_info.console_tecosim_agent_info(console)
 
@@ -91,8 +91,8 @@ if __name__ == '__main__':
     ctx = AgentContext()
     ctx.args = arguments
     ctx.console = console
-    sys_log.debug("TECoSim Agent context created")
-    console.print(f"TECoSim Agent [{MAJOR_COLOR2}]context[/{MAJOR_COLOR2}] created")
+    sys_log.debug("SemiForge context created")
+    console.print(f"SemiForge [{MAJOR_COLOR2}]context[/{MAJOR_COLOR2}] created")
 
     """load API configs and config LLM client"""
     ctx.api_configs = load_configs(configs_path=API_CONFIGS_PATH, name="API", console=console)
@@ -142,16 +142,16 @@ if __name__ == '__main__':
     """create/resume scoreboard"""
     board = Scoreboard()  # independent with agent context, clearer semantics
     board.session_uuid = ctx.session_uuid
-    sys_log.debug("Scoreboard of this TECoSim Agent session created")
-    console.print(f"[{MAJOR_COLOR2}]Scoreboard[/{MAJOR_COLOR2}] of this TECoSim Agent session created")
+    sys_log.debug("Scoreboard of this SemiForge session created")
+    console.print(f"[{MAJOR_COLOR2}]Scoreboard[/{MAJOR_COLOR2}] of this SemiForge session created")
     if ctx.args.resume is not None:
         board.load_from_file(console=console, mute=False)
 
     """create/resume design manager"""
     ctx.design_man.session_uuid = ctx.session_uuid
     ctx.design_man.simulator_path = ctx.agent_configs["SIMULATOR_PATH"]
-    sys_log.debug("Design manager of this TECoSim Agent session configured")
-    console.print(f"[{MAJOR_COLOR2}]Design manager[/{MAJOR_COLOR2}] of this TECoSim Agent session configured")
+    sys_log.debug("Design manager of this SemiForge session configured")
+    console.print(f"[{MAJOR_COLOR2}]Design manager[/{MAJOR_COLOR2}] of this SemiForge session configured")
     if ctx.args.resume is not None:
         ctx.design_man.load_from_file(console=console, mute=False)
 
@@ -159,15 +159,15 @@ if __name__ == '__main__':
     ctx.run_man.session_uuid = ctx.session_uuid
     ctx.run_man.simulator_path = ctx.agent_configs["SIMULATOR_PATH"]
     ctx.run_man.time_out = ctx.agent_configs["SIMULATOR_TIMEOUT_S"]
-    sys_log.debug("Run manager of this TECoSim Agent session configured")
-    console.print(f"[{MAJOR_COLOR2}]Run manager[/{MAJOR_COLOR2}] of this TECoSim Agent session configured")
+    sys_log.debug("Run manager of this SemiForge session configured")
+    console.print(f"[{MAJOR_COLOR2}]Run manager[/{MAJOR_COLOR2}] of this SemiForge session configured")
     if ctx.args.resume is not None:
         ctx.run_man.load_from_file(console=console, mute=False)
 
     """create/resume workflow manager"""
     ctx.workflow_man.session_uuid = ctx.session_uuid
-    sys_log.debug("Workflow manager of this TECoSim Agent session configured")
-    console.print(f"[{MAJOR_COLOR2}]Workflow manager[/{MAJOR_COLOR2}] of this TECoSim Agent session configured")
+    sys_log.debug("Workflow manager of this SemiForge session configured")
+    console.print(f"[{MAJOR_COLOR2}]Workflow manager[/{MAJOR_COLOR2}] of this SemiForge session configured")
     if ctx.args.resume is not None:
         ctx.workflow_man.load_runs()
 
@@ -308,15 +308,15 @@ if __name__ == '__main__':
             sys_log.warning(f"LLM request canceled, but the connection is not killed, token consumption can't be avoided")
             console.print(f"LLM request canceled, but the connection is not killed, token consumption can't be avoided",
                           style="bold yellow")
-            ui_info.normal_exit(ctx, board, console, "TECoSim Agent exits with RequestLLMCancelled")
+            ui_info.normal_exit(ctx, board, console, "SemiForge exits with RequestLLMCancelled")
         except ToolCallsCancelled:
             """Tool calls are cancelled and doesn't handle properly"""
             sys_log.error(f"Tool calls are cancelled, but the interrupt is not handled properly")
             console.print(f"Tool calls are cancelled, but the interrupt is not handled properly", style="bold red")
-            ui_info.normal_exit(ctx, board, console, "TECoSim Agent exits with KeyboardInterrupt")
+            ui_info.normal_exit(ctx, board, console, "SemiForge exits with KeyboardInterrupt")
         except KeyboardInterrupt:
             """User interrupt"""
-            ui_info.normal_exit(ctx, board, console, "TECoSim Agent exits with KeyboardInterrupt")
+            ui_info.normal_exit(ctx, board, console, "SemiForge exits with KeyboardInterrupt")
         except Exception as e:
             """Unexpected error"""
             ui_info.error_exit(ctx, board, console, e)

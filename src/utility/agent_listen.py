@@ -75,7 +75,7 @@ def get_listen_title(now_time: datetime, base_time: datetime, color_list: list[s
     index = int((position_in_period / LISTEN_TUI_COLOR_PERIOD) * len(color_list)) % len(color_list)
     color = color_list[index]
     title_str = Text(f"{AGENT_CONSOLE_ICON}", style=f"bold {color}")
-    title_str = title_str.append(f" TECoSim agent is in ", style=f"bright_black")
+    title_str = title_str.append(f" SemiForge is in ", style=f"bright_black")
     title_str = title_str.append(f"listening mode", style=f"bold {color}")
     title_str = title_str.append(f" ... \n", style=f"bright_black")
     return title_str

@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.5.19
-Description: Web support of the TECoSim agent
+Description: Web support of the SemiForge agent
 
 Revision:
 ---------
@@ -140,7 +140,7 @@ def web_single_fetch(url_in: str, ctx: AgentContext, console: Console) -> tuple[
         with httpx.Client(
                 timeout=httpx.Timeout(timeout=ctx.agent_configs["URL_TIMEOUT_S"]),
                 follow_redirects=True,
-                headers={"User-Agent": "TECoSimAgent-WebFetch"}
+                headers={"User-Agent": "SemiForge-WebFetch"}
         ) as httpx_client:
             resp = httpx_client.get(url)
             final_url = str(resp.url)
@@ -164,7 +164,7 @@ def web_single_fetch(url_in: str, ctx: AgentContext, console: Console) -> tuple[
     return markdown, SUCCESS_LABEL, if_redirect, final_url
 
 
-web_fetch_system_prompt = ("You are TECoSim Agent, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University. You are "
+web_fetch_system_prompt = ("You are SemiForge, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University. You are "
                            "an assistant for performing a web fetch tool use.")
 
 
@@ -416,7 +416,7 @@ def web_search_ddgs(query: str, param: WebSearchParam, console: Console)\
         return None, f"Web search backend {"DDGS"} with query {query} failed with error: {e}"
 
 
-web_search_system_prompt = ("You are TECoSim Agent, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University. You are "
+web_search_system_prompt = ("You are SemiForge, developed by Yu Huang (黄雨) from Shanghai Jiao Tong University. You are "
                            "an assistant for performing a web search tool use.")
 
 

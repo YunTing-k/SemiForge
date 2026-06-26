@@ -45,7 +45,7 @@ sys_log = logging.getLogger('logger')
 
 
 class ReasonMD(Markdown):
-    """TECoSim agent Markdown render for agent reasoning"""
+    """SemiForge agent Markdown render for agent reasoning"""
     def __init__(self, markup: str):
         super().__init__(markup)
         self.style = REASON_STYLE
@@ -55,7 +55,7 @@ class ReasonMD(Markdown):
 
 
 class ContentMD(Markdown):
-    """TECoSim agent Markdown render for agent content"""
+    """SemiForge agent Markdown render for agent content"""
     def __init__(self, markup: str):
         super().__init__(markup)
         self.style = CONTENT_STYLE
@@ -65,7 +65,7 @@ class ContentMD(Markdown):
 
 
 class BashMD(Markdown):
-    """TECoSim agent Markdown render for bash command"""
+    """SemiForge agent Markdown render for bash command"""
     def __init__(self, markup: str):
         super().__init__(markup)
         self.style = BASH_STYLE

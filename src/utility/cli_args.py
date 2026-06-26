@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.8
-Description: Argument of the TECoSim agent
+Description: Argument of the SemiForge agent
 
 Revision:
 ---------
@@ -29,10 +29,10 @@ from argparse import Namespace
 
 
 def tecosim_agent_args() -> Namespace:
-    """Arguments of the TECoSim agent"""
+    """Arguments of the SemiForge agent"""
 
     """main command"""
-    parser = argparse.ArgumentParser(description='Thermo-Electric Coupling Cross-level Display Simulator (TECoSim) Agent')
+    parser = argparse.ArgumentParser(description='SemiForge Agent')
     parser.add_argument('-l', '--log', help='To enable dev logger', action='store_true')
     parser.add_argument('-r', '--resume', type=str, help='Resume with session UUID', metavar='<UUID>')
     parser.add_argument('--nosystem', help='To disable main agent\'s system prompts', action='store_true')

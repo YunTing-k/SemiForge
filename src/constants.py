@@ -5,7 +5,7 @@ Header information
 Shanghai Jiao Tong University, School of Integrated Circuits, SMIL Lab
 Author: Yu Huang
 Create Date: 2026.4.14
-Description: Global constants and default parameters for TECoSim agent
+Description: Global constants and default parameters for SemiForge agent
 
 Revision:
 ---------
@@ -19,8 +19,8 @@ All global constants, default parameters, and tool name strings. Divided into: v
 subagent constants, system labels, major colors, bash risk levels, UI display params, task management,
 MCP params, and more.
 """
-"""TECoSim Agent constants"""
-"""TECoSim Agent version"""
+"""SemiForge constants"""
+"""SemiForge version"""
 TECOSIM_AGENT_MAJOR_VERSION: int = 0
 TECOSIM_AGENT_MINOR_VERSION: int = 2
 TECOSIM_AGENT_UPDATE_VERSION: int = 4
