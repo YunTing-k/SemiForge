@@ -692,6 +692,11 @@ def _enforce_quality_gate(
     if not thresholds:
         return stage_result, []  # No thresholds configured → skip quality check
 
+    # Skip stages that have no quality metrics defined (e.g. check-data)
+    if not get_primary_metric(stage_name):
+        sys_log.info("Stage [%s] has no quality metric source, skipping quality gate", stage_name)
+        return stage_result, []
+
     max_retries = get_max_retries(ctx.agent_configs)
     stage_label = stage_display_label(stage_name)
 
@@ -703,8 +708,6 @@ def _enforce_quality_gate(
 
     if q_ok:
         sys_log.info("Stage [%s] quality PASS (initial)", stage_name)
-        if metrics:
-            _print_quality_pass(ctx, stage_label, metrics)
         return sr, []
 
     sys_log.warning(
