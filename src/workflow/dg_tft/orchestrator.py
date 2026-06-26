@@ -22,6 +22,7 @@ import configparser
 import logging
 import os
 import re
+import shutil
 import time
 from datetime import datetime
 from enum import Enum
@@ -699,6 +700,7 @@ def _enforce_quality_gate(
 
     max_retries = get_max_retries(ctx.agent_configs)
     stage_label = stage_display_label(stage_name)
+    base_output_dir = output_dir
 
     # ── Initial quality check ──
     metrics = parse_metrics(output_dir, stage_name)
@@ -726,6 +728,7 @@ def _enforce_quality_gate(
     best_sr = sr
     best_metrics = metrics
     best_score = _best_metric_value(metrics, stage_name)
+    best_retry_dir = ""
 
     for attempt in range(max_retries):
         adjustments = suggest_adjustments(stage_name, attempt, config_path)
@@ -733,9 +736,16 @@ def _enforce_quality_gate(
             sys_log.info("No more adjustment strategies for stage [%s]", stage_name)
             break
 
-        _print_retry_start(ctx, stage_label, attempt + 1, max_retries, adjustments)
+        retry_num = attempt + 1
+        retry_dir = str(Path(base_output_dir) / f"_retry_{retry_num}")
+        Path(retry_dir).mkdir(parents=True, exist_ok=True)
 
-        config_path = apply_adjustments(config_path, adjustments)
+        _print_retry_start(ctx, stage_label, retry_num, max_retries, adjustments)
+
+        config_path = apply_adjustments(config_path, {
+            **adjustments,
+            "paths.output_dir": retry_dir,
+        })
 
         # Re-run stage
         sr = run_stage(
@@ -746,7 +756,7 @@ def _enforce_quality_gate(
         )
 
         retry_entry: dict = {
-            "attempt": attempt + 1,
+            "attempt": retry_num,
             "adjustments": dict(adjustments),
             "ok": sr.ok,
             "error": sr.error,
@@ -757,14 +767,14 @@ def _enforce_quality_gate(
         if not sr.ok:
             sys_log.warning(
                 "Stage [%s] retry %d/%d hard-failed: %s",
-                stage_name, attempt + 1, max_retries, sr.error,
+                stage_name, retry_num, max_retries, sr.error,
             )
-            _console(ctx, f"  [bright_black]Retry {attempt+1}: stage crashed ({sr.error})[/bright_black]")
+            _console(ctx, f"  [bright_black]Retry {retry_num}: stage crashed ({sr.error})[/bright_black]")
             retry_log.append(retry_entry)
             break
 
-        # Re-assess quality
-        metrics = parse_metrics(output_dir, stage_name)
+        # Re-assess quality (from retry output directory)
+        metrics = parse_metrics(retry_dir, stage_name)
         sr.metrics = metrics
         retry_entry["metrics"] = dict(metrics)
         q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
@@ -776,24 +786,33 @@ def _enforce_quality_gate(
             best_sr = sr
             best_metrics = metrics
             best_score = current_score
+            best_retry_dir = retry_dir
 
         if q_ok:
             sys_log.info(
                 "Stage [%s] quality PASS after %d retry(ies)",
-                stage_name, attempt + 1,
+                stage_name, retry_num,
             )
             _print_quality_pass(ctx, stage_label, metrics)
+            _copy_retry_to_main(retry_dir, base_output_dir)
+            _cleanup_retry_dirs(base_output_dir)
+            apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
             return sr, []
         else:
-            _print_retry_quality_fail(ctx, stage_label, attempt + 1, q_failures)
+            _print_retry_quality_fail(ctx, stage_label, retry_num, q_failures)
 
     # ── All retries exhausted ──
     sys_log.warning(
         "Stage [%s] quality still below threshold after %d retries; using best attempt",
         stage_name, len(retry_log),
     )
+    if best_retry_dir:
+        _copy_retry_to_main(best_retry_dir, base_output_dir)
+    _cleanup_retry_dirs(base_output_dir)
+    apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
+    _, best_failures = assess_quality(stage_name, best_metrics, thresholds)
     _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds)
-    return best_sr, q_failures
+    return best_sr, best_failures
 
 
 def _best_metric_value(metrics: dict[str, float], stage_name: str) -> float:
@@ -873,6 +892,33 @@ def _print_quality_exhausted(
         else:
             marker = ""
         c.print(f"    [bright_black]{k}={v:.6f}{marker}[/bright_black]")
+
+
+# ── Retry artifact management (P7-T7) ────────────────────────────────
+
+def _copy_retry_to_main(retry_dir: str, main_dir: str) -> None:
+    """Copy all files and subdirectories from a retry directory to the main output dir.
+
+    Existing files in ``main_dir`` are overwritten.
+    """
+    retry_path = Path(retry_dir)
+    main_path = Path(main_dir)
+    for item in retry_path.iterdir():
+        dest = main_path / item.name
+        if item.is_dir():
+            shutil.copytree(str(item), str(dest), dirs_exist_ok=True)
+        else:
+            shutil.copy2(str(item), str(dest))
+    sys_log.info("Copied retry artifacts from %s to %s", retry_dir, main_dir)
+
+
+def _cleanup_retry_dirs(base_output_dir: str) -> None:
+    """Remove all ``_retry_*`` subdirectories under the output root."""
+    base = Path(base_output_dir)
+    for d in base.glob("_retry_*"):
+        if d.is_dir():
+            shutil.rmtree(str(d), ignore_errors=True)
+            sys_log.info("Cleaned up retry directory: %s", d)
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:
