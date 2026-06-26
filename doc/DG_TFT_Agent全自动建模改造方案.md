@@ -1,5 +1,12 @@
 # DeviceAgent 中 DG-TFT 全自动建模工作流改造方案
 
+> **状态：Phase 0–8 已完成** | 393 tests PASS
+> 
+> 本文档为原始改造设计（2026-06-25）。方案中描述的"短期 subprocess 包装 → 中期函数化"两阶段已全部落地。
+> 当前进展详见 `doc/DG_TFT_Agent全自动建模开发TODO.md`。
+> 
+> ---
+
 ## 1. 目标
 
 把当前 DG-TFT 建模流程改造成“**工作流优先、Agent 辅助**”的自动化系统，使用户只需要提供数据目录，Agent 就可以自动完成：
@@ -30,15 +37,15 @@
   - `ref/DG_TFT_v90_USER_FRIENDLY_MODELING_RELEASE_20260622/modeling_code/`
 - 没有在当前 `src/` 扫描结果中看到完整的 `validate_dataset.py` / `fit_physical_kernel.py` / `train_base_pkan.py` / `dg_tft_full_model.py` / `analyze_it_hysteresis.py` 这些迁移后的正式位置。
 
-因此，本方案分为两层：
+因此，本方案分为两层（✅ 两阶段均已完成）：
 
-### 2.1 短期可落地路径
-先**包装现有脚本式代码**，尽快实现“给路径即可全自动跑”。
+### 2.1 短期可落地路径 ✅
+先**包装现有脚本式代码**，尽快实现"给路径即可全自动跑"。
 
-### 2.2 中期正确路径
-再把 DG-TFT 建模代码从“脚本集合”重构为“可调用库 + 工作流引擎”。
+### 2.2 中期正确路径 ✅（已通过 Phase 8 实现）
+再把 DG-TFT 建模代码从"脚本集合"重构为"可调用库 + 工作流引擎"。
 
-如果你本地 `src/` 里确实已经有迁移后的建模代码，只是当前未提交或未被扫描到，那么下面文档中提到的 `src/device_modeling/dg_tft/` 可以替换为你的实际路径。
+代码已迁移至正式目录，详见`doc/DG_TFT_Agent全自动建模开发TODO.md`。
 
 ---
 
@@ -419,9 +426,9 @@ src/
       subagent_hooks.py
 ```
 
-## 9.3 迁移原则
+## 9.3 迁移原则 ✅ 已落地
 
-### 方案 A：低风险快速接入
+### 方案 A：低风险快速接入 ✅
 保留原脚本大体不动，只做路径重定位：
 
 - `ref/.../modeling_code/engine/*.py` → `src/device_modeling/dg_tft/engine/`
@@ -429,17 +436,17 @@ src/
 - `ref/.../modeling_code/config/*.ini` → `src/device_modeling/dg_tft/config/`
 - `ref/.../modeling_code/run_model.py` → `src/device_modeling/dg_tft/run_model.py`
 
-### 方案 B：中期重构
+### 方案 B：中期重构 ✅（Phase 8 完成）
 把原来 `argparse + print + subprocess` 风格，改成：
 
-- `def validate_dataset(...)->dict`
-- `def fit_physical(...)->StageResult`
-- `def train_base_pkan(...)->StageResult`
-- `def train_full_model(...)->StageResult`
-- `def train_hysteresis(...)->StageResult`
-- `def export_deployment(...)->StageResult`
+- `def run_validate(data_dir, ...) -> dict`
+- `def run_fit_physical(**kw) -> Path`
+- `def run_train_base_pkan(**kw) -> Path`
+- `def run_full_model(args) -> Path`
+- `def run_train_srh(**kw) -> Path`
+- `def run_export_va(**kw) -> Path`
 
-建议先做 A，再渐进到 B。
+A → B 渐进路径已完成。函数化在 `run_model.py` 内部实现，外层 AGI→CUDA subprocess 不变。
 
 ---
 
@@ -1026,7 +1033,6 @@ def start_dg_tft_workflow(arguments, ctx, progress):
   "DG_TFT_DEFAULT_OUTPUT_ROOT": "./outputs/dg_tft_runs",
   "DG_TFT_DEFAULT_CONFIG_TEMPLATE": "./src/device_modeling/dg_tft/config/model_config_new_device_template.ini",
   "DG_TFT_ENABLE_BACKGROUND_WORKFLOW": true,
-  "DG_TFT_USE_IMPORT_API": false,
   "DG_TFT_HSPICE_REQUIRED": false,
   "DG_TFT_AGENT_PYTHON_EXE": "G:/Anaconda3/envs/AGI/python.exe",
   "DG_TFT_MODELING_PYTHON_EXE": "G:/Anaconda3/envs/CUDA/python.exe",
@@ -1036,10 +1042,9 @@ def start_dg_tft_workflow(arguments, ctx, progress):
 
 其中：
 
-- `USE_IMPORT_API=false` 表示第一阶段先走 subprocess 包装；
-- 等函数化重构完成后再改成 `true`；
-- `DG_TFT_MODELING_PYTHON_EXE` 是第一阶段最关键的执行配置；
+- `DG_TFT_MODELING_PYTHON_EXE` 是模型训练的解释器；
 - `DG_TFT_AGENT_PYTHON_EXE` 主要用于记录和排查，不建议业务逻辑依赖它。
+- 函数化在 `run_model.py` 内部实现（Phase 8），无需 `USE_IMPORT_API` 开关。
 
 ---
 
@@ -1059,35 +1064,13 @@ def start_dg_tft_workflow(arguments, ctx, progress):
 
 这是整个方案最关键的部分。
 
-## 17.1 第一阶段：先包装，不大改算法代码
+## 17.1 第一阶段：先包装，不大改算法代码 ✅ 已完成（Phase 0–3）
 
-目标：最短路径跑通。
+目标：最短路径跑通。（已实现 — `stage_runner.py` 通过 subprocess 调用 `run_model.py`）
 
-### 做法
-保留 `run_model.py` 为主入口，由工作流引擎自动：
+## 17.2 第二阶段：把脚本改成 API ✅ 已完成（Phase 8）
 
-1. 生成临时 config；
-2. 调用：
-   - `check-data`
-   - `fit-physical`
-   - `train-base-pkan`
-   - `train-static`
-   - `train-hysteresis`（如果启用）
-3. 收集产物和日志。
-
-### 优点
-- 改动小；
-- 最快形成闭环；
-- 不容易破坏原始数值实现。
-
-### 缺点
-- 可观测性一般；
-- 某些阶段只能靠 stdout/stderr 或文件存在性判断；
-- 测试粒度较粗。
-
-## 17.2 第二阶段：把脚本改成 API
-
-目标：让工作流引擎直接调用 Python 函数。
+目标：让工作流引擎直接调用 Python 函数。（已实现 — 7 个 engine/dynamic 脚本均有 `run_*()` importable 入口）
 
 ### 推荐把以下模块函数化
 
@@ -1211,39 +1194,17 @@ def analyze_hysteresis(it_dir: Path, static_data_dir: Path, out_dir: Path) -> St
 
 ---
 
-## 20. 推荐的实现顺序
+## 20. 推荐的实现顺序（✅ 全部完成）
 
-## Phase 1：打通最短闭环
+本方案的 Phase 编号与 `TODO.md` 不同。对应关系：
+- 方案 Phase 1 ≈ TODO Phase 0–4
+- 方案 Phase 2 ≈ TODO Phase 5–6
+- 方案 Phase 3 ≈ TODO Phase 8
 
-目标：先能“一句话给路径就自动跑”。
-
-### 需要完成
-1. 把 DG-TFT 建模代码整理到 `src/device_modeling/dg_tft/`；
-2. 新增 `WorkflowManager`；
-3. 新增 `start_dg_tft_workflow` / `query_dg_tft_workflow`；
-4. 通过 subprocess 包装原 `run_model.py`；
-5. 自动生成 runtime config；
-6. 自动汇总 `RUN_SUMMARY.md`。
-
-### 这一步完成后
-用户已经可以只给数据目录启动自动建模。
-
-## Phase 2：增强可观测性和稳定性
-
-### 需要完成
-1. `dataset_inspector.py` 结构化输出 `DatasetProfile`；
-2. 每阶段生成 `StageResult` JSON；
-3. 异常分类 `diagnostics.py`；
-4. 用 `explorer` subagent 自动输出失败解释；
-5. 内建命令 `/workflow_list` 等。
-
-## Phase 3：把建模脚本函数化
-
-### 需要完成
-1. `validate_dataset.py` 等改成 importable API；
-2. `run_model.py` 从“唯一执行器”变成“CLI 包装器”；
-3. 工作流引擎不再依赖 subprocess stdout 解析；
-4. 单元测试可针对每个阶段函数直接跑。
+```text
+Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅
+```
+详细进展见 `doc/DG_TFT_Agent全自动建模开发TODO.md`。
 
 ## Phase 4：把 subagent 介入做精细化
 
@@ -1317,9 +1278,9 @@ test/dg_tft_workflow_background_test.py
 ### 问题
 很多脚本现在是“单文件大脚本”，直接重构成 API 有风险。
 
-### 策略
-- 第一阶段先 subprocess 包装；
-- 第二阶段再逐个函数化。
+### 策略 ✅ 已完成
+- 第一阶段先 subprocess 包装（Phase 0–3）；
+- 第二阶段再逐个函数化（Phase 8）。
 
 ## 22.2 风险：I-t 数据命名和格式波动大
 
@@ -1410,11 +1371,11 @@ test/dg_tft_workflow_background_test.py
 
 ### 最终原则
 
-1. **把 DG-TFT 流程固化成工作流状态机**；
-2. **把 subagent 变成工作流里的柔性插件**；
-3. **先包住旧脚本，再逐步函数化**；
-4. **把用户可见进度统一投射到 task scoreboard**；
-5. **把最终交付统一收敛为 manifest + summary**。
+1. **把 DG-TFT 流程固化成工作流状态机** ✅；
+2. **把 subagent 变成工作流里的柔性插件** ✅；
+3. **先包住旧脚本，再逐步函数化** ✅；
+4. **把用户可见进度统一投射到 console + scoreboard** ✅；
+5. **把最终交付统一收敛为 manifest + summary** ✅。
 
 这套方案是可操作的，而且能和你现在 `DeviceAgent` 里已有的：
 

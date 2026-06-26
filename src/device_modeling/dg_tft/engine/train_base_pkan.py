@@ -1088,13 +1088,88 @@ def parse_args():
     return ap.parse_args()
 
 
-def main():
-    args = parse_args()
+def run_train_base_pkan(
+    *,
+    data_dir: Path,
+    baseline_json: Path,
+    out_dir: Path,
+    device: str = "auto",
+    dtype: str = "float32",
+    seed: int = 20260522,
+    max_iv_points: int = 12000,
+    max_cv_points: int = 1800,
+    kan_hidden: int = 7,
+    kan_grid: int = 5,
+    kan_k: int = 3,
+    kan_scale: float = 0.85,
+    dveff_range: float = 0.45,
+    dlogid_range: float = 0.55,
+    dlogcit_range: float = 0.75,
+    epochs_shared: int = 1000,
+    epochs_iv: int = 1200,
+    epochs_cv: int = 1000,
+    warmup_epochs: int = 250,
+    batch_iv: int = 2048,
+    batch_cv: int = 1024,
+    eval_batch: int = 4096,
+    lr_shared: float = 1.5e-3,
+    lr_iv: float = 1.5e-3,
+    lr_cv: float = 1.2e-3,
+    cv_weight_shared: float = 0.45,
+    anchor_iv: int = 1000,
+    anchor_cv: int = 900,
+    anchor_weight: float = 0.75,
+    small_weight: float = 0.015,
+    param_l2: float = 1e-7,
+    grad_clip: float = 5.0,
+    cv_diff_h: float = 1e-4,
+    print_every: int = 100,
+) -> Path:
+    """Importable entry point — train base PKAN model.
+
+    Returns the output directory path.
+    """
+    args = argparse.Namespace(
+        data_dir=data_dir,
+        baseline_json=baseline_json,
+        out_dir=out_dir,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        max_iv_points=max_iv_points,
+        max_cv_points=max_cv_points,
+        kan_hidden=kan_hidden,
+        kan_grid=kan_grid,
+        kan_k=kan_k,
+        kan_scale=kan_scale,
+        dveff_range=dveff_range,
+        dlogid_range=dlogid_range,
+        dlogcit_range=dlogcit_range,
+        epochs_shared=epochs_shared,
+        epochs_iv=epochs_iv,
+        epochs_cv=epochs_cv,
+        warmup_epochs=warmup_epochs,
+        batch_iv=batch_iv,
+        batch_cv=batch_cv,
+        eval_batch=eval_batch,
+        lr_shared=lr_shared,
+        lr_iv=lr_iv,
+        lr_cv=lr_cv,
+        cv_weight_shared=cv_weight_shared,
+        anchor_iv=anchor_iv,
+        anchor_cv=anchor_cv,
+        anchor_weight=anchor_weight,
+        small_weight=small_weight,
+        param_l2=param_l2,
+        grad_clip=grad_clip,
+        cv_diff_h=cv_diff_h,
+        print_every=print_every,
+    )
     set_seed(args.seed)
-    device = resolve_device(args.device)
-    dtype = torch.float64 if args.dtype == "float64" else torch.float32
+    device_obj = resolve_device(args.device)
+    dtype_obj = torch.float64 if args.dtype == "float64" else torch.float32
     print(f"Python uses pykan: {PYKAN_AVAILABLE}")
-    print(f"Device: {device}, dtype: {dtype}")
+    print(f"Device: {device_obj}, dtype: {dtype_obj}")
 
     p, trap, baseline_payload = load_baseline(args.baseline_json)
     iv_all = load_iv_data(args.data_dir)
@@ -1110,22 +1185,22 @@ def main():
     iv_anchor_df = make_iv_anchors(iv_fit, args.anchor_iv, args.seed + 101)
     cv_anchor_df = make_cv_anchors(cv_fit_df, args.anchor_cv, args.seed + 211)
 
-    shared, iv_kan, cv_kan = make_models(iv_fit, cv_fit_df, iv_anchor_df, cv_anchor_df, p, args, device, dtype)
-    iv_fit_t = make_iv_tensors(iv_fit, device, dtype)
-    cv_fit_t = make_cv_tensors(cv_fit_df, device, dtype)
+    shared, iv_kan, cv_kan = make_models(iv_fit, cv_fit_df, iv_anchor_df, cv_anchor_df, p, args, device_obj, dtype_obj)
+    iv_fit_t = make_iv_tensors(iv_fit, device_obj, dtype_obj)
+    cv_fit_t = make_cv_tensors(cv_fit_df, device_obj, dtype_obj)
     iv_anchor_t = {
-        "vbg": tensor(iv_anchor_df["VBG_V"].to_numpy(float), device, dtype),
-        "vtg": tensor(iv_anchor_df["VTG_V"].to_numpy(float), device, dtype),
-        "vds": tensor(iv_anchor_df["VDS_V"].to_numpy(float), device, dtype),
+        "vbg": tensor(iv_anchor_df["VBG_V"].to_numpy(float), device_obj, dtype_obj),
+        "vtg": tensor(iv_anchor_df["VTG_V"].to_numpy(float), device_obj, dtype_obj),
+        "vds": tensor(iv_anchor_df["VDS_V"].to_numpy(float), device_obj, dtype_obj),
     }
     cv_anchor_t = {
-        "vbg": tensor(cv_anchor_df["VBG_V"].to_numpy(float), device, dtype),
-        "vtg": tensor(cv_anchor_df["VTG_V"].to_numpy(float), device, dtype),
-        "vds": tensor(cv_anchor_df["VDS_V"].to_numpy(float), device, dtype),
-        "freq": tensor(cv_anchor_df["freq_hz"].to_numpy(float), device, dtype),
-        "gt": tensor(cv_anchor_df["gate_t"].to_numpy(float), device, dtype),
-        "gb": tensor(cv_anchor_df["gate_b"].to_numpy(float), device, dtype),
-        "mode": torch.as_tensor(cv_anchor_df["mode"].to_numpy(int), dtype=torch.long, device=device),
+        "vbg": tensor(cv_anchor_df["VBG_V"].to_numpy(float), device_obj, dtype_obj),
+        "vtg": tensor(cv_anchor_df["VTG_V"].to_numpy(float), device_obj, dtype_obj),
+        "vds": tensor(cv_anchor_df["VDS_V"].to_numpy(float), device_obj, dtype_obj),
+        "freq": tensor(cv_anchor_df["freq_hz"].to_numpy(float), device_obj, dtype_obj),
+        "gt": tensor(cv_anchor_df["gate_t"].to_numpy(float), device_obj, dtype_obj),
+        "gb": tensor(cv_anchor_df["gate_b"].to_numpy(float), device_obj, dtype_obj),
+        "mode": torch.as_tensor(cv_anchor_df["mode"].to_numpy(int), dtype=torch.long, device=device_obj),
     }
 
     print("Stage A: shared dVeff KAN")
@@ -1137,8 +1212,8 @@ def main():
     stage_cv(shared, cv_kan, cv_fit_t, cv_anchor_t, p, trap, args)
 
     print("Evaluating all data")
-    iv_all_t = make_iv_tensors(iv_all, device, dtype)
-    cv_all_t = make_cv_tensors(cv_all_df, device, dtype)
+    iv_all_t = make_iv_tensors(iv_all, device_obj, dtype_obj)
+    cv_all_t = make_cv_tensors(cv_all_df, device_obj, dtype_obj)
     pred_id, dveff_iv, dlogid = eval_iv(iv_all_t, p, shared, iv_kan, args)
     pred_c, dveff_cv, dlogt, dlogb = eval_cv(cv_all_t, p, trap, shared, cv_kan, args)
 
@@ -1176,6 +1251,47 @@ def main():
     )
     print(json.dumps(summary, indent=2))
     print(f"Outputs written to: {args.out_dir}")
+    return args.out_dir
+
+
+def main():
+    args = parse_args()
+    run_train_base_pkan(
+        data_dir=args.data_dir,
+        baseline_json=args.baseline_json,
+        out_dir=args.out_dir,
+        device=args.device,
+        dtype=args.dtype,
+        seed=args.seed,
+        max_iv_points=args.max_iv_points,
+        max_cv_points=args.max_cv_points,
+        kan_hidden=args.kan_hidden,
+        kan_grid=args.kan_grid,
+        kan_k=args.kan_k,
+        kan_scale=args.kan_scale,
+        dveff_range=args.dveff_range,
+        dlogid_range=args.dlogid_range,
+        dlogcit_range=args.dlogcit_range,
+        epochs_shared=args.epochs_shared,
+        epochs_iv=args.epochs_iv,
+        epochs_cv=args.epochs_cv,
+        warmup_epochs=args.warmup_epochs,
+        batch_iv=args.batch_iv,
+        batch_cv=args.batch_cv,
+        eval_batch=args.eval_batch,
+        lr_shared=args.lr_shared,
+        lr_iv=args.lr_iv,
+        lr_cv=args.lr_cv,
+        cv_weight_shared=args.cv_weight_shared,
+        anchor_iv=args.anchor_iv,
+        anchor_cv=args.anchor_cv,
+        anchor_weight=args.anchor_weight,
+        small_weight=args.small_weight,
+        param_l2=args.param_l2,
+        grad_clip=args.grad_clip,
+        cv_diff_h=args.cv_diff_h,
+        print_every=args.print_every,
+    )
 
 
 if __name__ == "__main__":

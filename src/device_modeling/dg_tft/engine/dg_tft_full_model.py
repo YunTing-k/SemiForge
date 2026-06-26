@@ -12461,7 +12461,7 @@ def write_release_package(
     (out_dir / "v90_acceptance_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def parse_args():
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     ap.add_argument("--data-dir-override", type=Path, default=None)
@@ -13064,7 +13064,16 @@ def parse_args():
     ap.add_argument("--cgg-tail-amp-after-extraction", type=float, default=2.0e-14)
     ap.add_argument("--cgg-tail-center-after-extraction", type=float, default=-3.0)
     ap.add_argument("--cgg-tail-width-after-extraction", type=float, default=1.8)
-    return ap.parse_args()
+    return ap
+
+
+def parse_args():
+    return _build_parser().parse_args()
+
+
+def default_args():
+    """Return an argparse.Namespace populated with all parser defaults (no CLI parsing)."""
+    return _build_parser().parse_args([])
 
 
 def apply_quick_run_preset(args):
@@ -13102,8 +13111,14 @@ def apply_quick_run_preset(args):
     return args
 
 
-def main():
-    args = apply_quick_run_preset(parse_args())
+def run_full_model(args):
+    """Importable entry point — train full static + symbolic DG-TFT model.
+
+    ``args`` must be an argparse.Namespace with all fields present.
+    Call ``default_args()`` to obtain a baseline Namespace, override
+    specific fields, optionally call ``apply_quick_run_preset()``,
+    and pass the result here.
+    """
     set_seed(args.seed)
     device = resolve_device(args.device)
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
@@ -13609,6 +13624,12 @@ def main():
     for k, v in metrics.items():
         print(f"  {k}: {v}")
     print(f"Outputs written to: {args.out_dir}")
+    return args.out_dir
+
+
+def main():
+    args = apply_quick_run_preset(parse_args())
+    run_full_model(args)
 
 
 if __name__ == "__main__":

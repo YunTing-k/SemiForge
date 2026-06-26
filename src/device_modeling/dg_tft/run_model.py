@@ -4,10 +4,8 @@ import argparse
 import configparser
 import os
 import re
-from pathlib import Path
-import shlex
-import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,6 +17,16 @@ ENGINE = CODE_ROOT / "engine"
 DYNAMIC = CODE_ROOT / "dynamic"
 DEFAULT_CONFIG = CODE_ROOT / "config" / "model_config.ini"
 EXAMPLE_DATA_ROOT = (RELEASE_ROOT / "data_templates" / "example_dataset").resolve()
+
+# Add engine and dynamic to sys.path so direct imports work internally.
+# (The AGI→CUDA subprocess boundary is preserved by stage_runner.py.)
+def _ensure_import_paths() -> None:
+    for p in (str(ENGINE), str(DYNAMIC)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
+_ensure_import_paths()
 
 
 def resolve_path(value: str, config_path: Path) -> Path:
@@ -32,17 +40,9 @@ def yes(cfg: configparser.ConfigParser, section: str, option: str) -> bool:
     return cfg.getboolean(section, option)
 
 
-def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
-    resolved_env = dict(os.environ)
-    if env:
-        resolved_env.update(env)
-    py_paths = [str(ENGINE)]
-    existing = resolved_env.get("PYTHONPATH", "")
-    if existing:
-        py_paths.append(existing)
-    resolved_env["PYTHONPATH"] = os.pathsep.join(py_paths)
-    print("+", " ".join(shlex.quote(str(x)) for x in command), flush=True)
-    subprocess.run(command, check=True, cwd=RELEASE_ROOT, env=resolved_env)
+def _log_stage(label: str) -> None:
+    """Print a visible stage marker to stdout (captured by outer subprocess)."""
+    print(f"\n=== {label} ===", flush=True)
 
 
 def load_config(path: Path) -> configparser.ConfigParser:
@@ -94,7 +94,6 @@ def _normalize_cv_format(data_dir: Path) -> None:
         rewritten = True
         desc = str(df.iloc[0, 0])
         bias_raw = pd.to_numeric(df.iloc[2:, 0], errors="coerce").values.astype(float)
-        # Build description row + header row + data rows
         full_desc = desc + " | corrected coordinate, smoothed capacitance only"
         header_pairs: list[str] = []
         data_cols: list[pd.Series] = []
@@ -110,7 +109,6 @@ def _normalize_cv_format(data_dir: Path) -> None:
         out = pd.concat(data_cols, axis=1)
         out.columns = header_pairs
         out.index = range(2, 2 + len(bias_raw))
-        # Prepend description row (row 0) and header row (row 1)
         desc_series = pd.Series([full_desc] + [np.nan] * (out.shape[1] - 1), index=out.columns, name=0)
         header_series = pd.Series(header_pairs, index=out.columns, name=1)
         out = pd.concat([pd.DataFrame([desc_series]), pd.DataFrame([header_series]), out])
@@ -122,57 +120,48 @@ def _normalize_cv_format(data_dir: Path) -> None:
             df_out.to_excel(writer, sheet_name=name[:31], index=False, header=False)
 
 
+# ── Stage functions (functionized — direct imports, no inner subprocess) ──
+
 def validate_data(cfg, config_path, p) -> None:
+    from validate_dataset import run_validate
+
+    _log_stage("check-data: normalize CV + validate dataset")
     _normalize_cv_format(p["data"])
-    command = [
-        sys.executable,
-        str(ENGINE / "validate_dataset.py"),
-        "--data-dir",
-        str(p["data"]),
-        "--json-out",
-        str(p["output"] / "dataset_validation.json"),
-    ]
-    if p["it"].exists():
-        command += ["--it-dir", str(p["it"])]
     p["output"].mkdir(parents=True, exist_ok=True)
-    run(command)
+    run_validate(
+        data_dir=p["data"],
+        it_dir=p["it"] if p["it"].exists() else None,
+        json_out=p["output"] / "dataset_validation.json",
+    )
 
 
 def fit_physical(cfg, p) -> None:
+    from fit_physical_kernel import run_fit_physical
+
     section = cfg["physical_fit"]
     p["physical"].mkdir(parents=True, exist_ok=True)
-    max_iv = section["max_iv_points"]
-    max_cv = section["max_cv_points"]
-    max_nfev = section["max_nfev_scale"]
+    max_iv = int(section["max_iv_points"])
+    max_cv = int(section["max_cv_points"])
+    max_nfev = float(section["max_nfev_scale"])
     if yes(cfg, "runtime", "debug_run"):
-        max_iv = "1000"
-        max_cv = "500"
-        max_nfev = "0.1"
+        max_iv, max_cv, max_nfev = 1000, 500, 0.1
     elif yes(cfg, "runtime", "quick_run"):
-        max_iv = "3000"
-        max_cv = "2000"
-        max_nfev = "0.3"
-    run(
-        [
-            sys.executable,
-            str(ENGINE / "fit_physical_kernel.py"),
-            "--data-dir",
-            str(p["data"]),
-            "--out-dir",
-            str(p["physical"]),
-            "--max-iv-points",
-            max_iv,
-            "--max-cv-points",
-            max_cv,
-            "--max-nfev-scale",
-            max_nfev,
-            "--seed",
-            cfg["runtime"]["seed"],
-        ]
+        max_iv, max_cv, max_nfev = 3000, 2000, 0.3
+
+    _log_stage("fit-physical: physical kernel extraction")
+    run_fit_physical(
+        data_dir=p["data"],
+        out_dir=p["physical"],
+        max_iv_points=max_iv,
+        max_cv_points=max_cv,
+        max_nfev_scale=max_nfev,
+        seed=int(cfg["runtime"]["seed"]),
     )
 
 
 def train_base_pkan(cfg, p) -> None:
+    from train_base_pkan import run_train_base_pkan
+
     section = cfg["base_pkan"]
     baseline = p["physical"] / "fitted_params.json"
     if not baseline.exists():
@@ -180,39 +169,23 @@ def train_base_pkan(cfg, p) -> None:
             f"{baseline} is missing. Run `python run_model.py fit-physical` first."
         )
     p["base_pkan"].mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            sys.executable,
-            str(ENGINE / "train_base_pkan.py"),
-            "--data-dir",
-            str(p["data"]),
-            "--baseline-json",
-            str(baseline),
-            "--out-dir",
-            str(p["base_pkan"]),
-            "--device",
-            cfg["runtime"]["device"],
-            "--dtype",
-            cfg["runtime"]["dtype"],
-            "--seed",
-            cfg["runtime"]["seed"],
-            "--epochs-shared",
-            section["epochs_shared"],
-            "--epochs-iv",
-            section["epochs_iv"],
-            "--epochs-cv",
-            section["epochs_cv"],
-            "--kan-hidden",
-            section["kan_hidden"],
-            "--kan-grid",
-            section["kan_grid"],
-            "--kan-k",
-            section["kan_k"],
-            "--batch-iv",
-            section["batch_iv"],
-            "--batch-cv",
-            section["batch_cv"],
-        ]
+
+    _log_stage("train-base-pkan: base PKAN training")
+    run_train_base_pkan(
+        data_dir=p["data"],
+        baseline_json=baseline,
+        out_dir=p["base_pkan"],
+        device=cfg["runtime"]["device"],
+        dtype=cfg["runtime"]["dtype"],
+        seed=int(cfg["runtime"]["seed"]),
+        epochs_shared=int(section["epochs_shared"]),
+        epochs_iv=int(section["epochs_iv"]),
+        epochs_cv=int(section["epochs_cv"]),
+        kan_hidden=int(section["kan_hidden"]),
+        kan_grid=int(section["kan_grid"]),
+        kan_k=int(section["kan_k"]),
+        batch_iv=int(section["batch_iv"]),
+        batch_cv=int(section["batch_cv"]),
     )
 
 
@@ -224,7 +197,6 @@ _FALLBACK_ETA_N = 0.60
 
 
 def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Path]) -> None:
-    """..."""
     import json
 
     fp = p["physical"] / "fitted_params.json"
@@ -264,136 +236,132 @@ def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Pat
         )
     torch.save({}, p["base_pkan"] / "pkan_torch_model.pt")
 
-def train_full_model(cfg, p) -> None:
+
+def _make_full_model_args(cfg: configparser.ConfigParser, p: dict[str, Path]) -> argparse.Namespace:
+    """Build a Namespace for run_full_model from INI config."""
+    from dg_tft_full_model import default_args
+
     section = cfg["full_model"]
+    args = default_args()
+
+    # Paths / device
+    args.data_dir_override = p["data"]
+    args.model_dir = p["base_pkan"]
+    args.out_dir = p["full"]
+    args.device = cfg["runtime"]["device"]
+    args.dtype = cfg["runtime"]["dtype"]
+    args.seed = int(cfg["runtime"]["seed"])
+
+    # Core training
+    args.epochs = int(section["epochs"])
+    args.lr = float(section["learning_rate"])
+    args.batch_iv = int(section["batch_iv"])
+    args.batch_cv = int(section["batch_cv"])
+    args.cv_weight = float(section["cv_weight"])
+    args.cv_residual_level = int(section["cv_residual_level"])
+    args.early_stop_patience = int(section["early_stop_patience"])
+    args.early_stop_min_epochs = int(section["early_stop_min_epochs"])
+    args.symbolic_training_weight = float(section["symbolic_training_weight"])
+    args.print_every = int(section.get("print_every", "80"))
+
+    # Temperature
+    args.temperature_kan_min_span_K = float(cfg["temperature"]["minimum_span_K"])
+    args.temperature_kan_scale = float(cfg["temperature"]["kan_scale"])
+    args.hspice_exe = cfg["paths"].get("hspice_exe", "")
+
+    # CV residual
+    args.enable_cv_residual = yes(cfg, "full_model", "enable_cv_residual")
+
+    # Finetune
+    args.finetune_base_pkan = yes(cfg, "full_model", "finetune_base_pkan")
+
+    # Temperature mode
+    mode = cfg["temperature"]["mode"].strip().lower()
+    if mode == "on":
+        args.enable_temperature_kan = True
+        args.auto_enable_temperature_kan = False
+    elif mode == "off":
+        args.enable_temperature_kan = False
+        args.auto_enable_temperature_kan = False
+    else:
+        args.enable_temperature_kan = False
+        args.auto_enable_temperature_kan = True
+
+    # HSPICE
+    if not yes(cfg, "deployment", "run_hspice"):
+        args.skip_hspice_smoke = True
+        args.skip_hspice_grid_equivalence = True
+        args.skip_hspice_cv_grid_equivalence = True
+
+    # Quick-run / debug
+    if yes(cfg, "runtime", "quick_run"):
+        args.quick_run = True
+    if yes(cfg, "runtime", "debug_run"):
+        args.quick_run = True
+        args.epochs = 1
+        args.early_stop_patience = 1
+        args.early_stop_min_epochs = 1
+
+    return args
+
+
+def train_full_model(cfg, p) -> None:
+    from dg_tft_full_model import apply_quick_run_preset, run_full_model
+
     model_dir = p["base_pkan"]
     if not (model_dir / "pkan_torch_model.pt").exists():
         _prepare_fallback_model_dir(cfg, p)
     p["full"].mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable,
-        str(ENGINE / "dg_tft_full_model.py"),
-        "--data-dir-override",
-        str(p["data"]),
-        "--model-dir",
-        str(model_dir),
-        "--out-dir",
-        str(p["full"]),
-        "--device",
-        cfg["runtime"]["device"],
-        "--dtype",
-        cfg["runtime"]["dtype"],
-        "--seed",
-        cfg["runtime"]["seed"],
-        "--epochs",
-        section["epochs"],
-        "--lr",
-        section["learning_rate"],
-        "--batch-iv",
-        section["batch_iv"],
-        "--batch-cv",
-        section["batch_cv"],
-        "--cv-weight",
-        section["cv_weight"],
-        "--cv-residual-level",
-        section["cv_residual_level"],
-        "--early-stop-patience",
-        section["early_stop_patience"],
-        "--early-stop-min-epochs",
-        section["early_stop_min_epochs"],
-        "--symbolic-training-weight",
-        section["symbolic_training_weight"],
-        "--print-every",
-        section.get("print_every", "80"),
-        "--temperature-kan-min-span-K",
-        cfg["temperature"]["minimum_span_K"],
-        "--temperature-kan-scale",
-        cfg["temperature"]["kan_scale"],
-        "--hspice-exe",
-        cfg["paths"]["hspice_exe"],
-    ]
-    command.append(
-        "--enable-cv-residual"
-        if yes(cfg, "full_model", "enable_cv_residual")
-        else "--disable-cv-residual"
-    )
-    command.append(
-        "--finetune-base-pkan"
-        if yes(cfg, "full_model", "finetune_base_pkan")
-        else "--no-finetune-base-pkan"
-    )
-    mode = cfg["temperature"]["mode"].strip().lower()
-    if mode == "on":
-        command += ["--enable-temperature-kan", "--no-auto-enable-temperature-kan"]
-    elif mode == "off":
-        command += ["--disable-temperature-kan", "--no-auto-enable-temperature-kan"]
-    else:
-        command += ["--disable-temperature-kan", "--auto-enable-temperature-kan"]
-    if not yes(cfg, "deployment", "run_hspice"):
-        command += [
-            "--skip-hspice-smoke",
-            "--skip-hspice-grid-equivalence",
-            "--skip-hspice-cv-grid-equivalence",
-        ]
-    if yes(cfg, "runtime", "quick_run"):
-        command.append("--quick-run")
-    if yes(cfg, "runtime", "debug_run"):
-        command.append("--quick-run")
-        # Override engine --quick-run limits: force absolute minimums
-        command += [
-            "--epochs", "1",
-            "--early-stop-patience", "1",
-            "--early-stop-min-epochs", "1",
-        ]
-    run(command)
+
+    _log_stage("train-static: full model training")
+    args = _make_full_model_args(cfg, p)
+    args = apply_quick_run_preset(args)
+    run_full_model(args)
 
 
-def dynamic_env(p) -> dict[str, str]:
-    env = dict(os.environ)
-    env["DG_TFT_IT_DATA_DIR"] = str(p["it"])
-    env["DG_TFT_STATIC_DATA_DIR"] = str(p["data"])
-    env["DG_TFT_DYNAMIC_WORK_DIR"] = str(p["dynamic"])
-    return env
+def _setup_dynamic_env(p: dict[str, Path]) -> None:
+    """Set environment variables for dynamic/hysteresis stage imports."""
+    os.environ["DG_TFT_IT_DATA_DIR"] = str(p["it"])
+    os.environ["DG_TFT_STATIC_DATA_DIR"] = str(p["data"])
+    os.environ["DG_TFT_DYNAMIC_WORK_DIR"] = str(p["dynamic"])
 
 
 def train_hysteresis(cfg, p) -> None:
     if not p["it"].exists():
         raise FileNotFoundError(f"Hysteresis data folder does not exist: {p['it']}")
-    env = dynamic_env(p)
     p["dynamic"].mkdir(parents=True, exist_ok=True)
-    run([sys.executable, str(DYNAMIC / "analyze_it_hysteresis.py")], env=env)
+    _setup_dynamic_env(p)
+
+    from analyze_it_hysteresis import run_analyze_it
+
+    _log_stage("train-hysteresis: analyze I-t data")
+    run_analyze_it()
+
+    from train_srh_top2_regime_banks import run_train_srh
+
     section = cfg["hysteresis"]
-    epochs = section["epochs"]
-    hidden_capture = section["hidden_capture"]
-    hidden_emission = section["hidden_emission"]
+    epochs = int(section["epochs"])
+    hidden_capture = int(section["hidden_capture"])
+    hidden_emission = int(section["hidden_emission"])
     if yes(cfg, "runtime", "debug_run"):
-        epochs = "1"
-        hidden_capture = "4"
-        hidden_emission = "4"
+        epochs, hidden_capture, hidden_emission = 1, 4, 4
     elif yes(cfg, "runtime", "quick_run"):
-        epochs = "50"
-        hidden_capture = "8"
-        hidden_emission = "8"
-    run(
-        [
-            sys.executable,
-            str(DYNAMIC / "train_srh_top2_regime_banks.py"),
-            "--regime",
-            section["regime"],
-            "--epochs",
-            epochs,
-            "--hidden-capture",
-            hidden_capture,
-            "--hidden-emission",
-            hidden_emission,
-            "--amp-parameterization",
-            section["amp_parameterization"],
-            "--print-every",
-            section.get("print_every", "1"),
-        ],
-        env=env,
+        epochs, hidden_capture, hidden_emission = 50, 8, 8
+
+    _log_stage("train-hysteresis: train SRH regime banks")
+    run_train_srh(
+        epochs=epochs,
+        target_regime=section["regime"],
+        hidden_capture=hidden_capture,
+        hidden_emission=hidden_emission,
+        amp_parameterization=section["amp_parameterization"],
+        print_every=int(section.get("print_every", "1")),
     )
-    run([sys.executable, str(DYNAMIC / "export_srh_top2_regime_banked_va.py")], env=env)
+
+    from export_srh_top2_regime_banked_va import run_export_va
+
+    _log_stage("train-hysteresis: export Verilog-A")
+    run_export_va()
 
 
 def export_supplied_va() -> None:

@@ -36,7 +36,6 @@
 → 结果汇总
 → 失败诊断 + 质量守卫（自动调参重试）
 → 脚本函数化
-→ subagent 深度接入
 ```
 
 ---
@@ -45,16 +44,16 @@
 
 | Phase | 目标 | 结果 |
 |---|---|---|
-| Phase 0 | 确认代码落点和边界 | 明确 DG-TFT 建模代码的正式位置和依赖边界 |
-| Phase 1 | 建立工作流基础设施 | 有 `WorkflowRun` / `WorkflowManager` / session 持久化 |
-| Phase 2 | 自动生成 runtime config | 给定数据路径即可得到独立配置 |
-| Phase 3 | 打通 subprocess 版全自动流程 | 能自动跑 `check-data → static → hysteresis(optional)` |
-| Phase 4 | 接入 Agent 工具和命令 | 用户可通过自然语言或命令启动 workflow |
-| Phase 5 | 完善报告和产物管理 | 自动输出 summary / manifest / metrics |
-| Phase 6 | 完善诊断和 subagent 协作 | 失败时可自动解释和给建议 |
-| Phase 7 | 质量守卫与自动重拟合 | 效果不好时自动调参重跑，减少专家介入 |
-| Phase 8 | 脚本函数化重构 | 建模模块从 CLI 脚本升级为可调用 API |
-| Phase 9 | 测试、稳定性、收尾 | 有完整单测、集成测试和使用文档 |
+| Phase 0 | 确认代码落点和边界 | ✅ |
+| Phase 1 | 建立工作流基础设施 | ✅ |
+| Phase 2 | 自动生成 runtime config | ✅ |
+| Phase 3 | 打通 subprocess 版全自动流程 | ✅ |
+| Phase 4 | 接入 Agent 工具和命令 | ✅ |
+| Phase 5 | 完善报告和产物管理 | ✅ |
+| Phase 6 | 完善诊断和 subagent 协作 | ✅ |
+| Phase 7 | 质量守卫与自动重拟合 | ✅ |
+| Phase 8 | 脚本函数化重构 | ✅ |
+| Phase 9 | 测试、稳定性、收尾 | 待开始 |
 
 ---
 
@@ -569,7 +568,7 @@
   - [x] 阶段跳过时：`[n/total] stage_name ⊘ 跳过 (reason)` / `⊘ 跳过 (已完成)`
   - [x] 流程成功时：`✓ Run #N DONE (Xs, M 阶段)`
   - [x] 流程失败时：`✗ Run #N FAILED at stage_name`
-  - [ ] 质量门禁/调参重试的 console 输出在 Phase 7 实现时补充
+  - [x] 质量门禁/调参重试的 console 输出在 Phase 7 实现时补充
 - [x] `ctx.console` 已在 `AgentContext` 中（`main.py:93`），无需新增参数；
 - [x] `sys_log` 继续保留作为完整审计日志，两者互补不替代；
 - [x] 尊重 `ctx.subagent_mute` 标志，静默时不输出。
@@ -592,9 +591,9 @@
 
 ### P4-T1 新增 workflow tool schema
 - [x] 在 `src/tool/tool_def.py` 新增：
-  - [ ] `start_dg_tft_workflow`
-  - [ ] `query_dg_tft_workflow`
-  - [ ] `read_dg_tft_workflow_report`
+  - [x] `start_dg_tft_workflow`
+  - [x] `query_dg_tft_workflow`
+  - [x] `read_dg_tft_workflow_report`
 - [x] 明确定义参数与返回结构。
 
 **依赖**
@@ -625,7 +624,7 @@
 - [x] `start_dg_tft_workflow` 立即返回 `run_id`，不阻塞等待训练完成；
 - [x] 在 `workflow_man` 中新增 `RunningRunTracker`（存储正在执行的 subprocess 句柄）；
 - [x] `query_dg_tft_workflow` 可实时查询 run status 并返回最新 stage；
-- [ ] 考虑超长时间运行的看护（心跳检测 / 超时 kill）；
+- [ ] 考虑超长时间运行的看护（心跳检测 / 超时 kill）— 延期至 Phase 9
 - [x] 确保多个 run 并发隔离（输出目录、config 文件不冲突）。
 
 **依赖**
@@ -1169,7 +1168,7 @@ orchestrator.py (阶段执行后)
   - [x] `train-static` → static_iv_rms_max（默认 0.60，兜底值）、static_cv_rms_max（默认 0.08）
   - [x] `train-hysteresis` → hysteresis_rms_max（默认 0.15，兜底值）
 - [x] 将阈值写入 `agent_configs.json` 的 `DG_TFT_QUALITY_*` 键；
-- [ ] 允许从 DatasetProfile 的 data scale 动态调整阈值（大电流器件 vs 小电流器件）。
+- [ ] 允许从 DatasetProfile 的 data scale 动态调整阈值（大电流器件 vs 小电流器件）— 延期至 Phase 9
 
 **依赖**
 - Phase 3（需要 orchestrator 产出的 stage results）。
@@ -1303,88 +1302,64 @@ _enforce_quality_gate() 内部：
 
 ---
 
-## 12. Phase 8：脚本函数化重构
+## 12. Phase 8：脚本函数化重构 ✅
 
 ## 12.1 目标
 
-把 DG-TFT 建模代码从“脚本集合”升级为“可 import API”，降低 workflow 对 subprocess 的依赖。
+把 DG-TFT 建模代码从"脚本集合"升级为"可 import API"，消除 `run_model.py` 内部的双层 subprocess。
 
-## 12.2 TODO
+## 12.2 实现方案（与原始计划有差异）
+
+**原始计划**：在 `stage_runner.py` 层加入 `DG_TFT_USE_IMPORT_API` 开关，二选一。
+**实际方案**：在 `run_model.py` 内部做函数化 — AGI→CUDA 外层 subprocess 不动，消灭内层 subprocess。
+
+```
+旧（双层）:  AGI → Popen([CUDA/python, run_model.py, action, --config])
+                   → run_model.py: subprocess.run([CUDA/python, engine/xxx.py, args...])
+
+新（单层）:  AGI → Popen([CUDA/python, run_model.py, action, --config])
+                   → run_model.py: from engine.xxx import run_yyy; run_yyy(...)
+```
+
+AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外启动子进程。
+
+## 12.3 TODO
 
 ### P8-T1 函数化 `validate_dataset.py`
-- [ ] 提供 `validate_dataset(...) -> dict`；
-- [ ] CLI 只保留为包装层；
-- [ ] workflow 优先调用函数，不再依赖 stdout 解析。
-
-**依赖**
-- Phase 7 完成。
-
-**验收标准**
-- 数据校验可直接通过 Python 调用。
-
----
+- [x] 提供 `run_validate(data_dir, it_dir, json_out) -> dict`；
+- [x] CLI `main()` 保留为薄包装层；
+- [x] `run_model.py` 中 `validate_data()` 改为直接 import 调用。
 
 ### P8-T2 函数化 `fit_physical_kernel.py`
-- [ ] 提供 `fit_physical(...)->StageResult`；
-- [ ] 保留 CLI 入口兼容；
-- [ ] 把关键结果结构化返回。
-
-**依赖**
-- `P8-T1`。
-
-**验收标准**
-- 物理内核阶段可直接函数调用。
-
----
+- [x] 提供 `run_fit_physical(**kw) -> Path`（keyword-only 参数）；
+- [x] 保留 CLI `main()` 入口兼容；
+- [x] `run_model.py` 中 `fit_physical()` 改为直接 import 调用。
 
 ### P8-T3 函数化 `train_base_pkan.py`
-- [ ] 提供 `train_base_pkan(...)->StageResult`；
-- [ ] 结构化返回 best metrics 和模型路径。
-
-**依赖**
-- `P8-T2`。
-
-**验收标准**
-- base pkan 阶段可脱离 subprocess。
-
----
+- [x] 提供 `run_train_base_pkan(**kw) -> Path`（34 个 keyword-only 参数）；
+- [x] 保留 CLI `main()` 入口兼容；
+- [x] `run_model.py` 中 `train_base_pkan()` 改为直接 import 调用。
 
 ### P8-T4 函数化 `dg_tft_full_model.py`
-- [ ] 提供 `train_full_model(...)->StageResult`；
-- [ ] 提取静态关键指标；
-- [ ] 返回 VA 产物信息。
-
-**依赖**
-- `P8-T3`。
-
----
-
-**验收标准**
-- 静态训练阶段可函数调用。
+- [x] 提供 `run_full_model(args: Namespace) -> Path`；
+- [x] 提供 `default_args()` 工厂返回 defaults Namespace（无 CLI 解析）；
+- [x] 提供 `_build_parser()` — argparse 构建器（`parse_args()` 和 `default_args()` 共用）；
+- [x] `run_model.py` 中 `train_full_model()` 改为：`_make_full_model_args()` 构建 Namespace → `apply_quick_run_preset()` → `run_full_model(args)`；
+- [x] 消除原来 60 行的 `command.append()` 字符串拼接逻辑。
 
 ### P8-T5 函数化动态模块
-- [ ] 函数化 `analyze_it_hysteresis.py`；
-- [ ] 函数化 `train_srh_top2_regime_banks.py`；
-- [ ] 函数化导出和验证脚本；
-- [ ] 统一返回 `StageResult`。
-
-**依赖**
-- `P8-T4`。
-
----
+- [x] 函数化 `analyze_it_hysteresis.py` → `run_analyze_it() -> Path`；
+- [x] 函数化 `train_srh_top2_regime_banks.py` → `run_train_srh(**kw) -> Path`（参数名 `target_regime` 避免与模块级函数 `regime()` 冲突）；
+- [x] 函数化 `export_srh_top2_regime_banked_va.py` → `run_export_va(**kw) -> Path`；
+- [x] `run_model.py` 中 `train_hysteresis()` 的 3 次 `subprocess.run()` 全部替换为直接函数调用；
+- [x] 环境变量 `DG_TFT_IT_DATA_DIR` / `DG_TFT_STATIC_DATA_DIR` / `DG_TFT_DYNAMIC_WORK_DIR` 通过 `_setup_dynamic_env()` 在 import 前设置。
 
 ### P8-T6 切换 workflow 到 import API 模式
-- [ ] 在 `config/agent_configs.json` 中支持 `DG_TFT_USE_IMPORT_API=true`；
-- [ ] 在 `stage_runner.py` 中新增 import 执行分支；
-- [ ] 保留 subprocess fallback。
-
-**依赖**
-- `P8-T5`。
-
----
-
-**验收标准**
-- 工作流默认走函数调用，必要时仍可回退 CLI。
+- [x] **不需要开关** — import API 是 `run_model.py` 内部唯一路径（原来内层 subprocess 已移除）；
+- [x] 外层 AGI→CUDA subprocess（`stage_runner.py`）不变，改动对 orchestrator 透明；
+- [x] 新增 `_log_stage()` 在每个 stage 开始时输出 `=== stage_name ===` 标记；
+- [x] 新增 `_ensure_import_paths()` 将 `engine/` 和 `dynamic/` 加入 `sys.path`；
+- [x] `run_model.py` 不再 import `subprocess`/`shlex`/`sys.executable`。
 
 ## 13. Phase 9：测试、稳定性与文档收尾
 
@@ -1399,10 +1374,10 @@ _enforce_quality_gate() 内部：
 - [ ] 补充 `test/dg_tft_report_builder_test.py`（报告生成）
 - [ ] 补充 `test/dg_tft_diagnostics_test.py`（诊断归类）
 - [ ] 补充 `test/dg_tft_quality_guard_test.py`（质量守卫）
-- [ ] 复查已有 7 个测试文件（135 tests）的覆盖率缺口
+- [ ] 复查已有 12 个测试文件（393 tests）的覆盖率缺口
 
 **依赖**
-- Phase 8 基本完成。
+- Phase 8 完成。
 
 **验收标准**
 - 核心 workflow 组件有基础单元测试覆盖。
@@ -1491,7 +1466,7 @@ _enforce_quality_gate() 内部：
 ### 第三优先级
 - [x] `P7-T6`（质量报告 — 随 P7 T1~T5 一起完成）
 - [x] `P6-T3` ~ `P6-T5`（诊断的 subagent 增强 + 报告集成 — Phase 6 已完整完成）
-- [ ] `P8-T1` ~ `P8-T6`
+- [x] `P8-T1` ~ `P8-T6`
 - [ ] `P9-T1` ~ `P9-T5`
 
 这部分做完，系统才进入“可维护、可扩展”的工程化成熟阶段。
@@ -1543,17 +1518,15 @@ _enforce_quality_gate() 内部：
 
 ---
 
-## 16. 一句总结
-
-这份 TODO 的核心顺序就是：
+## 16. 当前状态
 
 ```text
-先把 DG-TFT 旧脚本包装成稳定 workflow
-再把 workflow 接入 DeviceAgent
-最后再把 DG-TFT 建模模块逐步重构成可调用 API
+✅ 先把 DG-TFT 旧脚本包装成稳定 workflow     (Phase 0–3)
+✅ 再把 workflow 接入 DeviceAgent             (Phase 4–4.5)
+✅ 再把 DG-TFT 建模模块逐步重构成可调用 API   (Phase 8)
+✅ 失败诊断 + 质量守卫自动调参重试            (Phase 6–7)
+🔄 测试、稳定性、文档收尾                     (Phase 9 — 待开始)
 ```
-
-这是风险最低、最容易持续推进的路线。
 
 ---
 
@@ -1983,3 +1956,49 @@ test/
 **测试统计**
 - Phase 7 新增：56 tests
 - 累计全部：370 tests PASS
+
+---
+
+### 2026-06-26 | Phase 8 完成 — 脚本函数化重构
+
+**完成内容**
+- P8-T1 ~ P8-T6：7 个 engine/dynamic 脚本全部新增 `run_*()` 可 import 入口函数
+- `run_model.py` 内部移除 `subprocess.run()` 层：
+  - 5 个 stage 函数从"拼 command list + subprocess"改为"from engine.xxx import run_yyy; run_yyy()"
+  - 删除 `run()` 辅助函数、`import subprocess`/`import shlex`
+  - 新增 `_ensure_import_paths()` 将 `engine/` 和 `dynamic/` 加入 `sys.path`
+  - 新增 `_log_stage()` 每阶段开头输出可见进度
+  - 新增 `_make_full_model_args()` 从 INI 构建 30+ 字段的 `argparse.Namespace`
+  - 新增 `_setup_dynamic_env()` 在 import 前设环境变量
+- `dg_tft_full_model.py` 特殊处理 — `parse_args()` 拆成 `_build_parser()` / `parse_args()` / `default_args()`
+
+**AGI/CUDA 隔离保持**
+- `stage_runner.py` 外层 subprocess（AGI → CUDA）**不变**
+- 仅移除 CUDA 进程内部的内层 subprocess（双层 → 单层）
+- 无 `DG_TFT_USE_IMPORT_API` 开关 — 函数化是唯一路径，对外完全透明
+
+**新增文件清单**
+```
+test/
+  dg_tft_functionized_api_test.py   # 23 tests（11 pass + 12 skip CUDA deps）
+```
+
+**修改文件清单**
+
+| 文件 | 修改内容 |
+|------|---------|
+| `src/device_modeling/dg_tft/run_model.py` | 重写 — 移除 inner subprocess，5 个 stage 函数全部改为直接 import 调用；+`_log_stage`/`_ensure_import_paths`/`_make_full_model_args`/`_setup_dynamic_env` |
+| `src/device_modeling/dg_tft/engine/validate_dataset.py` | +`run_validate(data_dir, it_dir, json_out) -> dict` |
+| `src/device_modeling/dg_tft/engine/fit_physical_kernel.py` | +`run_fit_physical(**kw) -> Path` |
+| `src/device_modeling/dg_tft/engine/train_base_pkan.py` | +`run_train_base_pkan(**kw) -> Path`（34 keyword args） |
+| `src/device_modeling/dg_tft/engine/dg_tft_full_model.py` | +`run_full_model(args)` / `default_args()` / `_build_parser()`；`parse_args()` 薄包装 |
+| `src/device_modeling/dg_tft/dynamic/analyze_it_hysteresis.py` | +`run_analyze_it() -> Path` |
+| `src/device_modeling/dg_tft/dynamic/train_srh_top2_regime_banks.py` | +`run_train_srh(**kw) -> Path`（参数 `target_regime` 避免 shadow 模块级函数） |
+| `src/device_modeling/dg_tft/dynamic/export_srh_top2_regime_banked_va.py` | +`run_export_va(**kw) -> Path` |
+| `doc/DG_TFT_Agent全自动建模开发TODO.md` | Phase 8 checkmarked + 实现方案说明 + 开发日志 |
+
+**测试统计**
+- Phase 8 新增：23 tests
+- 累计全部：393 tests PASS（12 skip = CUDA deps 不在 AGI 环境）
+
+**下阶段：Phase 9 P9-T1 ~ T5**

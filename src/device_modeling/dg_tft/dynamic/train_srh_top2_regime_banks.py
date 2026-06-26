@@ -325,10 +325,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    suffix = f"_{args.tag}" if args.tag else ""
-    out_dir = OUT if args.regime == "all" and not suffix else OUT / f"{args.regime}_only{suffix}"
+def run_train_srh(
+    *,
+    epochs: int = 1800,
+    target_regime: str = "all",
+    hidden_capture: int = 16,
+    hidden_emission: int = 20,
+    amp_parameterization: str = "independent",
+    print_every: int = 1,
+    tag: str = "",
+    out_dir_override: Path | None = None,
+) -> Path:
+    """Importable entry point — train SRH top-2 regime bank models.
+
+    Returns the output directory path.
+    """
+    suffix = f"_{tag}" if tag else ""
+    if out_dir_override is not None:
+        out_dir = out_dir_override
+    else:
+        out_dir = OUT if target_regime == "all" and not suffix else OUT / f"{target_regime}_only{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     label, norm = base.build_label_table()
     label, norm = base._stabilize_temperature_normalization(label, norm)
@@ -336,7 +352,7 @@ def main() -> None:
     grouped: dict[tuple[str, str, str], list[dict]] = {}
     for row in rows:
         row_regime = regime(row)
-        if args.regime != "all" and row_regime != args.regime:
+        if target_regime != "all" and row_regime != target_regime:
             continue
         key = (row_regime, row["family"], row["process"])
         grouped.setdefault(key, []).append(row)
@@ -349,11 +365,11 @@ def main() -> None:
     for key, subset in sorted(grouped.items()):
         models, report = fit_group(
             subset,
-            epochs=args.epochs,
-            hidden_capture=args.hidden_capture,
-            hidden_emission=args.hidden_emission,
-            amp_parameterization=args.amp_parameterization,
-            print_every=args.print_every,
+            epochs=epochs,
+            hidden_capture=hidden_capture,
+            hidden_emission=hidden_emission,
+            amp_parameterization=amp_parameterization,
+            print_every=print_every,
         )
         all_models[key] = models
         group_reports["|".join(key)] = report
@@ -371,7 +387,7 @@ def main() -> None:
                     models,
                     row,
                     True,
-                    args.amp_parameterization,
+                    amp_parameterization,
                 ).cpu().numpy()
                 teacher = row["y_teacher"].cpu().numpy()
                 measured = row["y"].cpu().numpy()
@@ -408,7 +424,6 @@ def main() -> None:
                     )
     metrics = pd.DataFrame(metric_rows)
     predictions = pd.DataFrame(pred_rows)
-    # Compatibility aliases for the release plotting and audit pipeline.
     metrics["top1_rmse_dec"] = metrics["top2_rmse_dec"]
     metrics["top1_dynamic_shape_rmse_norm"] = metrics["top2_dynamic_shape_rmse_norm"]
     metrics["top1_drift_dec"] = metrics["top2_drift_dec"]
@@ -418,10 +433,10 @@ def main() -> None:
     predictions.to_csv(out_dir / "srh_top2_regime_bank_predictions.csv", index=False, encoding="utf-8-sig")
     summary = {
         "architecture": "two independent two-trap SRH banks: fast us-ms and slow seconds",
-        "trained_regime": args.regime,
-        "hidden_capture": args.hidden_capture,
-        "hidden_emission": args.hidden_emission,
-        "amp_parameterization": args.amp_parameterization,
+        "trained_regime": target_regime,
+        "hidden_capture": hidden_capture,
+        "hidden_emission": hidden_emission,
+        "amp_parameterization": amp_parameterization,
         "normalization": norm,
         "formulas": formulas,
         "groups": group_reports,
@@ -450,6 +465,20 @@ def main() -> None:
         out_dir / "srh_top2_regime_bank_checkpoint.pt",
     )
     print(json.dumps({k: v for k, v in summary.items() if k.endswith("_mean") or k.endswith("_p90") or k.endswith("_max")}, indent=2))
+    return out_dir
+
+
+def main() -> None:
+    args = parse_args()
+    run_train_srh(
+        epochs=args.epochs,
+        target_regime=args.regime,
+        hidden_capture=args.hidden_capture,
+        hidden_emission=args.hidden_emission,
+        amp_parameterization=args.amp_parameterization,
+        print_every=args.print_every,
+        tag=args.tag,
+    )
 
 
 if __name__ == "__main__":

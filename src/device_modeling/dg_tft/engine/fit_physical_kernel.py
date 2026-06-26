@@ -1210,6 +1210,43 @@ def write_outputs(
     plot_cv(cv_series, p, out_dir / "fit_CV.png", cv_trap)
 
 
+def run_fit_physical(
+    *,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    out_dir: Path = Path("./fit_training_ready_outputs"),
+    template_va: Path = VA_TEMPLATE,
+    max_iv_points: int = 10000,
+    max_cv_points: int = 1200,
+    max_nfev_scale: float = 1.0,
+    seed: int = 20260522,
+    verbose: bool = False,
+) -> Path:
+    """Importable entry point — fit physical kernel to IV/CV data.
+
+    Returns the output directory path.
+    """
+    if not data_dir.exists():
+        raise FileNotFoundError(data_dir)
+    if not template_va.exists():
+        raise FileNotFoundError(template_va)
+
+    iv_all = load_iv_data(data_dir)
+    cv_all = load_cv_data(data_dir)
+    iv_fit = sample_iv(iv_all, max_iv_points, seed)
+    cv_fit = sample_cv(cv_all, max_cv_points)
+
+    print(f"Loaded IV points: {len(iv_all)} total, {len(iv_fit)} used for fitting")
+    print(f"Loaded CV series: {len(cv_all)}, CV points used for fitting: {sum(len(s.x) for s in cv_fit)}")
+    params, history = fit_model(iv_fit, cv_fit, max_nfev_scale, verbose)
+    params, cv_trap, cv_info = fit_cv_shared_trap(cv_all, params)
+    history.append(cv_info)
+    summary, metrics, iv_pred = compute_metrics(iv_all, cv_all, params, cv_trap)
+    write_outputs(out_dir, params, history, summary, metrics, iv_pred, cv_all, cv_trap, template_va)
+    print(f"Done. Outputs written to: {out_dir}")
+    print(json.dumps(summary, indent=2))
+    return out_dir
+
+
 def main():
     ap = argparse.ArgumentParser(description="Fit corrected training-ready DG-TFT IV/CV xlsx data.")
     ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
@@ -1221,26 +1258,16 @@ def main():
     ap.add_argument("--seed", type=int, default=20260522)
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
-
-    if not args.data_dir.exists():
-        raise FileNotFoundError(args.data_dir)
-    if not args.template_va.exists():
-        raise FileNotFoundError(args.template_va)
-
-    iv_all = load_iv_data(args.data_dir)
-    cv_all = load_cv_data(args.data_dir)
-    iv_fit = sample_iv(iv_all, args.max_iv_points, args.seed)
-    cv_fit = sample_cv(cv_all, args.max_cv_points)
-
-    print(f"Loaded IV points: {len(iv_all)} total, {len(iv_fit)} used for fitting")
-    print(f"Loaded CV series: {len(cv_all)}, CV points used for fitting: {sum(len(s.x) for s in cv_fit)}")
-    params, history = fit_model(iv_fit, cv_fit, args.max_nfev_scale, args.verbose)
-    params, cv_trap, cv_info = fit_cv_shared_trap(cv_all, params)
-    history.append(cv_info)
-    summary, metrics, iv_pred = compute_metrics(iv_all, cv_all, params, cv_trap)
-    write_outputs(args.out_dir, params, history, summary, metrics, iv_pred, cv_all, cv_trap, args.template_va)
-    print(f"Done. Outputs written to: {args.out_dir}")
-    print(json.dumps(summary, indent=2))
+    run_fit_physical(
+        data_dir=args.data_dir,
+        out_dir=args.out_dir,
+        template_va=args.template_va,
+        max_iv_points=args.max_iv_points,
+        max_cv_points=args.max_cv_points,
+        max_nfev_scale=args.max_nfev_scale,
+        seed=args.seed,
+        verbose=args.verbose,
+    )
 
 
 if __name__ == "__main__":

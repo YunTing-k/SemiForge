@@ -803,7 +803,12 @@ def write_outputs(df: pd.DataFrame, seg: pd.DataFrame, step_df: pd.DataFrame, pr
         pd.DataFrame(audit.get("voltage_correction", [])).to_excel(writer, sheet_name="voltage_correction", index=False)
 
 
-def main() -> None:
+def run_analyze_it() -> Path:
+    """Importable entry point — analyze I-t hysteresis data.
+
+    Reads ``OUT_DIR`` from the ``DG_TFT_DYNAMIC_WORK_DIR`` env var
+    (or the module-level default).  Returns the output directory path.
+    """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df, seg, input_audit = load_it_workbooks()
     df, seg, voltage_correction = apply_static_voltage_correction(df, seg)
@@ -842,6 +847,11 @@ def main() -> None:
     }
     (OUT_DIR / "it_hysteresis_analysis_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return OUT_DIR
+
+
+def main() -> None:
+    run_analyze_it()
 
 
 if __name__ == "__main__":

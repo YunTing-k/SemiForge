@@ -768,6 +768,28 @@ Xdyn tg bg d 0 ntff ntfs ntsf ntss nbff nbfs nbsf nbss dlog
     return deck
 
 
+def run_export_va(
+    student_source: str = "",
+    include_legacy_banked: bool = False,
+) -> Path:
+    """Importable entry point — export deployable split-module Verilog-A.
+
+    Returns the combined output directory path.
+    """
+    OUT.mkdir(parents=True, exist_ok=True)
+    formulas, norm = load_models(student_source)
+    write_split_modular_continuous_assets(formulas, norm)
+    print(OUT / "dg_tft_dynamic_srh.va")
+    print(OUT / "dg_tft_dynamic_srh.inc")
+    print(OUT / "dg_tft_dynamic_srh_smoke.sp")
+    if include_legacy_banked:
+        va = write_va(formulas, norm)
+        deck = write_smoke_deck(va)
+        print(va)
+        print(deck)
+    return OUT
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export the deployable split-module Top-2 SRH-KAN model."
@@ -787,17 +809,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    OUT.mkdir(parents=True, exist_ok=True)
-    formulas, norm = load_models(args.student_source)
-    write_split_modular_continuous_assets(formulas, norm)
-    print(OUT / "dg_tft_dynamic_srh.va")
-    print(OUT / "dg_tft_dynamic_srh.inc")
-    print(OUT / "dg_tft_dynamic_srh_smoke.sp")
-    if args.include_legacy_banked:
-        va = write_va(formulas, norm)
-        deck = write_smoke_deck(va)
-        print(va)
-        print(deck)
+    run_export_va(
+        student_source=args.student_source,
+        include_legacy_banked=args.include_legacy_banked,
+    )
 
 
 if __name__ == "__main__":

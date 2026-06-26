@@ -134,29 +134,41 @@ def check_it_dir(path: Path | None) -> dict:
     return item
 
 
+def run_validate(
+    data_dir: Path,
+    it_dir: Path | None = None,
+    json_out: Path | None = None,
+) -> dict:
+    """Importable entry point — validate DG-TFT dataset layout.
+
+    Returns the validation report dict (same as the JSON output).
+    """
+    report: dict = {
+        "data_dir": str(data_dir),
+        "iv": [
+            check_iv_family(data_dir, family, patterns)
+            for family, patterns in IV_FAMILIES.items()
+        ],
+        "cv": check_cv_file(data_dir / "CV_train.xlsx"),
+        "it": check_it_dir(it_dir),
+    }
+    report["ok_static"] = all(x["ok"] for x in report["iv"]) and bool(report["cv"]["ok"])
+    report["ok_with_it"] = bool(report["ok_static"]) and bool(report["it"]["ok"])
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    print(text)
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(text, encoding="utf-8")
+    return report
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate DG-TFT compact-model training dataset layout.")
     ap.add_argument("--data-dir", type=Path, required=True, help="Folder containing IDVBG/IDVTG/IDVD/CV training workbooks.")
     ap.add_argument("--it-dir", type=Path, default=None, help="Optional folder containing raw I-t hysteresis workbooks.")
     ap.add_argument("--json-out", type=Path, default=None)
     args = ap.parse_args()
-
-    report = {
-        "data_dir": str(args.data_dir),
-        "iv": [
-            check_iv_family(args.data_dir, family, patterns)
-            for family, patterns in IV_FAMILIES.items()
-        ],
-        "cv": check_cv_file(args.data_dir / "CV_train.xlsx"),
-        "it": check_it_dir(args.it_dir),
-    }
-    report["ok_static"] = all(x["ok"] for x in report["iv"]) and bool(report["cv"]["ok"])
-    report["ok_with_it"] = bool(report["ok_static"]) and bool(report["it"]["ok"])
-    text = json.dumps(report, indent=2, ensure_ascii=False)
-    print(text)
-    if args.json_out:
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(text, encoding="utf-8")
+    run_validate(data_dir=args.data_dir, it_dir=args.it_dir, json_out=args.json_out)
 
 
 if __name__ == "__main__":
