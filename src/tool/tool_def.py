@@ -2814,8 +2814,6 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         if not ok:
             return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
 
-        resume_from_permission(progress)
-
         profile, _ = inspect_dataset(ctx, dataset_dir, hysteresis_dir=hysteresis_dir)
         wm.set_dataset_profile(run_id, profile)
 

@@ -729,6 +729,7 @@ def _enforce_quality_gate(
     best_metrics = metrics
     best_score = _best_metric_value(metrics, stage_name)
     best_retry_dir = ""
+    best_retry_num = 0
 
     for attempt in range(max_retries):
         adjustments = suggest_adjustments(stage_name, attempt, config_path)
@@ -747,12 +748,13 @@ def _enforce_quality_gate(
             "paths.output_dir": retry_dir,
         })
 
-        # Re-run stage
+        # Re-run stage (stream stdout during retries)
         sr = run_stage(
             ctx, sd.action, config_path,
             cwd=str(Path(config_path).parent),
             timeout=timeout,
             extra_args=sd.extra_args,
+            stream_console=True,
         )
 
         retry_entry: dict = {
@@ -787,6 +789,7 @@ def _enforce_quality_gate(
             best_metrics = metrics
             best_score = current_score
             best_retry_dir = retry_dir
+            best_retry_num = retry_num
 
         if q_ok:
             sys_log.info(
@@ -797,6 +800,7 @@ def _enforce_quality_gate(
             _copy_retry_to_main(retry_dir, base_output_dir)
             _cleanup_retry_dirs(base_output_dir)
             apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
+            _console(ctx, f"  [bright_black]Restored artifacts to output directory[/bright_black]")
             return sr, []
         else:
             _print_retry_quality_fail(ctx, stage_label, retry_num, q_failures)
@@ -808,10 +812,13 @@ def _enforce_quality_gate(
     )
     if best_retry_dir:
         _copy_retry_to_main(best_retry_dir, base_output_dir)
+        _console(ctx, f"  [bright_black]Restored artifacts from retry {best_retry_num}[/bright_black]")
+    else:
+        _console(ctx, f"  [bright_black]Keeping initial artifacts[/bright_black]")
     _cleanup_retry_dirs(base_output_dir)
     apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
     _, best_failures = assess_quality(stage_name, best_metrics, thresholds)
-    _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds)
+    _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds, best_retry_num)
     return best_sr, best_failures
 
 
@@ -876,14 +883,15 @@ def _print_retry_quality_fail(
 
 def _print_quality_exhausted(
     ctx: AgentContext, label: str, metrics: dict[str, float],
-    thresholds: dict[str, float],
+    thresholds: dict[str, float], best_retry_num: int = 0,
 ) -> None:
     if getattr(ctx, "subagent_mute", False):
         return
     c = getattr(ctx, "console", None)
     if c is None:
         return
-    c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} [bright_black]retries exhausted, using best attempt[/bright_black]")
+    source = f"retry {best_retry_num}" if best_retry_num else "initial run"
+    c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} [bright_black]retries exhausted, using {source}[/bright_black]")
     for k, v in metrics.items():
         limit = thresholds.get(k)
         if limit and v > limit:

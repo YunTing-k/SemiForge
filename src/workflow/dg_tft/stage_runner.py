@@ -17,6 +17,7 @@ import logging
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,6 +63,7 @@ def run_stage(
     cwd: str | None = None,
     timeout: int | None = None,
     extra_args: list[str] | None = None,
+    stream_console: bool = False,
 ) -> StageResult:
     """Execute a single modeling stage via subprocess.
 
@@ -72,6 +74,9 @@ def run_stage(
         cwd: Working directory for subprocess
         timeout: Timeout in seconds
         extra_args: Additional CLI arguments
+        stream_console: When True, print subprocess stdout line-by-line to
+                        ``ctx.console`` in ``bright_black`` (used for retry loops
+                        to give the user visibility into training progress).
 
     Returns:
         StageResult with ok, summary, outputs, warnings, error
@@ -85,6 +90,9 @@ def run_stage(
     stage_name = action
 
     sys_log.info("Stage [%s] starting: %s", stage_name, " ".join(shlex.quote(str(x)) for x in command))
+
+    if stream_console:
+        return _run_stage_streaming(ctx, command, stage_name, cwd, timeout)
 
     try:
         result = subprocess.run(
@@ -152,3 +160,94 @@ def _extract_warnings(stderr: str) -> list[str]:
         if "warning" in line.lower():
             warnings.append(line.strip())
     return warnings
+
+
+def _run_stage_streaming(
+    ctx: AgentContext,
+    command: list[str],
+    stage_name: str,
+    cwd: str | None,
+    timeout: int | None,
+) -> StageResult:
+    """Run a stage with streaming stdout printed to the agent console.
+
+    Uses ``Popen`` with line-by-line stdout read so the user sees training
+    progress in real time.  stderr is captured in a daemon thread.
+    """
+    muted = getattr(ctx, "subagent_mute", False)
+    c = getattr(ctx, "console", None)
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd or str(RUN_MODEL_PATH.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError:
+        sys_log.error("Stage [%s] failed: executable not found", stage_name)
+        return StageResult(
+            ok=False,
+            stage=stage_name,
+            error=f"Executable not found: {command[0]}",
+        )
+    except Exception as e:
+        sys_log.error("Stage [%s] unexpected error (spawn): %s", stage_name, e)
+        return StageResult(
+            ok=False,
+            stage=stage_name,
+            error=str(e),
+        )
+
+    stderr_lines: list[str] = []
+    stderr_thread = threading.Thread(
+        target=stderr_lines.extend, args=(process.stderr,), daemon=True,
+    )
+    stderr_thread.start()
+
+    stdout_lines: list[str] = []
+    try:
+        for line in process.stdout:
+            stripped = line.rstrip()
+            stdout_lines.append(stripped)
+            if c and not muted and stripped:
+                c.print(f"    [bright_black]{stripped}[/bright_black]")
+    except Exception:
+        pass
+
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        sys_log.error("Stage [%s] timed out after %s s", stage_name, timeout)
+        process.kill()
+        process.wait()
+        return StageResult(
+            ok=False,
+            stage=stage_name,
+            error=f"Timed out after {timeout} seconds",
+        )
+
+    stderr_thread.join()
+    stderr_text = "".join(stderr_lines)
+
+    if returncode == 0:
+        sys_log.info("Stage [%s] succeeded (rc=0)", stage_name)
+        return StageResult(
+            ok=True,
+            stage=stage_name,
+            summary=stdout_lines[-5:] if stdout_lines else [],
+            warnings=_extract_warnings(stderr_text),
+        )
+    else:
+        sys_log.error(
+            "Stage [%s] failed (rc=%d): %s",
+            stage_name, returncode, stderr_text[:500] if stderr_text else "",
+        )
+        return StageResult(
+            ok=False,
+            stage=stage_name,
+            summary=stdout_lines[-10:] if stdout_lines else [],
+            error=f"Exit code {returncode}: {stderr_text[:2000]}" if stderr_text else f"Exit code {returncode}",
+            warnings=_extract_warnings(stderr_text),
+        )
