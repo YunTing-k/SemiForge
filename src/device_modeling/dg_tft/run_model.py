@@ -339,7 +339,7 @@ def train_full_model(cfg, p) -> None:
         command.append("--quick-run")
         # Override engine --quick-run limits: force absolute minimums
         command += [
-            "--epochs", "10",
+            "--epochs", "1",
             "--early-stop-patience", "1",
             "--early-stop-min-epochs", "1",
         ]
@@ -365,7 +365,7 @@ def train_hysteresis(cfg, p) -> None:
     hidden_capture = section["hidden_capture"]
     hidden_emission = section["hidden_emission"]
     if yes(cfg, "runtime", "debug_run"):
-        epochs = "8"
+        epochs = "1"
         hidden_capture = "4"
         hidden_emission = "4"
     elif yes(cfg, "runtime", "quick_run"):
