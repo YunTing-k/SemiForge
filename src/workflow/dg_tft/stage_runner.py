@@ -169,10 +169,11 @@ def _run_stage_streaming(
     cwd: str | None,
     timeout: int | None,
 ) -> StageResult:
-    """Run a stage with streaming stdout printed to the agent console.
+    """Run a stage with streaming stdout/stderr printed to the agent console.
 
-    Uses ``Popen`` with line-by-line stdout read so the user sees training
-    progress in real time.  stderr is captured in a daemon thread.
+    Uses ``Popen`` with line-by-line reads.  stdout is printed in
+    ``bright_black``, stderr in ``bold red``, each prefixed with
+    ``[engine]`` to distinguish subprocess output from agent messages.
     """
     muted = getattr(ctx, "subagent_mute", False)
     c = getattr(ctx, "console", None)
@@ -201,9 +202,15 @@ def _run_stage_streaming(
         )
 
     stderr_lines: list[str] = []
-    stderr_thread = threading.Thread(
-        target=stderr_lines.extend, args=(process.stderr,), daemon=True,
-    )
+
+    def _consume_stderr() -> None:
+        for line in process.stderr:
+            stderr_lines.append(line)
+            stripped = line.rstrip()
+            if c and not muted and stripped:
+                c.print(f"    [bold red][engine] {stripped}[/bold red]")
+
+    stderr_thread = threading.Thread(target=_consume_stderr, daemon=True)
     stderr_thread.start()
 
     stdout_lines: list[str] = []
@@ -212,7 +219,7 @@ def _run_stage_streaming(
             stripped = line.rstrip()
             stdout_lines.append(stripped)
             if c and not muted and stripped:
-                c.print(f"    [bright_black]{stripped}[/bright_black]")
+                c.print(f"    [bright_black][engine] {stripped}[/bright_black]")
     except Exception:
         pass
 
