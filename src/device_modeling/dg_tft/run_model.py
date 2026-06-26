@@ -141,6 +141,13 @@ def validate_data(cfg, config_path, p) -> None:
 def fit_physical(cfg, p) -> None:
     section = cfg["physical_fit"]
     p["physical"].mkdir(parents=True, exist_ok=True)
+    max_iv = section["max_iv_points"]
+    max_cv = section["max_cv_points"]
+    max_nfev = section["max_nfev_scale"]
+    if yes(cfg, "runtime", "quick_run"):
+        max_iv = "3000"
+        max_cv = "2000"
+        max_nfev = "0.3"
     run(
         [
             sys.executable,
@@ -150,11 +157,11 @@ def fit_physical(cfg, p) -> None:
             "--out-dir",
             str(p["physical"]),
             "--max-iv-points",
-            section["max_iv_points"],
+            max_iv,
             "--max-cv-points",
-            section["max_cv_points"],
+            max_cv,
             "--max-nfev-scale",
-            section["max_nfev_scale"],
+            max_nfev,
             "--seed",
             cfg["runtime"]["seed"],
         ]
@@ -322,7 +329,7 @@ def train_full_model(cfg, p) -> None:
             "--skip-hspice-grid-equivalence",
             "--skip-hspice-cv-grid-equivalence",
         ]
-    if yes(cfg, "full_model", "quick_run"):
+    if yes(cfg, "runtime", "quick_run"):
         command.append("--quick-run")
     run(command)
 
@@ -342,6 +349,13 @@ def train_hysteresis(cfg, p) -> None:
     p["dynamic"].mkdir(parents=True, exist_ok=True)
     run([sys.executable, str(DYNAMIC / "analyze_it_hysteresis.py")], env=env)
     section = cfg["hysteresis"]
+    epochs = section["epochs"]
+    hidden_capture = section["hidden_capture"]
+    hidden_emission = section["hidden_emission"]
+    if yes(cfg, "runtime", "quick_run"):
+        epochs = "50"
+        hidden_capture = "8"
+        hidden_emission = "8"
     run(
         [
             sys.executable,
@@ -349,11 +363,11 @@ def train_hysteresis(cfg, p) -> None:
             "--regime",
             section["regime"],
             "--epochs",
-            section["epochs"],
+            epochs,
             "--hidden-capture",
-            section["hidden_capture"],
+            hidden_capture,
             "--hidden-emission",
-            section["hidden_emission"],
+            hidden_emission,
             "--amp-parameterization",
             section["amp_parameterization"],
         ],
