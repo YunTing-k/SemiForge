@@ -1260,6 +1260,49 @@ orchestrator.py (阶段执行后)
 
 ---
 
+### P7-T7 最优 attempt 产物保留（可复现）
+
+**问题**：当前 retry 循环每次都往同一个 `output_dir` 写产物，后一次覆盖前一次。循环结束后磁盘上只保留**最后一次重试**的产物（模型权重、VA 文件、JSON 等），而 `best_score` 可能来自更早的 attempt。用户无法拿到最优结果对应的实际模型文件。
+
+**方案**：
+
+```
+_enforce_quality_gate() 内部：
+
+  记 base_output_dir = INI 里的原始 output_dir
+  best_attempt = 0     # 0 = 初始（未重试）
+
+  for attempt in range(max_retries):
+    1. 创建 retry 子目录:  {base_output_dir}/_retry_{N}/
+    2. 修改 INI paths.output_dir → 指向 retry 子目录
+    3. run_stage() → engine 写入 retry 子目录
+    4. parse_metrics() + assess_quality()
+    5. 若当前 attempt 优于 best_score → best_attempt = N
+    6. 若 PASS → break
+
+  循环结束后：
+    - 若 best_attempt != 0:  将 _retry_{best_attempt}/ 内容复制到 base_output_dir/
+    - 删除所有 _retry_*/ 子目录（或保留 `_retry_0/` 供审计）
+    - 恢复 INI output_dir = base_output_dir
+```
+
+**边界处理**：
+- 首次就 PASS（0 次重试）：不创建任何 `_retry_*` 目录，原路径产物不动
+- 所有 retry 耗尽仍未 PASS：选择 best_attempt，复制其产物回主目录
+- 中间某次 hard crash（ok=False）：那次不参与 best 比较，产物可能不完整，跳过
+- `_retry_0/` 保存初始 run 的原始产物（作为 baseline 参考）
+
+**INI output_dir 修改方式**：在 `apply_adjustments()` 或单独函数中，直接行替换 `paths.output_dir = ...`，与其他 adjustments 一致。
+
+**依赖**
+- `P7-T4`。
+
+**验收标准**
+- 给定 fit-physical 跑 3 次重试，第 1 次 iv_rms=0.30 最优，最终 output_dir 下的 `fitted_params.json` 来自第 1 次而非第 3 次；
+- 首次 PASS 时，目录结构无变化（与 P7 修复前一致）。
+
+---
+
 ## 12. Phase 8：脚本函数化重构
 
 ## 12.1 目标
