@@ -14,6 +14,7 @@ Revision:
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -187,6 +188,7 @@ def _run_stage_streaming(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
     except FileNotFoundError:
         sys_log.error("Stage [%s] failed: executable not found", stage_name)
