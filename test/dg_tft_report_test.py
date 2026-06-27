@@ -100,6 +100,16 @@ class TestArtifactConstants(unittest.TestCase):
             self.assertIsInstance(STAGE_DISPLAY_NAMES[s], str)
             self.assertGreater(len(STAGE_DISPLAY_NAMES[s]), 0)
 
+    def test_stage_display_names_includes_deployment_and_report(self):
+        self.assertIn("deployment-validate", STAGE_DISPLAY_NAMES)
+        self.assertIn("final-report", STAGE_DISPLAY_NAMES)
+        self.assertEqual(STAGE_DISPLAY_NAMES["deployment-validate"], "Deployment Validation")
+        self.assertEqual(STAGE_DISPLAY_NAMES["final-report"], "Final Report")
+
+    def test_artifact_filenames_includes_pkan_model(self):
+        self.assertIn(ARTIFACT_KEY_PKAN_MODEL, ARTIFACT_FILENAMES)
+        self.assertEqual(ARTIFACT_FILENAMES[ARTIFACT_KEY_PKAN_MODEL], "pkan_torch_model.pt")
+
 
 class TestArtifactPath(unittest.TestCase):
 
@@ -150,6 +160,20 @@ class TestVerifyStageArtifacts(unittest.TestCase):
         missing = verify_stage_artifacts(self.tmpdir, "nonexistent")
         self.assertEqual(missing, [])
 
+    def test_train_hysteresis_missing_both_artifacts(self):
+        missing = verify_stage_artifacts(self.tmpdir, "train-hysteresis")
+        self.assertEqual(len(missing), 2)
+        self.assertTrue(any("dg_tft_dynamic.va" in m for m in missing))
+        self.assertTrue(any("dg_tft_dynamic.inc" in m for m in missing))
+
+    def test_train_hysteresis_one_present_one_missing(self):
+        base = os.path.join(self.tmpdir, "04_hysteresis")
+        os.makedirs(base, exist_ok=True)
+        Path(os.path.join(base, "dg_tft_dynamic.va")).write_text("")
+        missing = verify_stage_artifacts(self.tmpdir, "train-hysteresis")
+        self.assertEqual(len(missing), 1)
+        self.assertIn("dg_tft_dynamic.inc", missing[0])
+
 
 class TestGetReportPaths(unittest.TestCase):
 
@@ -161,6 +185,14 @@ class TestGetReportPaths(unittest.TestCase):
         self.assertTrue(paths["md"].endswith(RUN_SUMMARY_MD_NAME))
         self.assertTrue(paths["json"].endswith(RUN_SUMMARY_JSON_NAME))
         self.assertTrue(paths["manifest"].endswith(ARTIFACT_MANIFEST_NAME))
+
+    def test_path_with_unicode_dir(self):
+        paths = get_report_paths("/tmp/中文路径/run_0001")
+        self.assertIn("中文路径", paths["md"])
+
+    def test_report_path_keys_are_stable(self):
+        paths = get_report_paths("/any/path")
+        self.assertEqual(set(paths.keys()), {"md", "json", "manifest"})
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -314,6 +346,109 @@ class TestReportBuilder(unittest.TestCase):
             data = json.load(f)
         self.assertIn("items", data)
         self.assertGreaterEqual(len(data["items"]), 1)
+
+    def test_build_md_summary_with_warnings(self):
+        run_data = self._make_run_data()
+        run_data["warnings"] = ["Low data count", "Temperature sensor not found"]
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        md = _build_md_summary(run_data, manifest, None)
+        self.assertIn("Issues", md)
+        self.assertIn("Low data count", md)
+        self.assertIn("Temperature sensor not found", md)
+
+    def test_build_md_summary_with_errors_in_run(self):
+        run_data = self._make_run_data()
+        run_data["errors"] = ["Stage check-data crashed"]
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        md = _build_md_summary(run_data, manifest, None)
+        self.assertIn("Issues", md)
+        self.assertIn("Stage check-data crashed", md)
+
+    def test_build_json_summary_includes_metrics(self):
+        run_data = self._make_run_data()
+        run_data["metrics"] = {"final_rmse": 0.015, "r2": 0.92}
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        summary = _build_json_summary(run_data, manifest, None)
+        self.assertIn("metrics", summary)
+        self.assertAlmostEqual(summary["metrics"]["final_rmse"], 0.015)
+        self.assertAlmostEqual(summary["metrics"]["r2"], 0.92)
+
+    def test_build_json_summary_with_quality_history(self):
+        run_data = self._make_run_data()
+        run_data["extra"] = {
+            "quality_retry_history": [
+                {
+                    "attempt": 0, "ok": True, "quality_pass": False,
+                    "adjustments": {"physical_fit.max_nfev_scale": "2.0"},
+                    "metrics": {"iv_rms_log10_error_dec": 0.015},
+                },
+                {
+                    "attempt": 1, "ok": True, "quality_pass": True,
+                    "adjustments": {"physical_fit.max_nfev_scale": "3.0"},
+                    "metrics": {"iv_rms_log10_error_dec": 0.008},
+                },
+            ],
+        }
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        summary = _build_json_summary(run_data, manifest, None)
+        self.assertIn("quality", summary)
+        self.assertEqual(summary["quality"]["retries"], 2)
+        self.assertEqual(len(summary["quality"]["history"]), 2)
+
+    def test_build_md_summary_with_quality_history(self):
+        run_data = self._make_run_data()
+        run_data["extra"] = {
+            "quality_retry_history": [
+                {
+                    "attempt": 0, "ok": False, "quality_pass": False,
+                    "adjustments": {"full_model.epochs": "1050"},
+                    "metrics": {}, "error": "nan at epoch 50",
+                },
+                {
+                    "attempt": 1, "ok": True, "quality_pass": True,
+                    "adjustments": {}, "metrics": {"residual_iv_rms": 0.012},
+                },
+            ],
+        }
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        md = _build_md_summary(run_data, manifest, None)
+        self.assertIn("Quality Gate", md)
+        self.assertIn("Retries attempted", md)
+        self.assertIn("(crashed)", md)
+        self.assertIn("nan at epoch 50", md)
+
+    def test_build_md_summary_with_both_diagnosis_and_quality(self):
+        run_data = self._make_run_data()
+        run_data["warnings"] = ["Minor drift detected"]
+        run_data["extra"] = {
+            "diagnosis": {
+                "category": "TRAINING_NUMERICAL_ERROR",
+                "confidence": 0.9,
+                "evidence": ["loss is nan"],
+                "suggestion": "Lower learning rate",
+            },
+            "quality_retry_history": [
+                {"attempt": 0, "ok": True, "quality_pass": True,
+                 "adjustments": {}, "metrics": {"iv_rms_log10_error_dec": 0.005}},
+            ],
+        }
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        md = _build_md_summary(run_data, manifest, None)
+        self.assertIn("## 4. Diagnosis", md)
+        self.assertIn("## 5. Quality Gate", md)
+        self.assertIn("## 6. Issues", md)
+        self.assertIn("Minor drift detected", md)
+
+    def test_build_artifact_manifest_with_attached_artifacts(self):
+        run_data = self._make_run_data()
+        attached_path = os.path.join(self.tmpdir, "extra_plot.png")
+        Path(attached_path).write_text("fake image")
+        run_data["artifacts"] = {"custom_plot": attached_path}
+        manifest = _build_artifact_manifest(run_data, self.tmpdir)
+        attached_items = [it for it in manifest["items"] if it["stage"] == "attached"]
+        self.assertEqual(len(attached_items), 1)
+        self.assertEqual(attached_items[0]["artifact_key"], "custom_plot")
+        self.assertTrue(attached_items[0]["exists"])
 
 
 # ────────────────────────────────────────────────────────────────────

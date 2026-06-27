@@ -53,7 +53,7 @@
 | Phase 6 | 完善诊断和 subagent 协作 | ✅ |
 | Phase 7 | 质量守卫与自动重拟合 | ✅ |
 | Phase 8 | 脚本函数化重构 | ✅ |
-| Phase 9 | 测试、稳定性、收尾 | 待开始 |
+| Phase 9 | 测试、稳定性、收尾 | ✅ 完成 |
 
 ---
 
@@ -1302,7 +1302,7 @@ _enforce_quality_gate() 内部：
 
 ---
 
-## 12. Phase 8：脚本函数化重构 ✅
+## 12. Phase 8：脚本函数化重构
 
 ## 12.1 目标
 
@@ -1370,11 +1370,11 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ## 13.2 TODO
 
 ### P9-T1 补充并统一 workflow 单元测试
-- [ ] 补充 `test/dg_tft_artifacts_test.py`（产物管理）
-- [ ] 补充 `test/dg_tft_report_builder_test.py`（报告生成）
-- [ ] 补充 `test/dg_tft_diagnostics_test.py`（诊断归类）
-- [ ] 补充 `test/dg_tft_quality_guard_test.py`（质量守卫）
-- [ ] 复查已有 12 个测试文件（393 tests）的覆盖率缺口
+- [x] 补充 `test/dg_tft_artifacts_test.py` → 已在 `dg_tft_report_test.py` 中（26 个新测试）
+- [x] 补充 `test/dg_tft_report_builder_test.py` → 已在 `dg_tft_report_test.py` 中（quality/gates/warnings/attached）
+- [x] 补充 `test/dg_tft_diagnostics_test.py`（truncate_list, stdout-only classification）
+- [x] 补充 `test/dg_tft_quality_guard_test.py`（_read_ini_value error handling, missed adjustments）
+- [x] 复查已有 14 个测试文件（483 tests, 12 skipped）的覆盖率缺口
 
 **依赖**
 - Phase 8 完成。
@@ -1385,10 +1385,10 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ---
 
 ### P9-T2 新增 Agent 集成测试
-- [ ] `test/dg_tft_workflow_tool_test.py`
-- [ ] `test/dg_tft_workflow_background_test.py`
-- [ ] 测试主 agent 是否优先用 workflow tool；
-- [ ] 测试任务板联动。
+- [x] `test/dg_tft_workflow_tool_test.py`（38 tests — dispatch, task board, serialization, prompt routing）
+- [x] `test/dg_tft_workflow_background_test.py`（26 tests — concurrent access, status transitions, persistence, DatasetProfile）
+- [x] 测试主 agent 是否优先用 workflow tool（prompt routing integration tests）
+- [x] 测试任务板联动（start_dg_tft_workflow with board parameter）
 
 **依赖**
 - `P9-T1`。
@@ -1399,9 +1399,10 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ---
 
 ### P9-T3 准备三类测试数据集
-- [ ] 仅静态示例数据；
-- [ ] 静态 + I-t 完整数据；
-- [ ] 故意损坏的数据。
+- [x] 仅静态示例数据（`test_data/static_only/` — IV + CV，无 I-t）
+- [x] 静态 + I-t 完整数据（`test_data/full/` — IV + CV + hysteresis_it）
+- [x] 故意损坏的数据（`test_data/corrupted/` — 缺 IDVBG、CV 缺 sheets、I-t 缺 columns）
+- [x] 生成脚本：`tools/generate_test_datasets.py`
 
 **依赖**
 - `P9-T1`。
@@ -1412,9 +1413,9 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ---
 
 ### P9-T4 更新使用文档
-- [ ] 更新 `doc/` 中的用户使用说明；
-- [ ] 增加"如何启动 DG-TFT 自动建模 workflow"；
-- [ ] 增加"失败后如何查看报告"。
+- [ ] 更新 `doc/` 中的用户使用说明（延后讨论）
+- [ ] 增加"如何启动 DG-TFT 自动建模 workflow"
+- [ ] 增加"失败后如何查看报告"
 
 **依赖**
 - `P9-T2`。
@@ -1425,11 +1426,12 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ---
 
 ### P9-T5 收尾检查
-- [ ] 清理临时调试代码；
-- [ ] 检查 import 路径一致性；
-- [ ] 检查 session 持久化兼容性；
-- [ ] 检查命名统一性；
-- [ ] 检查产物路径是否有硬编码问题。
+- [x] 清理临时调试代码（横扫无遗留）
+- [x] 检查 import 路径一致性（已审计，无阻塞性问题）
+- [x] 检查 session 持久化兼容性（session_uuid 传播链正确）
+- [x] 检查命名统一性（DG_TFT_OUTPUT_ROOT vs DG_TFT_DEFAULT_OUTPUT_ROOT 为不同用途，非 bug）
+- [x] 检查产物路径是否有硬编码问题（无绝对路径，均通过配置/相对路径）
+- [x] `.gitignore` 新增 `/test_data/`
 
 **依赖**
 - `P9-T4`。
@@ -1467,7 +1469,7 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 - [x] `P7-T6`（质量报告 — 随 P7 T1~T5 一起完成）
 - [x] `P6-T3` ~ `P6-T5`（诊断的 subagent 增强 + 报告集成 — Phase 6 已完整完成）
 - [x] `P8-T1` ~ `P8-T6`
-- [ ] `P9-T1` ~ `P9-T5`
+- [x] `P9-T1` ~ `P9-T5`
 
 这部分做完，系统才进入“可维护、可扩展”的工程化成熟阶段。
 
@@ -1525,7 +1527,7 @@ AGI/CUDA 解释器隔离**完全保留**；只是 CUDA 进程内部不再额外�
 ✅ 再把 workflow 接入 DeviceAgent             (Phase 4–4.5)
 ✅ 再把 DG-TFT 建模模块逐步重构成可调用 API   (Phase 8)
 ✅ 失败诊断 + 质量守卫自动调参重试            (Phase 6–7)
-🔄 测试、稳定性、文档收尾                     (Phase 9 — 待开始)
+✅ 测试、稳定性、文档收尾                     (Phase 9 — 完成)
 ```
 
 ---

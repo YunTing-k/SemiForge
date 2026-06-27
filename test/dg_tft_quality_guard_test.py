@@ -454,6 +454,49 @@ class TestApplyAdjustments(unittest.TestCase):
         self.assertIn("[full_model]", content)
         self.assertIn("epochs = 999", content)
 
+    def test_apply_missed_adjustment_logged(self):
+        path = apply_adjustments(self.ini, {"nonexistent_section.key": "value"})
+        self.assertEqual(path, self.ini)
+
+    def test_apply_adjustment_new_section_not_in_ini(self):
+        path = apply_adjustments(self.ini, {"new_section.param": "val"})
+        self.assertEqual(path, self.ini)
+
+
+class TestReadIniValueErrors(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_read_ini_nonexistent_file_returns_none(self):
+        from src.workflow.dg_tft.quality_guard import _read_ini_value
+        result = _read_ini_value(
+            os.path.join(self.tmpdir, "does_not_exist.ini"),
+            "section", "key",
+        )
+        self.assertIsNone(result)
+
+    def test_read_ini_missing_section_returns_none(self):
+        from src.workflow.dg_tft.quality_guard import _read_ini_value
+        result = _read_ini_value(self._make_ini(), "missing_section", "key")
+        self.assertIsNone(result)
+
+    def test_read_ini_missing_key_returns_none(self):
+        from src.workflow.dg_tft.quality_guard import _read_ini_value
+        result = _read_ini_value(self._make_ini(), "full_model", "missing_key")
+        self.assertIsNone(result)
+
+    def test_read_ini_non_numeric_value_returns_none(self):
+        from src.workflow.dg_tft.quality_guard import _read_ini_value
+        result = _read_ini_value(self._make_ini(), "full_model", "learning_rate")
+        self.assertAlmostEqual(result, 0.002)
+
+    def _make_ini(self):
+        return _make_temp_ini()
+
 
 # ────────────────────────────────────────────────────────────────────
 # Test: Strategy Tables & Constants

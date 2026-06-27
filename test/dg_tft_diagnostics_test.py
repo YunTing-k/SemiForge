@@ -251,7 +251,62 @@ class TestExitCodeFallback(unittest.TestCase):
 # ────────────────────────────────────────────────────────────────────
 
 
-class TestEdgeCases(unittest.TestCase):
+class TestTruncateList(unittest.TestCase):
+
+    def test_truncate_short_list(self):
+        from src.workflow.dg_tft.diagnostics import _truncate_list
+        result = _truncate_list(["a.txt", "b.txt"])
+        self.assertEqual(result, "a.txt, b.txt")
+
+    def test_truncate_long_list(self):
+        from src.workflow.dg_tft.diagnostics import _truncate_list
+        items = [f"file_{i}.txt" for i in range(10)]
+        result = _truncate_list(items, max_show=3)
+        self.assertIn("file_0.txt", result)
+        self.assertIn("file_2.txt", result)
+        self.assertIn("+7 more", result)
+        self.assertNotIn("file_3.txt", result)
+
+    def test_truncate_empty_list(self):
+        from src.workflow.dg_tft.diagnostics import _truncate_list
+        result = _truncate_list([])
+        self.assertEqual(result, "")
+
+    def test_truncate_list_at_boundary(self):
+        from src.workflow.dg_tft.diagnostics import _truncate_list
+        result = _truncate_list(["a", "b", "c"], max_show=3)
+        self.assertEqual(result, "a, b, c")
+        self.assertNotIn("more", result)
+
+
+class TestStdoutOnlyClassification(unittest.TestCase):
+
+    def test_stdout_only_keyword_match(self):
+        result = classify_error(
+            stage_name=StageName.CHECK_DATA,
+            exit_code=1,
+            stdout="FileNotFoundError: data.csv not found in /data",
+        )
+        self.assertEqual(result.category, ErrorCategory.DATA_ERROR)
+
+    def test_stdout_only_no_match_falls_back(self):
+        result = classify_error(
+            stage_name=StageName.CHECK_DATA,
+            exit_code=1,
+            stdout="Processing completed with warnings",
+        )
+        self.assertEqual(result.category, ErrorCategory.DATA_ERROR)
+        self.assertEqual(result.confidence, 0.5)
+
+    def test_error_message_overrides_stdout(self):
+        result = classify_error(
+            stage_name=StageName.CHECK_DATA,
+            exit_code=1,
+            stdout="Some benign message",
+            error_message="FileNotFoundError: real_error.csv",
+        )
+        self.assertEqual(result.category, ErrorCategory.DATA_ERROR)
+        self.assertIn("fileNotFoundError".lower(), result.evidence[0].lower())
 
     def test_empty_text_complete_unknown(self):
         result = classify_error(
