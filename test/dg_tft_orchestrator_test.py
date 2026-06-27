@@ -369,5 +369,51 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         self.assertGreater(len(run.artifacts), 0)
 
 
+# ────────────────────────────────────────────────────────────────────
+# Test: Timeout helpers (Phase 9)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestTimeoutHelpers(unittest.TestCase):
+
+    def test_compute_run_timeout_zero_stages(self):
+        from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        self.assertEqual(_compute_run_timeout([]), 0)
+
+    def test_compute_run_timeout_single_stage(self):
+        from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        sd = StageDef(name="test", action="act", required=True, timeout=600)
+        result = _compute_run_timeout([sd])
+        self.assertEqual(result, 1200)
+
+    def test_compute_run_timeout_multiple_stages(self):
+        from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        stages = [
+            StageDef(name="s1", action="a1", required=True, timeout=600),
+            StageDef(name="s2", action="a2", required=True, timeout=1800),
+            StageDef(name="s3", action="a3", required=True, timeout=7200),
+        ]
+        result = _compute_run_timeout(stages)
+        self.assertEqual(result, (600 + 1800 + 7200) * 2)
+
+    def test_compute_run_timeout_none_timeout_skipped(self):
+        from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        stages = [
+            StageDef(name="s1", action="a1", required=True, timeout=600),
+            StageDef(name="s2", action="a2", required=True, timeout=None),
+        ]
+        result = _compute_run_timeout(stages)
+        self.assertEqual(result, 1200)
+
+    def test_elapsed_exceeds_true(self):
+        from src.workflow.dg_tft.orchestrator import _elapsed_exceeds
+        self.assertTrue(_elapsed_exceeds(0, -1))
+
+    def test_elapsed_exceeds_false(self):
+        from src.workflow.dg_tft.orchestrator import _elapsed_exceeds
+        import time
+        self.assertFalse(_elapsed_exceeds(time.monotonic(), 999999))
+
+
 if __name__ == "__main__":
     unittest.main()

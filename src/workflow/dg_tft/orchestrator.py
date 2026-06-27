@@ -152,6 +152,9 @@ def run_workflow(
     _console(ctx, f"  output dir: [bright_black]{output_dir}[/bright_black]")
     t_start = time.monotonic()
 
+    run_timeout = _compute_run_timeout(stages)
+    _console(ctx, f"  timeouts  : [bright_black]per-stage={{{', '.join(f'{s.name}:{s.timeout}s' for s in stages if s.timeout)}}}, run={run_timeout}s[/bright_black]")
+
     # ── Create task board entries ──
     task_map = _create_stage_tasks(board, ctx.agent_id, stages, run_id)
 
@@ -160,6 +163,16 @@ def run_workflow(
     failed_error: str = ""
     for sd in stages:
         idx += 1
+
+        # ── Overall run timeout check ──
+        if _elapsed_exceeds(t_start, run_timeout):
+            _console(ctx, f"  [{WF_STATUS_ERROR}]Run #{run_id} timed out after {run_timeout}s[/{WF_STATUS_ERROR}]")
+            failed_stage = sd.name
+            failed_error = f"Run overall timeout ({run_timeout}s) exceeded before stage {sd.name}"
+            wm.mark_failed(run_id, failed_error)
+            _finalize_run(ctx, run_id, output_dir, t_start, stages,
+                          failed=True, failed_stage=failed_stage, failed_error=failed_error)
+            return False, failed_error
 
         if _noop_stage(sd):
             sys_log.info("Stage [%s] is a no-op placeholder, skipping", sd.name)
@@ -952,3 +965,13 @@ def _console(ctx: AgentContext, message: str) -> None:
     c = getattr(ctx, "console", None)
     if c is not None:
         c.print(message)
+
+
+def _compute_run_timeout(stages: list[StageDef]) -> int:
+    """Run-level timeout = sum of all stage timeouts × 2."""
+    total = sum(sd.timeout or 0 for sd in stages)
+    return total * 2
+
+
+def _elapsed_exceeds(t_start: float, timeout_s: int) -> bool:
+    return (time.monotonic() - t_start) > timeout_s
