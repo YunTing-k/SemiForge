@@ -376,34 +376,72 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
 
 class TestTimeoutHelpers(unittest.TestCase):
 
+    def _make_mock_ctx_for_timeout(self, configs=None):
+        ctx = MagicMock()
+        ctx.agent_configs = configs or {}
+        return ctx
+
     def test_compute_run_timeout_zero_stages(self):
         from src.workflow.dg_tft.orchestrator import _compute_run_timeout
-        self.assertEqual(_compute_run_timeout([]), 0)
+        ctx = self._make_mock_ctx_for_timeout()
+        self.assertEqual(_compute_run_timeout(ctx, []), 0)
 
     def test_compute_run_timeout_single_stage(self):
         from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        ctx = self._make_mock_ctx_for_timeout()
         sd = StageDef(name="test", action="act", required=True, timeout=600)
-        result = _compute_run_timeout([sd])
+        result = _compute_run_timeout(ctx, [sd])
         self.assertEqual(result, 1200)
 
     def test_compute_run_timeout_multiple_stages(self):
         from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        ctx = self._make_mock_ctx_for_timeout()
         stages = [
             StageDef(name="s1", action="a1", required=True, timeout=600),
             StageDef(name="s2", action="a2", required=True, timeout=1800),
             StageDef(name="s3", action="a3", required=True, timeout=7200),
         ]
-        result = _compute_run_timeout(stages)
+        result = _compute_run_timeout(ctx, stages)
         self.assertEqual(result, (600 + 1800 + 7200) * 2)
 
     def test_compute_run_timeout_none_timeout_skipped(self):
         from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        ctx = self._make_mock_ctx_for_timeout()
         stages = [
             StageDef(name="s1", action="a1", required=True, timeout=600),
             StageDef(name="s2", action="a2", required=True, timeout=None),
         ]
-        result = _compute_run_timeout(stages)
+        result = _compute_run_timeout(ctx, stages)
         self.assertEqual(result, 1200)
+
+    def test_compute_run_timeout_agent_configs_override(self):
+        from src.workflow.dg_tft.orchestrator import _compute_run_timeout
+        ctx = self._make_mock_ctx_for_timeout({
+            "DG_TFT_TIMEOUT_S1": "120",
+            "DG_TFT_TIMEOUT_S2": "240",
+        })
+        stages = [
+            StageDef(name="s1", action="a1", required=True, timeout=600),
+            StageDef(name="s2", action="a2", required=True, timeout=1800),
+        ]
+        result = _compute_run_timeout(ctx, stages)
+        self.assertEqual(result, (120 + 240) * 2)
+
+    def test_resolve_stage_timeout_override(self):
+        from src.workflow.dg_tft.orchestrator import _resolve_stage_timeout
+        ctx = self._make_mock_ctx_for_timeout({
+            "DG_TFT_TIMEOUT_CHECK_DATA": "300",
+        })
+        sd = StageDef(name="check-data", action="act", required=True, timeout=600)
+        result = _resolve_stage_timeout(ctx, sd)
+        self.assertEqual(result, 300)
+
+    def test_resolve_stage_timeout_fallback(self):
+        from src.workflow.dg_tft.orchestrator import _resolve_stage_timeout
+        ctx = self._make_mock_ctx_for_timeout({})
+        sd = StageDef(name="check-data", action="act", required=True, timeout=600)
+        result = _resolve_stage_timeout(ctx, sd)
+        self.assertEqual(result, 600)
 
     def test_elapsed_exceeds_true(self):
         from src.workflow.dg_tft.orchestrator import _elapsed_exceeds

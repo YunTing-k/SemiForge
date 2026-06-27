@@ -152,7 +152,7 @@ def run_workflow(
     _console(ctx, f"  output dir: [bright_black]{output_dir}[/bright_black]")
     t_start = time.monotonic()
 
-    run_timeout = _compute_run_timeout(stages)
+    run_timeout = _compute_run_timeout(ctx, stages)
     _console(ctx, f"  timeouts  : [bright_black]per-stage={{{', '.join(f'{s.name}:{s.timeout}s' for s in stages if s.timeout)}}}, run={run_timeout}s[/bright_black]")
 
     # ── Create task board entries ──
@@ -191,7 +191,7 @@ def run_workflow(
         _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]starting...[/bright_black]")
         _start_task(board, ctx.agent_id, task_map.get(sd.name))
 
-        timeout = stage_timeout or sd.timeout
+        timeout = _resolve_stage_timeout(ctx, sd)
 
         if sd.skip_if_profile_false:
             field_val = getattr(profile, sd.skip_if_profile_false, None)
@@ -967,10 +967,26 @@ def _console(ctx: AgentContext, message: str) -> None:
         c.print(message)
 
 
-def _compute_run_timeout(stages: list[StageDef]) -> int:
+def _compute_run_timeout(ctx: AgentContext, stages: list[StageDef]) -> int:
     """Run-level timeout = sum of all stage timeouts × 2."""
-    total = sum(sd.timeout or 0 for sd in stages)
+    total = sum(_resolve_stage_timeout(ctx, sd) or 0 for sd in stages)
     return total * 2
+
+
+def _resolve_stage_timeout(ctx: AgentContext, sd: StageDef) -> int | None:
+    """Resolve stage timeout: agent_configs override > StageDef default.
+
+    Config keys follow the pattern ``DG_TFT_TIMEOUT_<STAGE_NAME_UPPER>``
+    where STAGE_NAME is the stage name with hyphens replaced by underscores.
+    """
+    config_key = "DG_TFT_TIMEOUT_" + sd.name.upper().replace("-", "_")
+    val = ctx.agent_configs.get(config_key)
+    if val is not None:
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            sys_log.warning("Invalid timeout value for '%s': %s", config_key, val)
+    return sd.timeout
 
 
 def _elapsed_exceeds(t_start: float, timeout_s: int) -> bool:
