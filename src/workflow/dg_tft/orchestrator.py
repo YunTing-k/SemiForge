@@ -976,10 +976,10 @@ def _compute_run_timeout(ctx: AgentContext, stages: list[StageDef]) -> int:
 def _resolve_stage_timeout(ctx: AgentContext, sd: StageDef) -> int | None:
     """Resolve stage timeout: agent_configs override > StageDef default.
 
-    Config keys follow the pattern ``DG_TFT_TIMEOUT_<STAGE_NAME_UPPER>``
+    Config keys follow the pattern ``DG_TFT_TIMEOUT_S_<STAGE_NAME_UPPER>``
     where STAGE_NAME is the stage name with hyphens replaced by underscores.
     """
-    config_key = "DG_TFT_TIMEOUT_" + sd.name.upper().replace("-", "_")
+    config_key = "DG_TFT_TIMEOUT_S_" + sd.name.upper().replace("-", "_")
     val = ctx.agent_configs.get(config_key)
     if val is not None:
         try:

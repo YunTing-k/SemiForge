@@ -624,7 +624,7 @@
 - [x] `start_dg_tft_workflow` 立即返回 `run_id`，不阻塞等待训练完成；
 - [x] 在 `workflow_man` 中新增 `RunningRunTracker`（存储正在执行的 subprocess 句柄）；
 - [x] `query_dg_tft_workflow` 可实时查询 run status 并返回最新 stage；
-- [x] 考虑超长时间运行的看护（心跳检测 / 超时 kill）— ✅ 完成：per-stage timeout + 整体 run_timeout = Σstage_timeout × 2，agent_configs 可配置 `DG_TFT_TIMEOUT_*`
+- [x] 考虑超长时间运行的看护（心跳检测 / 超时 kill）— ✅ 完成：per-stage timeout + 整体 run_timeout = Σstage_timeout × 2，agent_configs 可配置 `DG_TFT_TIMEOUT_S_*`
 - [x] 确保多个 run 并发隔离（输出目录、config 文件不冲突）。
 
 **依赖**

@@ -417,8 +417,8 @@ class TestTimeoutHelpers(unittest.TestCase):
     def test_compute_run_timeout_agent_configs_override(self):
         from src.workflow.dg_tft.orchestrator import _compute_run_timeout
         ctx = self._make_mock_ctx_for_timeout({
-            "DG_TFT_TIMEOUT_S1": "120",
-            "DG_TFT_TIMEOUT_S2": "240",
+            "DG_TFT_TIMEOUT_S_S1": "120",
+            "DG_TFT_TIMEOUT_S_S2": "240",
         })
         stages = [
             StageDef(name="s1", action="a1", required=True, timeout=600),
@@ -430,7 +430,7 @@ class TestTimeoutHelpers(unittest.TestCase):
     def test_resolve_stage_timeout_override(self):
         from src.workflow.dg_tft.orchestrator import _resolve_stage_timeout
         ctx = self._make_mock_ctx_for_timeout({
-            "DG_TFT_TIMEOUT_CHECK_DATA": "300",
+            "DG_TFT_TIMEOUT_S_CHECK_DATA": "300",
         })
         sd = StageDef(name="check-data", action="act", required=True, timeout=600)
         result = _resolve_stage_timeout(ctx, sd)
