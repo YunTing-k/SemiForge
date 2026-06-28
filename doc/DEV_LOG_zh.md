@@ -1,0 +1,189 @@
+# SemiForge 开发日志
+
+## 开发规范
+
+以下规范适用于本项目的所有代码贡献，旨在保证工程一致性和可维护性。
+
+### 1. 测试优先
+- 每个新模块必须附带对应的测试文件（`*_test.py`），使用 `unittest` 框架。
+- 运行全部测试：`python -m unittest discover -s test -p "*_test.py"`。
+- 提交前确保全部测试通过。CI 引入前至少本地全量通过。
+
+### 2. 文档同步更新
+- 行为变更（新增工具、修改 prompt 路由、调整 agent_configs.json 键值含义、SubAgent 生命周期变化）必须在本文档中记录。
+- `src/context/prompt.py` 中的路由指引、`config/agent_configs.json` 中的注释说明需与代码行为保持同步。
+
+### 3. 注释与输出全英文
+- 代码注释、docstring、`console.print()`、`sys_log` 一律使用英文。
+- 文件头 docstring 中的作者/机构信息除外。
+- 示例：`"Stage check-data failed: division by zero"` ✅，`"check-data阶段失败"` ❌。
+
+### 4. 用户可见性与控制台风格
+- 每个关键路径节点必须有 `console.print()` 输出，silent failure 不可接受。
+- 颜色使用规范（使用 `src/constants.py` 中定义的常量）：
+  - 错误：`WF_STATUS_ERROR`（bold red）
+  - 警告：`WF_STATUS_WARN`（bold yellow）
+  - 成功：`WF_STATUS_SUCCESS`（#8CDCA0）
+  - 次要信息/详情：`bright_black`
+  - **禁止滥用 `MAJOR_COLOR1` / `MAJOR_COLOR2`**，仅用于模块名、配置项名称等真正需要强调的关键标识，不整句使用。
+- 使用 `Text.append()` 拼接富文本时，不同颜色的片段应分别 append 并指定 style，避免嵌套 Rich markup 被外层 style 覆盖。
+- `sys_log` 保留完整审计日志；`console.print()` 面向实时用户可见进度。两者互补，不互相替代。
+
+### 5. 配置驱动，禁止硬编码
+- 路径、超时、阈值、开关等可调参数一律从 `config/agent_configs.json` 读取，不写死在代码中。
+- 时间相关配置键统一使用 `_S` 后缀表示秒（如 `DG_TFT_TIMEOUT_S_CHECK_DATA`、`SUBAGENT_TIMEOUT_S`）。
+- 字符串常量（工具名、标签名）统一定义在 `src/constants.py`（命名规范：`TOOL_NAME_*`、`*_LABEL`）。
+
+### 6. 线程安全
+- 任何跨线程共享的可变状态（如 `WorkflowManager._runs`、`PreparationTracker._preps`）必须加 `threading.Lock`。
+- 所有 mutation 操作（create/update/mark_done/mark_failed/save/load）必须在锁内执行。
+
+### 7. 权限体系
+- 任何影响文件系统或执行外部命令的操作须通过 `pause_for_permission` / `ask_permission_tui` 请求用户授权。
+- 工具权限映射使用 `PERMISSION_PRESETS` 常量，不手写权限列表。
+
+### 8. 导入规范
+- 包内模块互引用统一使用相对导入：`from .schema import WorkflowRun`。
+- 外部调用方（`main.py`、`agent_context.py` 等）使用绝对导入：`from src.workflow.dg_tft.manager import WorkflowManager`。
+- 禁止混用两种路径引用同一模块（会导致 Python 注册两个独立的 module 对象，`isinstance` 检查失败）。
+
+### 9. Session 持久化
+- 需跨会话恢复的数据结构（`WorkflowManager`、`Scoreboard` 等）必须实现 `save_to_file()` / `load_from_file()`。
+- 持久化文件统一落在 `session/<session_uuid>/` 下，JSON 格式。
+- `to_dict()` 和 `from_dict()` 不依赖 `dataclass.asdict`（其内部 `deepcopy` 可能导致序列化失败）。
+
+### 10. SubAgent 生命周期
+- 注册：将 `SubAgentProgress` 写入 `parent_ctx.agent_list`。
+- 执行：`agent.run()` 同步阻塞。
+- 注销：`finally` 块中从 `agent_list` 移除。
+- 静默模式：通过 `getattr(ctx, "subagent_mute", False)` 检查，为 True 时禁止 console 输出和权限弹窗。
+- SubAgent 创建使用 `clone_context()` 获取独立上下文副本。
+
+### 11. 错误处理
+- 所有异常必须同时 `sys_log.error(...)` + `console.print(..., style="bold red")`。
+- 非关键路径（如诊断 subagent 失败）的异常不应向上传播，使用 try/except 兜底。
+
+### 12. Agent 与固定代码的边界
+- **Agent/LLM 介入范围**：数据格式理解与转换、产出物格式校验、失败原因归纳解读。
+- **纯规则代码负责**：训练执行、配置生成、质量门禁阈值判定、参数调优、报告文件生成。
+- 不要让 LLM/SubAgent 决定训练算法参数或直接操作训练代码 — "把开放性留给 Agent，把执行权留给固定代码"。
+
+### 13. Git 提交规范
+- Commit message 使用英文，简明祈使语气。
+- 单次提交尽量聚焦一个主题（避免"改了一堆东西"式的提交）。
+- 提交前检查：`git status` → `git diff` → 确认无调试代码、无 secrets、无意外修改。
+
+---
+
+## 开发时间线
+
+### 2026-06-25 | Phase 0–2 — 基础设施 + 数据审计 + 配置生成
+
+**Phase 0**：DG-TFT 建模代码迁移至 `src/device_modeling/dg_tft/`。锁定双解释器架构：Agent（`AGI`）与建模（`CUDA`）严格分离，通过 `agent_configs.json` 中的 `DG_TFT_MODELING_PYTHON_EXE` 显式指定。
+
+**Phase 1**：工作流引擎骨架 `src/workflow/dg_tft/` — `schema.py`（WorkflowRun、StageResult、DatasetProfile）、`manager.py`（线程安全 CRUD + session 持久化）、`stage_runner.py`（统一解释器解析）。接入 `AgentContext` 和 `main.py`。
+
+**Phase 2**：`dataset_inspector.py`（subprocess 调 CUDA `validate_dataset.py` → DatasetProfile，I-t 自动发现，温度/HSPICE 检测）+ `config_builder.py`（模板 .ini → per-run 运行时配置）。累计测试：103。
+
+---
+
+### 2026-06-25 | Phase 3 — Subprocess 版全自动流程
+
+`stages.py`（StageDef dataclass，7 个阶段）+ `orchestrator.py`（`run_workflow()` 顺序执行、fail-fast、hysteresis 条件跳过、断点续传）。通过 `ctx.console` 输出终端进度。累计测试：135。
+
+---
+
+### 2026-06-25 | Phase 4 + 4.5 — Agent 工具接入 + 数据整理
+
+**Phase 4**：三个 workflow 工具（`start_dg_tft_workflow`、`query_dg_tft_workflow`、`read_dg_tft_workflow_report`）+ dispatch + 内建命令。System prompt 从 TECoSim/simulator 重写为 DeviceModeling/DG-TFT。
+
+**Phase 4.5**：`data_preparer.py` — 三步数据整理流程：
+1. **Preparer subagent**（type=`preparer`）：将原始 CSV/XLSX 转换为 `*_train.xlsx`
+2. **Verifier LLM**（fast model，mini tool-loop）：用结构化 `report_verification` schema 检查产出物
+3. **`_check_output()`**：纯 Python CRITICAL/WARNING 判定（零 LLM）
+
+同日 bugfix：worker subagent 使用 CUDA python 以引用 pandas，verifier 进度展示，已整理数据跳过，前台同步执行，train-static metadata 兼容。累计测试：234。
+
+---
+
+### 2026-06-25 | Phase 5 — 报告、产物与任务面板
+
+`artifacts.py` + `report_builder.py`（`build_and_write_reports()` → ARTIFACT_MANIFEST.json、RUN_SUMMARY.json、RUN_SUMMARY.md）。Orchestrator 集成：成功/失败均自动生成报告。任务面板同步：阶段任务在 Scoreboard 上创建/完成。控制台摘要展示路径、指标和失败建议。累计测试：237。
+
+---
+
+### 2026-06-26 | Phase 6 — 失败诊断 + SubAgent 协作
+
+`diagnostics.py`：6 大类关键字匹配错误分类（DATA_ERROR / CONFIG_ERROR / TRAINING_NUMERICAL_ERROR / MISSING_ARTIFACT_ERROR / HSPICE_ENV_ERROR / UNKNOWN_ERROR），含置信度评分。
+
+`subagent_hooks.py`：6 个 explorer subagent hook 定义，含参数化 prompt 模板。`orchestrator.py` 集成：`_run_stage_diagnosis()` 自动分类 → 可选 spawn explorer subagent（由 `DG_TFT_ENABLE_DIAGNOSIS` 控制）。诊断结果存入 `run.extra["diagnosis"]`；report builder 包含 Diagnosis 段落。累计测试：314。
+
+---
+
+### 2026-06-26 | Phase 7 — 质量守卫 + 自动调参重试
+
+`metrics_parser.py`：从产物 JSON 提取指标（fitted_params.json、residual metrics、hysteresis analysis）。
+
+`quality_guard.py`：`assess_quality()` 阈值判定 → `suggest_adjustments()` 渐进式调参策略引擎 → `apply_adjustments()` 原地 INI 改写。参数白名单 + 边界保护。Retry 循环（最多 3 次，可配），`_retry_N/` 子目录隔离，保留最优 attempt 产物。
+
+Orchestrator 集成：`_enforce_quality_gate()` 在每阶段成功后执行。Report builder："Quality" 章节含 retry log 表格。阈值基于实际 debug run 数据校准。累计测试：370。
+
+---
+
+### 2026-06-26 | Phase 8 — 脚本函数化重构
+
+7 个 engine/dynamic 脚本均新增 `run_*()` 可 import 入口函数。`run_model.py` 重写：内层 `subprocess.run()` 消除，改为 `from engine.xxx import run_yyy; run_yyy()` 直接调用。
+
+AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 内部的双层 subprocess。无功能开关 — 函数化为唯一路径，对 orchestrator 完全透明。累计测试：393（12 skip = CUDA 依赖不在 AGI 环境）。
+
+---
+
+### 2026-06-27 | Phase 9 — 测试、稳定性与收尾
+
+**P9-T1**：补充单元测试（+26）：report quality gate 渲染、diagnostics（truncate_list、stdout-only 分类）、quality_guard（INI 读取错误、遗漏调整）。
+
+**P9-T2**：Agent 集成测试（+64，2 个新文件）：`dg_tft_workflow_tool_test.py`（38 tests — 任务面板联动、序列化、dispatch、prompt 路由）+ `dg_tft_workflow_background_test.py`（26 tests — 并发 WorkflowManager、状态转换、DatasetProfile、持久化）。
+
+**P9-T3**：三套测试数据集（`test_data/{static_only,full,corrupted}/`）+ 可复现生成脚本。
+
+**P9-T5**：收尾清理 — 无调试代码，无硬编码路径，session 持久化链验证，`.gitignore` 更新。
+
+---
+
+### 2026-06-27 | 阶段超时 + 整体超时
+
+超时值从硬编码迁移至 `agent_configs`（`DG_TFT_TIMEOUT_S_CHECK_DATA=600`、`DG_TFT_TIMEOUT_S_FIT_PHYSICAL=1800` 等）。命名使用 `_S` 后缀，与现有 `SUBAGENT_TIMEOUT_S` 保持一致。
+
+`_resolve_stage_timeout()`：agent_configs 优先 → StageDef.timeout 兜底。`_compute_run_timeout()`：Σ(已解析各阶段) × 2。`_elapsed_exceeds()` 在 orchestrator 每阶段前守卫。测试：+9。
+
+---
+
+### 2026-06-28 | TECoSim 剔除 + SemiForge 品牌统一
+
+删除 `simulator_param.py` 和 `simulator_support.py`（DesignManager、RunManager、launch_sim、init_design、read_log — 约 1900 行）。移除 6 个 simulator 工具定义/handler/dispatch 分支。清除 13 个死常量、2 个配置项。TECoSim 相关命名全部改为 SemiForge。新增 Apache 2.0 LICENSE.txt；版权声明更新。
+
+---
+
+## 经验总结
+
+### Python 模块双重导入陷阱
+`from src.workflow.dg_tft.schema import X` 与 `from workflow.dg_tft.schema import X` 会被 Python 注册为两个独立模块。包内统一使用相对导入（`from .schema import`）。
+
+### `dataclass.asdict` 与 deepcopy
+`asdict()` 内部使用 `deepcopy()`。含锁/mock 的复杂嵌套结构会导致序列化失败。手动 `to_dict()` 更安全。
+
+### Orchestrator 设计要点
+- 阶段定义（静态元数据）与执行逻辑（动态编排）分离
+- 断点续传：通过 `_stage_done()` 检查 `run.stage_results` 跳过已完成阶段
+- 必经阶段 fail-fast；可选阶段 log warning 后继续
+- Quality gate 在每个可训练阶段后执行，而非只在流水线末尾
+
+### 控制台输出风格
+- 错误：`WF_STATUS_ERROR`（bold red）| 警告：`WF_STATUS_WARN`（bold yellow）| 成功：`WF_STATUS_SUCCESS`（#8CDCA0）| 细节：`bright_black`
+- 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
+
+### 测试策略
+当前 793 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+
+### Agent 介入边界
+LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。

@@ -14,7 +14,6 @@ Revision:
 """
 from __future__ import annotations
 
-import configparser
 import json
 import logging
 from pathlib import Path

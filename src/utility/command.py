@@ -1004,7 +1004,7 @@ def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, cons
         if prep["issues"]:
             cmd_str.append(f"Issues ({len(prep['issues'])}):\n", style="bold yellow")
             for issue in prep["issues"]:
-                cmd_str.append(f"  - {issue}\n", style="bright_black")
+                cmd_str.append(f"  - {issue}\n", style="yellow")
         if cmd_str.plain.endswith("\n"):
             cmd_str.rstrip()
         console.print(Panel.fit(cmd_str, title=title, title_align="left",
@@ -1042,20 +1042,23 @@ def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, cons
     if run.warnings:
         cmd_str.append(f"Warnings ({len(run.warnings)}):\n", style="bold yellow")
         for w in run.warnings:
-            cmd_str.append(f"  - {w}\n", style="bright_black")
+            cmd_str.append(f"  - {w}\n", style="yellow")
     if run.errors:
         cmd_str.append(f"Errors ({len(run.errors)}):\n", style="bold red")
         for e in run.errors:
-            cmd_str.append(f"  - {e}\n", style="bright_black")
+            cmd_str.append(f"  - {e}\n", style="red")
     stage_results = run.stage_results
     if stage_results:
         cmd_str.append(f"Stage Results:\n", style=f"bold {MAJOR_COLOR1}")
         for name, sr in stage_results.items():
-            ok = sr.ok if hasattr(sr, "ok") else sr.get("ok", False)
-            summary = sr.summary if hasattr(sr, "summary") else sr.get("summary", "")
-            state = "[green]OK[/green]" if ok else "[red]FAILED[/red]"
-            cmd_str.append(f"  {name}: {state}", style="bright_black")
-            cmd_str.append(f" - {summary}\n", style="bright_black")
+            ok = sr.ok
+            summary = sr.summary
+            state = "OK" if ok else "FAILED"
+            state_style = WF_STATUS_SUCCESS if ok else WF_STATUS_ERROR
+            cmd_str.append(f"  {name}: ", style="white")
+            cmd_str.append(f"{state}\n", style=state_style)
+            if summary:
+                cmd_str.append(f"    {summary}\n", style="bright_black")
     if cmd_str.plain.endswith("\n"):
         cmd_str.rstrip()
     console.print(Panel.fit(cmd_str, title=title, title_align="left",
@@ -1082,13 +1085,15 @@ def cmd_workflow_report(args: list[str], ctx: AgentContext, board: Scoreboard, c
     stage_results = run.stage_results
     if stage_results:
         for name, sr in stage_results.items():
-            ok = sr.ok if hasattr(sr, "ok") else sr.get("ok", False)
-            summary = sr.summary if hasattr(sr, "summary") else sr.get("summary", "")
-            metrics = sr.metrics if hasattr(sr, "metrics") else sr.get("metrics", {})
-            warn = sr.warnings if hasattr(sr, "warnings") else sr.get("warnings", [])
-            err = sr.error if hasattr(sr, "error") else sr.get("error")
-            icon = "[green]OK[/green]" if ok else "[red]FAILED[/red]"
-            cmd_str.append(f"{name}: {icon}\n", style="white")
+            ok = sr.ok
+            summary = sr.summary
+            metrics = sr.metrics
+            warn = sr.warnings
+            err = sr.error
+            icon = "OK" if ok else "FAILED"
+            icon_style = WF_STATUS_SUCCESS if ok else WF_STATUS_ERROR
+            cmd_str.append(f"{name}: ", style="white")
+            cmd_str.append(f"{icon}\n", style=icon_style)
             if summary:
                 cmd_str.append(f"  Summary: {summary}\n", style="bright_black")
             if metrics:
@@ -1098,7 +1103,7 @@ def cmd_workflow_report(args: list[str], ctx: AgentContext, board: Scoreboard, c
             if warn:
                 cmd_str.append(f"  Warnings:\n", style="bold yellow")
                 for w in warn:
-                    cmd_str.append(f"    - {w}\n", style="bright_black")
+                    cmd_str.append(f"    - {w}\n", style="yellow")
             if err:
                 cmd_str.append(f"  Error: {err}\n", style="bold red")
             cmd_str.append("\n")

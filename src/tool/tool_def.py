@@ -2452,10 +2452,10 @@ def query_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         stage_results = {}
         for name, sr in run.stage_results.items():
             stage_results[name] = {
-                "ok": sr.ok if hasattr(sr, "ok") else sr.get("ok", False),
-                "summary": sr.summary if hasattr(sr, "summary") else sr.get("summary", ""),
-                "warnings": sr.warnings if hasattr(sr, "warnings") else sr.get("warnings", []),
-                "error": sr.error if hasattr(sr, "error") else sr.get("error"),
+                "ok": sr.ok,
+                "summary": sr.summary,
+                "warnings": sr.warnings,
+                "error": sr.error,
             }
 
         return {
@@ -2547,9 +2547,9 @@ def read_dg_tft_workflow_report(arguments: dict[str, Any], ctx: AgentContext, pr
         stage_summaries = {}
         for name, sr in run.stage_results.items():
             stage_summaries[name] = {
-                "ok": sr.ok if hasattr(sr, "ok") else sr.get("ok", False),
-                "summary": sr.summary if hasattr(sr, "summary") else sr.get("summary", ""),
-                "metrics": sr.metrics if hasattr(sr, "metrics") else sr.get("metrics", {}),
+                "ok": sr.ok,
+                "summary": sr.summary,
+                "metrics": sr.metrics,
             }
 
         return {
