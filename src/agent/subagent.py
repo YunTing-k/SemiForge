@@ -61,12 +61,7 @@ _TOOL_DISPLAY_KEYS: dict[str, str] = {
     TOOL_NAME_GREP_FILE: "pattern",
     TOOL_NAME_WEB_FETCH: "url",
     TOOL_NAME_WEB_SEARCH: "query",
-    TOOL_NAME_READ_LOG: "run_id",
     TOOL_NAME_CREATE_TASK: "subject",
-    TOOL_NAME_INIT_DESIGN: "subject",
-    TOOL_NAME_QUERY_DESIGN: "design_id",
-    TOOL_NAME_LAUNCH_SIM: "subject",
-    TOOL_NAME_QUERY_RUN: "run_id",
     TOOL_NAME_SKILL: "name",
 }
 
@@ -104,8 +99,6 @@ def clone_context(parent_ctx: AgentContext, agent_id: str, subagent_type: str) -
     ctx.cron_tasks = []
     ctx.cron_ids = []
     ctx.active_cron = 0
-    ctx.design_man = parent_ctx.design_man
-    ctx.run_man = parent_ctx.run_man
     ctx.workflow_man = parent_ctx.workflow_man
     ctx.agent_list = {}
     ctx.background_agents = []

@@ -94,24 +94,6 @@ def call_tools(func_name: str, arguments: dict[str, Any], ctx: AgentContext, boa
         elif func_name == TOOL_NAME_WEB_SEARCH:
             results = tool_def.web_search(arguments, ctx, progress)
             user_addon = None
-        elif func_name == TOOL_NAME_CHECK_SIMULATOR:
-            results = tool_def.check_simulator(ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_INIT_DESIGN:
-            results = tool_def.init_design(arguments, ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_QUERY_DESIGN:
-            results = tool_def.query_design(arguments, ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_LAUNCH_SIM:
-            results = tool_def.launch_sim(arguments, ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_QUERY_RUN:
-            results = tool_def.query_run(arguments, ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_READ_LOG:
-            results = tool_def.read_log(arguments, ctx, progress)
-            user_addon = None
         elif func_name == TOOL_NAME_PREPARE_DATASET:
             results = tool_def.prepare_dg_tft_dataset(arguments, ctx, progress)
             user_addon = None

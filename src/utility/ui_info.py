@@ -114,16 +114,17 @@ def horizontal_color_grad_text(text: str, start_rgb: tuple, end_rgb: tuple) -> T
     return result
 
 
-def log_tecosim_agent_info():
+def log_semiforge_agent_info():
     """print the agent's dev information into logger"""
-    sys_log.info("Thermo-Electric Coupling Cross-level Display Simulator (TECoSim) Agent")
+    sys_log.info("SemiForge Agent")
     sys_log.info("Agent Version: %d.%d.%d" %
-                 (TECOSIM_AGENT_MAJOR_VERSION, TECOSIM_AGENT_MINOR_VERSION, TECOSIM_AGENT_UPDATE_VERSION))
-    sys_log.info("Copyright (c) 2026, Shanghai Jiao Tong University and Yu Huang. All Rights Reserved.")
-    sys_log.info("Developed by Yu Huang at SMIL Lab, School of Integrated Circuits, Shanghai Jiao Tong University.\n")
+                 (SEMIFORGE_AGENT_MAJOR_VERSION, SEMIFORGE_AGENT_MINOR_VERSION, SEMIFORGE_AGENT_UPDATE_VERSION))
+    sys_log.info("Copyright (c) 2026, Shanghai Jiao Tong University, Yu Huang and Zikang Mei.")
+    sys_log.info("Licensed under the Apache License, Version 2.0.")
+    sys_log.info("Developed by Yu Huang and Zikang Mei at SMIL Lab, School of Integrated Circuits, Shanghai Jiao Tong University.\n")
 
 
-def console_tecosim_agent_info(console: Console):
+def console_semiforge_agent_info(console: Console):
     """print the agent's dev information into console"""
     banner = (
         "██╗      ███████╗███████╗███╗   ███╗██╗    ███████╗ ██████╗ ██████╗  ██████╗ ███████╗      ██╗\n"
@@ -136,14 +137,15 @@ def console_tecosim_agent_info(console: Console):
     colored_banner = vertical_color_grad_text(banner, hex_to_rgb(MAJOR_COLOR1), hex_to_rgb(MAJOR_COLOR2))
 
     dev_info = (
-        "\n\nCopyright (c) 2026, Shanghai Jiao Tong University and Yu Huang. All Rights Reserved.\n"
-        "Developed by Yu Huang at SMIL Lab, School of Integrated Circuits, Shanghai Jiao Tong University."
+        "\n\nCopyright (c) 2026, Shanghai Jiao Tong University, Yu Huang and Zikang Mei.\n"
+        "Licensed under the Apache License, Version 2.0.\n"
+        "Developed by Yu Huang and Zikang Mei at SMIL Lab, School of Integrated Circuits, Shanghai Jiao Tong University."
     )
     colored_dev_info = vertical_color_grad_text(dev_info, hex_to_rgb(MAJOR_COLOR2), hex_to_rgb(MAJOR_COLOR2))
     agent_info = colored_banner.append(colored_dev_info)
 
-    title = "Thermo-Electric Coupling Cross-level Display Simulator (TECoSim) Agent"
-    subtitle = f"Agent Version: {TECOSIM_AGENT_MAJOR_VERSION}.{TECOSIM_AGENT_MINOR_VERSION}.{TECOSIM_AGENT_UPDATE_VERSION}"
+    title = "SemiForge Agent"
+    subtitle = f"Agent Version: {SEMIFORGE_AGENT_MAJOR_VERSION}.{SEMIFORGE_AGENT_MINOR_VERSION}.{SEMIFORGE_AGENT_UPDATE_VERSION}"
     console.print(Panel.fit(agent_info, title=title, title_align="left",
                             subtitle=subtitle, subtitle_align="left",
                             padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
@@ -730,8 +732,6 @@ def normal_exit(ctx: AgentContext, board: Scoreboard, console: Console, exit_str
         try:
             save_messages(ctx, console)
             ctx.save_context(console)
-            ctx.design_man.save_to_file(console)
-            ctx.run_man.save_to_file(console)
             board.save_to_file(console)
         except Exception as e:
             sys_log.error(f"Save messages and context failed with error {e}, SemiForge exits abnormally")
@@ -750,8 +750,6 @@ def error_exit(ctx: AgentContext, board: Scoreboard, console: Console, error: Ex
     try:
         save_messages(ctx, console)
         ctx.save_context(console)
-        ctx.design_man.save_to_file(console)
-        ctx.run_man.save_to_file(console)
         board.save_to_file(console)
     except Exception as e:
         sys_log.error(f"Save messages and context failed with error {e}, SemiForge exits abnormally")

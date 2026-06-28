@@ -28,7 +28,7 @@ import argparse
 from argparse import Namespace
 
 
-def tecosim_agent_args() -> Namespace:
+def semiforge_agent_args() -> Namespace:
     """Arguments of the SemiForge agent"""
 
     """main command"""

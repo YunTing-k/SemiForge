@@ -62,7 +62,7 @@ from src.utility.basic_utils import load_configs
 from src.constants import *
 
 """program's parser"""
-arguments = cli_args.tecosim_agent_args()
+arguments = cli_args.semiforge_agent_args()
 
 """create logger"""
 sys_log = sys_logger.Logger(str(os.path.basename(__file__))[0:-3], arguments.log)
@@ -84,8 +84,8 @@ if __name__ == '__main__':
     mcps_support.mcp_entry_cli(arguments, console)
 
     """start banner and SemiForge dev info"""
-    ui_info.log_tecosim_agent_info()
-    ui_info.console_tecosim_agent_info(console)
+    ui_info.log_semiforge_agent_info()
+    ui_info.console_semiforge_agent_info(console)
 
     """create agent context"""
     ctx = AgentContext()
@@ -124,8 +124,7 @@ if __name__ == '__main__':
     """add read-only paths"""
     ctx.system_read_only_paths.append(Path(os.getcwd()) / SESSION_PATH)
     ctx.system_read_only_paths.append(Path(os.getcwd()) / LOG_PATH)
-    if ctx.agent_configs.get("SIMULATOR_PATH"):
-        ctx.system_read_only_paths.append(Path(ctx.agent_configs["SIMULATOR_PATH"]))
+
 
     """initialize builtin commands"""
     cmd_object = command.BuiltinCommands(console)  # basic commands
@@ -146,23 +145,6 @@ if __name__ == '__main__':
     console.print(f"[{MAJOR_COLOR2}]Scoreboard[/{MAJOR_COLOR2}] of this SemiForge session created")
     if ctx.args.resume is not None:
         board.load_from_file(console=console, mute=False)
-
-    """create/resume design manager"""
-    ctx.design_man.session_uuid = ctx.session_uuid
-    ctx.design_man.simulator_path = ctx.agent_configs["SIMULATOR_PATH"]
-    sys_log.debug("Design manager of this SemiForge session configured")
-    console.print(f"[{MAJOR_COLOR2}]Design manager[/{MAJOR_COLOR2}] of this SemiForge session configured")
-    if ctx.args.resume is not None:
-        ctx.design_man.load_from_file(console=console, mute=False)
-
-    """create/resume run manager"""
-    ctx.run_man.session_uuid = ctx.session_uuid
-    ctx.run_man.simulator_path = ctx.agent_configs["SIMULATOR_PATH"]
-    ctx.run_man.time_out = ctx.agent_configs["SIMULATOR_TIMEOUT_S"]
-    sys_log.debug("Run manager of this SemiForge session configured")
-    console.print(f"[{MAJOR_COLOR2}]Run manager[/{MAJOR_COLOR2}] of this SemiForge session configured")
-    if ctx.args.resume is not None:
-        ctx.run_man.load_from_file(console=console, mute=False)
 
     """create/resume workflow manager"""
     ctx.workflow_man.session_uuid = ctx.session_uuid

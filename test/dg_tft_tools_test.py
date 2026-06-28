@@ -61,8 +61,6 @@ class MockContext:
         self.cron_tasks = []
         self.cron_ids = []
         self.active_cron = 0
-        self.design_man = MagicMock()
-        self.run_man = MagicMock()
         self.tools = []
         self.skills = []
         self.loaded_skills = []

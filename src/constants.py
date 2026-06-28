@@ -21,9 +21,9 @@ MCP params, and more.
 """
 """SemiForge constants"""
 """SemiForge version"""
-TECOSIM_AGENT_MAJOR_VERSION: int = 0
-TECOSIM_AGENT_MINOR_VERSION: int = 2
-TECOSIM_AGENT_UPDATE_VERSION: int = 4
+SEMIFORGE_AGENT_MAJOR_VERSION: int = 0
+SEMIFORGE_AGENT_MINOR_VERSION: int = 2
+SEMIFORGE_AGENT_UPDATE_VERSION: int = 4
 """Basic configs"""
 # basic files
 LOG_PATH: str = "./log"
@@ -41,8 +41,6 @@ MESSAGES_NAME: str = "messages.json"
 CONTEXT_NAME: str = "context.json"
 CRON_NAME: str = "cron_configs.json"
 TASKS_NAME: str = "tasks.json"
-RUNS_NAME: str = "runs.json"
-DESIGNS_NAME: str = "designs.json"
 # subagent
 MAIN_AGENT_ID: str = "main"
 AGENT_ID_LEN: int = 8
@@ -87,8 +85,6 @@ SKILL_START_LABEL: str = "<skill_content>"
 SKILL_END_LABEL: str = "</skill_content>"
 CRON_START_LABEL: str = "<cron_tasks>"
 CRON_END_LABEL: str = "</cron_tasks>"
-SIM_DESIGN_NAME: str = "design"
-SIM_RUN_NAME: str = "run"
 FAIL_LABEL: str = "FAIL"
 UNKNOWN_LABEL: str = "UNKNOWN"
 FALLBACK_LABEL: str = "FALLBACK"
@@ -105,11 +101,6 @@ TASK_COMPLETED_LABEL: str = "completed"
 TASK_DELETED_LABEL: str = "deleted"
 TASK_DISPLAYS_BEFORE_ARCHIVED: int = 6
 MUTE_TASK_OP_INFO: bool = True
-RUN_PENDING_LABEL: str = "PENDING"
-RUN_CANCELLED_LABEL: str = "CANCELLED"
-RUN_TIMEOUT_LABEL: str = "TIMEOUT"
-RUN_RUNTIME_ERROR_LABEL: str = "RUNTIME_ERROR"
-RUN_DONE_LABEL: str = "DONE"
 """Tool names"""
 # basic tools
 TOOL_NAME_VERSION: str = "agent_version"
@@ -130,13 +121,6 @@ TOOL_NAME_SKILL: str = "skill"
 TOOL_NAME_WEB_FETCH: str = "web_fetch"
 TOOL_NAME_WEB_SEARCH: str = "web_search"
 TOOL_NAME_CALL_MCP: str = "call_mcp"
-# simulation tools
-TOOL_NAME_CHECK_SIMULATOR: str = "check_simulator"
-TOOL_NAME_INIT_DESIGN: str = "init_design"
-TOOL_NAME_QUERY_DESIGN: str = "query_design"
-TOOL_NAME_LAUNCH_SIM: str = "launch_sim"
-TOOL_NAME_QUERY_RUN: str = "query_run"
-TOOL_NAME_READ_LOG: str = "read_log"
 # DG-TFT workflow tools
 TOOL_NAME_START_WORKFLOW: str = "start_dg_tft_workflow"
 TOOL_NAME_QUERY_WORKFLOW: str = "query_dg_tft_workflow"
@@ -152,7 +136,6 @@ QUESTION_OTHER_OPTION_DESC = "Type your ideas"
 QUESTION_RECOMMEND_LABEL = "Recommended"
 BASH_TIMEOUT_MS_MAX: int = 600000
 BASH_TIMEOUT_MS_DEFAULT: int = 120000
-SIMULATOR_TIMEOUT_DEFAULT_S: int = 3600
 GLOB_FILE_ENTRIES_DEFAULT: int = 250
 GREP_FILE_HEAD_LIMIT_DEFAULT: int = 250
 READ_FILE_MAX_LINE: int = 10000
@@ -162,8 +145,6 @@ WRITE_FILE_MODE_DEFAULT: str = "write"
 WRITE_FILE_ENCODING_DEFAULT: str = "utf-8"
 EDIT_FILE_ENCODING_DEFAULT: str = "utf-8"
 WEB_SEARCH_QUERY_MIN: int = 2
-READ_LOG_MAX_LINE: int = 10000
-READ_LOG_ENCODING_DEFAULT: str = "utf-8"
 """Bash command risk"""
 BASH_HIGH_RISK_LABEL = "BASH_HIGH_RISK"  # high-risk (0)
 BASH_PACKAGE_LABEL = "BASH_PACKAGE"  # high-risk (0)

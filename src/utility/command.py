@@ -63,69 +63,6 @@ def cmd_unknown(console: Console):
     console.print(cmd_str)
 
 
-def cmd_design_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query the list of current designs"""
-    revisions = ctx.design_man.list_revisions()
-    title = f"Current Designs ({len(revisions)})"
-    cmd_str = Text()
-    for revision in revisions:
-        design_id = revision["design_id"]
-        uuid_map = revision["revision_uuids"]
-        cmd_str.append(f"Design ID: ", style=f"white")
-        cmd_str.append(f"{design_id}\n", style=f"bold {MAJOR_COLOR1}")
-        for design_uuid in uuid_map.values():
-            if_success, design, get_info = ctx.design_man.get_design_uuid(design_uuid)
-            if not if_success or design is None:
-                continue
-            cmd_str.append(f"Revision ID: ", style=f"white")
-            cmd_str.append(f"{design["design_rev"]}\n", style=f"{MAJOR_COLOR2}")
-            cmd_str.append(f" - Subject: ", style=f"white")
-            cmd_str.append(f"{design["subject"]}\n", style=f"{MAJOR_COLOR2}")
-            cmd_str.append(f" - Description: ", style=f"white")
-            cmd_str.append(f"{design["description"]}\n", style=f"bright_black")
-            if design["copy_id"] is not None:
-                cmd_str.append(f" - Copy from: ", style=f"white")
-                cmd_str.append(f"{design["copy_id"]} (rev {design["copy_rev"]})\n", style=f"{MAJOR_COLOR2}")
-            else:
-                cmd_str.append(f" - Copy from: ", style=f"white")
-                cmd_str.append(f"(None)\n", style=f"{MAJOR_COLOR2}")
-        cmd_str.append("\n")
-    if cmd_str.plain.endswith("\n"):
-        cmd_str.rstrip()
-    console.print(Panel.fit(cmd_str, title=title, title_align="left",
-                            padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
-    console.print("\n")
-
-
-def cmd_run_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query the amount of launched simulation"""
-    runs = ctx.run_man.list_runs()
-    title = f"Launched Runs ({len(runs)})"
-    cmd_str = Text()
-    for run in runs:
-        run_id = run["run_id"]
-        design_id = run["design_id"]
-        design_rev = run["design_rev"]
-        subject = run["subject"]
-        description = run["description"]
-        status = run["status"].value
-        cmd_str.append(f"Run ID: ", style=f"white")
-        cmd_str.append(f"{run_id}", style=f"bold {MAJOR_COLOR1}")
-        cmd_str.append(f", Design: ", style=f"white")
-        cmd_str.append(f"{design_id} (rev {design_rev})\n", style=f"{MAJOR_COLOR2}")
-        cmd_str.append(f"Subject: ", style=f"white")
-        cmd_str.append(f"{subject}\n", style=f"{MAJOR_COLOR2}")
-        cmd_str.append(f"Description: ", style=f"white")
-        cmd_str.append(f"{description}\n", style=f"bright_black")
-        cmd_str.append(f"Status: ", style=f"white")
-        cmd_str.append(f"{status}\n\n", style=f"{MAJOR_COLOR2}")
-    if cmd_str.plain.endswith("\n"):
-        cmd_str.rstrip()
-    console.print(Panel.fit(cmd_str, title=title, title_align="left",
-                            padding=(1, 2, 1, 2), border_style=MAJOR_COLOR2))
-    console.print("\n")
-
-
 def cmd_context(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """query the token usage, message and API requests statistics"""
     title = "SemiForge Context Usage"
@@ -1179,8 +1116,6 @@ class BuiltinCommands:
     def __init__(self, console: Console):
         self._commands: dict[str, tuple[Callable[..., Any], str, str]] = {
             "help": (self.cmd_help, "help info", "print all available builtin commands"),
-            "design_list": (cmd_design_list, "query all designs", "query the list of current designs"),
-            "run_list": (cmd_run_list, "query all runs", "query the list of all launched simulation"),
             "context": (cmd_context, "query context info", "query the token usage, message and API requests statistics"),
             "fread_list": (cmd_fread_list, "query all read files", "query the absolute paths of all read files"),
             "readonly_list": (cmd_readonly_list, "query all readonly paths", "query the absolute paths of all readonly paths"),

@@ -205,8 +205,6 @@ def save_sessions(ctx: AgentContext, board: Scoreboard, console: Console, mute: 
     try:
         save_messages(ctx, console, mute)
         ctx.save_context(console, mute)
-        ctx.design_man.save_to_file(console, mute)
-        ctx.run_man.save_to_file(console, mute)
         board.save_to_file(console, mute)
     except Exception as e:
         sys_log.error(f"Save messages and context failed with error {e}")

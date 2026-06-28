@@ -48,7 +48,6 @@ from prompt_toolkit import PromptSession
 from typing import Any, TypedDict, TYPE_CHECKING
 from rich.console import Console
 from src.tool.mcps_support import MCPToolRouter
-from src.tool.simulator_support import DesignManager, RunManager
 from src.workflow.dg_tft.manager import WorkflowManager
 from src.agent.progress import SubAgentProgress, AgentStatus
 if TYPE_CHECKING: from src.agent.subagent import SubAgent
@@ -113,8 +112,6 @@ class AgentContext:
         self.cron_tasks: list[CronTask] = []
         self.cron_ids: list[str] = []  # (don't dump)
         self.active_cron: int = 0  # (don't dump)
-        self.design_man: DesignManager = DesignManager() # (shared)
-        self.run_man: RunManager = RunManager() # (shared)
         self.workflow_man: WorkflowManager = WorkflowManager()  # (shared)
         self.agent_list: dict[str, SubAgentProgress] = {}  # agent_id -> SubAgentProgress
         self.background_agents: list[tuple[dict[str, Any], "SubAgent", threading.Thread, float]] = []  # (don't dump) (tc, agent, thread, start_time)
@@ -175,10 +172,6 @@ class AgentContext:
             TOOL_NAME_SKILL: False,
             TOOL_NAME_WEB_FETCH: False,
             TOOL_NAME_WEB_SEARCH: False,
-            # simulation tools
-            TOOL_NAME_INIT_DESIGN: False,
-            TOOL_NAME_LAUNCH_SIM: False,
-            TOOL_NAME_READ_LOG: False,
             # DG-TFT workflow tools
             TOOL_NAME_PREPARE_DATASET: False,
             TOOL_NAME_START_WORKFLOW: False,
