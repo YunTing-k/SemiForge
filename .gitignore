@@ -6,9 +6,8 @@
 /clean.bat
 /ref/
 /log
-/session/**/*.json
-/session/**/*.log
-/session/**/user_history
+/session/
+!/session/.gitkeep
 /cron/cron_configs.json
 /mcps/sources/**/
 /mcps/mcps_configs.json
@@ -22,7 +21,6 @@
 /src/workflow/**/__pycache__
 /test/__pycache__
 /testdata/
-/prepared_data/
-/outputs/
 /test_data/
+doc/TODO.md
 nul

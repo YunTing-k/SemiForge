@@ -27,15 +27,18 @@ from .schema import (
     DatasetProfile,
     StageName,
 )
+from src.constants import SESSION_PATH, WORKFLOW_RUNS_NAME
 
 sys_log = logging.getLogger("logger")
+
+_SESSION_PATH = SESSION_PATH
 
 
 class PreparationTracker:
     """Manages the lifecycle of data preparation sessions.
 
     Each preparation session has a unique prep_id, a source directory,
-    and an output directory under session/<uuid>/prepared_data/<prep_id>/.
+    and an output directory under session/<uuid>/runs/run_NNNN/data-prep/attempt_N/.
     """
 
     def __init__(self):
@@ -257,7 +260,7 @@ class WorkflowManager:
     # ──────────────────── Persistence ────────────────────
 
     def _runs_file(self) -> Path:
-        return Path(os.path.join("session", self.session_uuid, "workflow_runs.json"))
+        return Path(os.path.join(_SESSION_PATH, self.session_uuid, WORKFLOW_RUNS_NAME))
 
     def _save_runs(self) -> None:
         if not self.session_uuid:

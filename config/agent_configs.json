@@ -61,7 +61,7 @@
     "DG_TFT_MODELING_PYTHON_EXE": "G:/Anaconda3/envs/CUDA/python.exe",
     "DG_TFT_MODELING_CONDA_ENV": "CUDA",
     "DG_TFT_WORKFLOW_MAX_CONCURRENT_RUNS": 1,
-    "DG_TFT_DEFAULT_OUTPUT_ROOT": "./outputs/dg_tft_runs",
+    "DG_TFT_RUNS_SUBDIR": "runs",
     "DG_TFT_DEFAULT_CONFIG_TEMPLATE": "./src/device_modeling/dg_tft/config/model_config_new_device_template.ini",
     "DG_TFT_ENABLE_BACKGROUND_WORKFLOW": true,
     "DG_TFT_USE_IMPORT_API": false,

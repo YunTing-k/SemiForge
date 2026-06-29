@@ -290,7 +290,7 @@ class TestRunDataPreparationMocked(unittest.TestCase):
 
         with patch("src.workflow.dg_tft.data_preparer._run_worker") as mock_worker, \
              patch("src.workflow.dg_tft.data_preparer._run_verifier") as mock_verifier:
-            run_data_preparation(mock_ctx, "/raw", str(self.outdir))
+            run_data_preparation(mock_ctx, "/raw", str(self.outdir), self.prep_id)
 
             mock_worker.assert_called_once_with(mock_ctx, "/raw", str(self.outdir))
             mock_verifier.assert_called_once_with(mock_ctx, str(self.outdir))
@@ -308,7 +308,7 @@ class TestRunDataPreparationMocked(unittest.TestCase):
 
         with patch("src.workflow.dg_tft.data_preparer._run_worker", side_effect=RuntimeError("worker crash")), \
              patch("src.workflow.dg_tft.data_preparer._run_verifier"):
-            run_data_preparation(mock_ctx, "/raw", str(self.outdir))
+            run_data_preparation(mock_ctx, "/raw", str(self.outdir), self.prep_id)
 
         prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
         self.assertIsNotNone(prep)

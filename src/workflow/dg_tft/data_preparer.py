@@ -40,7 +40,6 @@ _PREP_CV_EXPECTED_SHEETS = ("cgg", "cbg", "ctg", "vds")
 # ── Configurable defaults ──
 _PREP_VERIFIER_MAX_TURNS = 12
 _PREP_VERIFIER_MODEL_TIER = "fast"
-_PREP_OUTPUT_BASE_DIR = "prepared_data"
 _PREP_AGENT_ID_PREFIX = "prep_worker"
 _PREP_SUBJECT = "DG-TFT data preparation"
 
@@ -251,15 +250,18 @@ def build_report_verification_tool() -> dict[str, Any]:
     }
 
 
-def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: str) -> None:
+def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: str, prep_id: int) -> None:
     """Run the full data preparation pipeline: worker -> verifier -> check.
 
     Called synchronously from the tool handler. Results are written to
     manifest.json and registered via PreparationTracker.
 
-    Note: prep_id is derived from output_dir (the handler already registered it).
+    Args:
+        ctx: Agent context.
+        raw_dataset_dir: Path to raw measurement data.
+        output_dir: Path to write prepared data (e.g., session/<uuid>/runs/data-prep/attempt_1/).
+        prep_id: Preparation ID registered by the caller via PreparationTracker.
     """
-    prep_id = int(Path(output_dir).name)
     console = getattr(ctx, "console", None)
     sys_log.info("Data prep %d started: raw=%s output=%s", prep_id, raw_dataset_dir, output_dir)
 

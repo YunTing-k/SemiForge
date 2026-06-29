@@ -21,9 +21,9 @@ MCP params, and more.
 """
 """SemiForge constants"""
 """SemiForge version"""
-SEMIFORGE_AGENT_MAJOR_VERSION: int = 0
-SEMIFORGE_AGENT_MINOR_VERSION: int = 2
-SEMIFORGE_AGENT_UPDATE_VERSION: int = 4
+SEMIFORGE_AGENT_MAJOR_VERSION: int = 1
+SEMIFORGE_AGENT_MINOR_VERSION: int = 0
+SEMIFORGE_AGENT_UPDATE_VERSION: int = 0
 """Basic configs"""
 # basic files
 LOG_PATH: str = "./log"
@@ -41,6 +41,10 @@ MESSAGES_NAME: str = "messages.json"
 CONTEXT_NAME: str = "context.json"
 CRON_NAME: str = "cron_configs.json"
 TASKS_NAME: str = "tasks.json"
+# workflow persistence
+WORKFLOW_RUNS_NAME: str = "workflow_runs.json"
+# workflow directory names under session/<uuid>/runs/
+PREP_SUBDIR_NAME: str = "data_prep"
 # subagent
 MAIN_AGENT_ID: str = "main"
 AGENT_ID_LEN: int = 8

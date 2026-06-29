@@ -76,7 +76,7 @@ def artifact_path(output_dir: str, subdir: str, artifact_key: str) -> Path:
     """Return the absolute path for an artifact by its logical key.
 
     Args:
-        output_dir: Root output directory (e.g., outputs/dg_tft_runs/run_0001).
+        output_dir: Root output directory (e.g., session/<uuid>/runs/run_0001).
         subdir: Stage subdirectory (e.g., '01_physical_kernel') or ''.
         artifact_key: Logical artifact key (e.g., 'fitted_params').
 

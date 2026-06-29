@@ -228,7 +228,7 @@ def run_workflow(
                 _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
                 failed_stage = sd.name
                 failed_error = sr.error or "unknown error"
-                _run_stage_diagnosis(ctx, run_id, sr, output_dir)
+                _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path_abs)
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
                               failed=True, failed_stage=failed_stage, failed_error=failed_error)
                 return False, f"Failed at {sd.name}: {sr.error}"
@@ -470,6 +470,7 @@ def _run_stage_diagnosis(
     run_id: int,
     stage_result: StageResult,
     output_dir: str,
+    config_path: str,
 ) -> None:
     """Classify a stage failure and optionally invoke an explorer subagent
     for a natural-language diagnosis.
@@ -496,6 +497,10 @@ def _run_stage_diagnosis(
     )
 
     # 2 — Subagent call (opt-in)
+    if _is_minimal_run(config_path):
+        sys_log.info("minimal_run enabled, skipping diagnosis subagent call")
+        return
+
     enabled = ctx.agent_configs.get(_DIAGNOSIS_CONFIG_KEY, True)
     if not enabled:
         sys_log.info("Diagnosis subagent disabled via %s", _DIAGNOSIS_CONFIG_KEY)
@@ -702,6 +707,10 @@ def _enforce_quality_gate(
     wm = ctx.workflow_man
     run = wm.get_run(run_id)
     stage_name = sd.name
+
+    if _is_minimal_run(config_path):
+        sys_log.info("Stage [%s] minimal_run enabled, skipping quality gate", stage_name)
+        return stage_result, []
 
     thresholds = get_quality_thresholds(ctx.agent_configs)
     if not thresholds:
@@ -991,3 +1000,13 @@ def _resolve_stage_timeout(ctx: AgentContext, sd: StageDef) -> int | None:
 
 def _elapsed_exceeds(t_start: float, timeout_s: int) -> bool:
     return (time.monotonic() - t_start) > timeout_s
+
+
+def _is_minimal_run(config_path: str) -> bool:
+    """Return True if runtime.minimal_run is set to yes in the given INI file."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(config_path, encoding="utf-8")
+        return cfg.get("runtime", "minimal_run", fallback="no").lower() == "yes"
+    except Exception:
+        return False

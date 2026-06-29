@@ -143,10 +143,8 @@ def fit_physical(cfg, p) -> None:
     max_iv = int(section["max_iv_points"])
     max_cv = int(section["max_cv_points"])
     max_nfev = float(section["max_nfev_scale"])
-    if yes(cfg, "runtime", "debug_run"):
+    if yes(cfg, "runtime", "minimal_run"):
         max_iv, max_cv, max_nfev = 1000, 500, 0.1
-    elif yes(cfg, "runtime", "quick_run"):
-        max_iv, max_cv, max_nfev = 3000, 2000, 0.3
 
     _log_stage("fit-physical: physical kernel extraction")
     run_fit_physical(
@@ -293,10 +291,8 @@ def _make_full_model_args(cfg: configparser.ConfigParser, p: dict[str, Path]) ->
         args.skip_hspice_grid_equivalence = True
         args.skip_hspice_cv_grid_equivalence = True
 
-    # Quick-run / debug
-    if yes(cfg, "runtime", "quick_run"):
-        args.quick_run = True
-    if yes(cfg, "runtime", "debug_run"):
+    # Minimal run
+    if yes(cfg, "runtime", "minimal_run"):
         args.quick_run = True
         args.epochs = 1
         args.early_stop_patience = 1
@@ -343,10 +339,8 @@ def train_hysteresis(cfg, p) -> None:
     epochs = int(section["epochs"])
     hidden_capture = int(section["hidden_capture"])
     hidden_emission = int(section["hidden_emission"])
-    if yes(cfg, "runtime", "debug_run"):
+    if yes(cfg, "runtime", "minimal_run"):
         epochs, hidden_capture, hidden_emission = 1, 4, 4
-    elif yes(cfg, "runtime", "quick_run"):
-        epochs, hidden_capture, hidden_emission = 50, 8, 8
 
     _log_stage("train-hysteresis: train SRH regime banks")
     run_train_srh(
@@ -416,13 +410,6 @@ def main() -> int:
     args = parser.parse_args()
     config_path = args.config.resolve()
     cfg = load_config(config_path)
-    debug_on = yes(cfg, "runtime", "debug_run")
-    quick_on = yes(cfg, "runtime", "quick_run")
-    if debug_on and quick_on:
-        raise ValueError(
-            "runtime.debug_run and runtime.quick_run are mutually exclusive. "
-            "Set only one to yes."
-        )
     p = paths(cfg, config_path)
     refuse_accidental_example_training(
         args.action, p["data"], allow_example_data=args.allow_example_data

@@ -276,7 +276,7 @@ class TestToolResultEdgeCases(unittest.TestCase):
 
     def setUp(self):
         self.ctx = MagicMock()
-        self.ctx.agent_configs = {"DG_TFT_OUTPUT_ROOT": "/tmp/dg_tft_out"}
+        self.ctx.agent_configs = {"DG_TFT_RUNS_SUBDIR": "runs"}
         self.ctx.workflow_man = WorkflowManager()
         self.ctx.workflow_man.session_uuid = "test_edge"
         self.ctx.workflow_man._save_runs = lambda: None

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from .dataset_inspector import is_hspice_available
 from .schema import DatasetProfile
+from src.constants import SESSION_PATH
 
 if TYPE_CHECKING:
     from src.context.agent_context import AgentContext
@@ -28,8 +29,11 @@ if TYPE_CHECKING:
 sys_log = logging.getLogger("logger")
 
 
-def _session_id(ctx: AgentContext) -> str:
-    return ctx.session_uuid or "unknown"
+def _runs_base_dir(ctx: AgentContext) -> Path:
+    """Return the base directory for workflow run outputs under session/<uuid>/runs/."""
+    session_uuid = ctx.session_uuid or "unknown"
+    runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", "runs")
+    return Path(SESSION_PATH) / session_uuid / runs_subdir
 
 
 def build_runtime_config(
@@ -51,10 +55,10 @@ def build_runtime_config(
         ctx: Agent context (for default config keys).
         profile: DatasetProfile from dataset_inspector.
         dataset_dir: Absolute path to the dataset being modeled.
-        output_root: Override for output root directory.
+        output_root: Override for output root directory (default: session/<uuid>/runs/).
         run_id: Optional run ID for generating a unique output subdirectory.
         work_dir: If given, write config files inside this directory.
-                  Otherwise uses output_root/run_<run_id>/.
+                   Otherwise uses runs_base/run_<run_id>/.
         overrides: Optional dict of "section.key" → "value" to apply after
                    writing the template-based config.
 
@@ -66,19 +70,21 @@ def build_runtime_config(
     """
     data_path = Path(dataset_dir).resolve()
     run_tag = f"run_{run_id:04d}" if run_id is not None else "run_0001"
-    session_tag = _session_id(ctx)
 
-    default_output_root = ctx.agent_configs.get("DG_TFT_DEFAULT_OUTPUT_ROOT", "./outputs/dg_tft_runs")
-    out_root = Path(output_root or default_output_root).resolve()
+    if output_root:
+        runs_base = Path(output_root).resolve()
+    else:
+        runs_base = _runs_base_dir(ctx)
 
     if work_dir:
         config_dir = Path(work_dir).resolve()
     else:
-        config_dir = out_root / session_tag / run_tag
+        config_dir = runs_base / run_tag
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    resolution = _build_resolution(ctx, profile, data_path, out_root, session_tag, run_tag)
+    output_dir = str(runs_base / run_tag)
+    resolution = _build_resolution(ctx, profile, data_path, output_dir)
 
     runtime_config_path = config_dir / "model_config.ini"
     _write_ini(ctx, profile, data_path, resolution, runtime_config_path)
@@ -108,9 +114,7 @@ def _build_resolution(
     ctx: AgentContext,
     profile: DatasetProfile,
     data_path: Path,
-    out_root: Path,
-    session_tag: str,
-    run_tag: str,
+    output_dir: str,
 ) -> dict:
     """Compute all auto-filled config values (P2-T4, P2-T5, P2-T7)."""
     hspice_ok = is_hspice_available(ctx)
@@ -120,8 +124,6 @@ def _build_resolution(
 
     hysteresis_enabled = profile.has_hysteresis
     hysteresis_dir = profile.suggested_hysteresis_dir or str(data_path)
-
-    output_dir = str(out_root / session_tag / run_tag)
 
     return {
         "data_dir": str(data_path),
@@ -231,13 +233,6 @@ def _apply_overrides(config_path: Path, overrides: dict[str, str]) -> None:
         raise ValueError(
             f"Overrides must use section.key format. "
             f"Invalid keys (missing section prefix): {invalid}"
-        )
-    debug_set = overrides.get("runtime.debug_run", "").lower()
-    quick_set = overrides.get("runtime.quick_run", "").lower()
-    if debug_set == "yes" and quick_set == "yes":
-        raise ValueError(
-            "runtime.debug_run and runtime.quick_run are mutually exclusive. "
-            "Set only one to yes."
         )
 
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)

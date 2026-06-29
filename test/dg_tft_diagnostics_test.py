@@ -779,6 +779,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        self.fake_ini = os.path.join(self.tmpdir, "dummy.ini")
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -813,7 +814,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=False)
         sr = self._make_failed_stage_result(stage_name="check-data",
                                              error="FileNotFoundError: missing.csv")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         self.assertIn("diagnosis", run.extra)
@@ -828,7 +829,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=False)
         sr = self._make_failed_stage_result(stage_name="train-static",
                                              error="loss is nan at epoch 42")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         diag = run.extra["diagnosis"]
@@ -841,7 +842,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=False)
         sr = self._make_failed_stage_result(stage_name="fit-physical",
                                              error="configparser.NoSectionError: 'paths'")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         diag = run.extra["diagnosis"]
@@ -854,7 +855,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=False)
         sr = self._make_failed_stage_result(stage_name="check-data",
                                              error="missing sheet 'long'")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         diag = run.extra["diagnosis"]
@@ -867,7 +868,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=False)
         ctx.workflow_man.get_run.return_value = None
         sr = self._make_failed_stage_result()
-        _run_stage_diagnosis(ctx, 999, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 999, sr, self.tmpdir, self.fake_ini)
 
     def test_subagent_launch_handles_failure_gracefully(self):
         from src.workflow.dg_tft.orchestrator import _run_stage_diagnosis
@@ -875,7 +876,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=True)
         sr = self._make_failed_stage_result(stage_name="check-data",
                                              error="FileNotFoundError: missing.csv")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         self.assertIn("diagnosis", run.extra)
@@ -889,7 +890,7 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=True)
         sr = self._make_failed_stage_result(stage_name="fit-physical",
                                              error="overflow encountered")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir)
+        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         diag = run.extra["diagnosis"]

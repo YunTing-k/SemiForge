@@ -2322,7 +2322,7 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
                     "overrides": {
                         "type": "object",
                         "description": "Optional. Dict of section.key=value to override in the generated model_config.ini. "
-                                       "Example: {\"full_model.epochs\": \"3\", \"full_model.quick_run\": \"yes\"}.",
+                                       "Example: {\"runtime.minimal_run\": \"yes\"} for a fast validation-only run that skips quality checks.",
                     },
                 },
                 "required": ["dataset_dir"],
@@ -2356,12 +2356,9 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         from src.workflow.dg_tft.orchestrator import run_workflow
         wm: WorkflowManager = ctx.workflow_man
 
-        output_root = ctx.agent_configs.get("DG_TFT_OUTPUT_ROOT", "")
-
         ok, run_id, now = wm.create_run(
             dataset_dir=dataset_dir,
             hysteresis_dir=hysteresis_dir,
-            output_root=output_root,
             device_name=device_name,
         )
         if not ok:
@@ -2371,8 +2368,8 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         wm.set_dataset_profile(run_id, profile)
 
         build_result = build_runtime_config(ctx, profile, dataset_dir,
-                                            output_root=output_root, run_id=run_id,
-                                            overrides=overrides)
+                                             run_id=run_id,
+                                             overrides=overrides)
         config_path = build_result["config_path"]
 
         workflow_ok, summary = run_workflow(ctx, run_id, config_path, board=board)
@@ -2627,8 +2624,12 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         raw_dataset_dir = arguments["raw_dataset_dir"]
         wm = ctx.workflow_man
 
-        from src.workflow.dg_tft.data_preparer import _PREP_OUTPUT_BASE_DIR, _PREP_WORKER_REPORT_NAME
-        output_dir = os.path.join(_PREP_OUTPUT_BASE_DIR, ctx.session_uuid, "1")
+        from src.workflow.dg_tft.data_preparer import _PREP_WORKER_REPORT_NAME
+        from src.constants import PREP_SUBDIR_NAME
+
+        # session/<uuid>/runs/data_prep/attempt_1/
+        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", "runs")
+        output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, PREP_SUBDIR_NAME, "attempt_1")
 
         existing = _check_prepared_output(output_dir)
         if existing:
@@ -2649,7 +2650,7 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
 
         from src.workflow.dg_tft.data_preparer import run_data_preparation
-        run_data_preparation(ctx, raw_dataset_dir, output_dir)
+        run_data_preparation(ctx, raw_dataset_dir, output_dir, prep_id)
 
         prep = wm.preparation_tracker.get_prep(prep_id)
         ok = prep["ok"] if prep else False

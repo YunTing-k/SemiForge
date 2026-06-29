@@ -32,7 +32,7 @@ from src.constants import (
 
 class MockContext:
     def __init__(self, configs=None):
-        self.agent_configs = configs or {"DG_TFT_OUTPUT_ROOT": "/tmp/dg_tft_out"}
+        self.agent_configs = configs or {"DG_TFT_RUNS_SUBDIR": "runs"}
         self.workflow_man = WorkflowManager()
         self.workflow_man.session_uuid = "test_session_tools"
         self.workflow_man._save_runs = lambda: None
