@@ -17,6 +17,7 @@ Revision:
 2026.6.14      Yu Huang      1.5      Add warning to subagent when they are about to run out of step budget
 2026.6.14      Yu Huang      1.6      Fix: remove unused lock/threading, parse_response propagate, cached_tokens None guard
 2026.6.21      Yu Huang      1.7      Fix: User addons cannot be inserted between tool results when LLM is deepseek
+2026.6.29      Yu Huang      1.8      Add subagent_tools, tool_handlers, stop_mode (plain_text/schema/any), stop_schemas for zero-change-2
 
 Details:
 ---------
@@ -29,7 +30,7 @@ import json
 import time
 import logging
 
-from typing import Any
+from typing import Any, Callable
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from rich.console import Console
@@ -152,6 +153,10 @@ class SubAgent:
         max_steps: int | None = None,
         warn_steps: int | None = None,
         console: Console | None = None,
+        subagent_tools: list[dict[str, Any]] | None = None,
+        tool_handlers: dict[str, Callable[..., Any]] | None = None,
+        stop_mode: str = "plain_text",
+        stop_schemas: list[str] | None = None,
     ):
         ac = parent_ctx.agent_configs
 
@@ -179,6 +184,10 @@ class SubAgent:
             raise ValueError(f"Unknown subagent type: {subagent_type}. Supported: {list(SUPPORTED_TYPES.keys())}")
         if model_type not in ("main", "medium", "fast"):
             raise ValueError(f"Unknown model_type: {model_type}. Supported: main, medium, fast")
+        if stop_mode not in ("plain_text", "schema", "any"):
+            raise ValueError(f"Unknown stop_mode: {stop_mode}. Supported: plain_text, schema, any")
+        if stop_mode == "schema" and not stop_schemas:
+            raise ValueError("stop_mode='schema' requires stop_schemas to be provided")
         """manage input args"""
         self.ctx = clone_context(parent_ctx, agent_id, subagent_type)
         self._parent_session_uuid = parent_ctx.session_uuid
@@ -205,6 +214,11 @@ class SubAgent:
         self.warn_steps = warn_steps
         self._parent_console = console
         self._dummy_progress = self._make_dummy_progress()
+        self.stop_mode = stop_mode
+        self.stop_schemas = stop_schemas or []
+        self._subagent_tool_schemas = subagent_tools or []
+        self._subagent_tool_names = {t["function"]["name"] for t in self._subagent_tool_schemas}
+        self._tool_handlers: dict[str, Callable[..., Any]] = tool_handlers or {}
         """inner status"""
         self.status = AgentStatus.PENDING
         self.result: str | None = None
@@ -258,6 +272,8 @@ class SubAgent:
                 if t.get("function", {}).get("name", "") in allowed
                     and t.get("function", {}).get("name", "") != TOOL_NAME_ASK_QUESTION
             ]
+        if self._subagent_tool_schemas:
+            self.ctx.tools.extend(self._subagent_tool_schemas)
         self.ctx.tools_prompts = len(self.ctx.tools)
 
     def build_messages(self):
@@ -275,12 +291,34 @@ class SubAgent:
                 f"You have your own INDEPENDENT scoreboard for tracking your workflow. Use `{TOOL_NAME_CREATE_TASK}` / "
                 f"`{TOOL_NAME_UPDATE_TASK}` / `{TOOL_NAME_QUERY_TASK}` as needed.\n\n"
             )
+        if self.stop_mode == "schema":
+            stop_names = ", ".join(f"`{n}`" for n in self.stop_schemas)
+            stop_guide = (
+                f"You MUST call one of [{stop_names}] to submit your final decision. "
+                f"Do NOT reply with plain text — your response will be ignored and you will be asked to use the tool.\n\n"
+            )
+        elif self.stop_mode == "any":
+            stop_guide = (
+                "You may end at any time by returning plain text or calling a tool. No specific submission format is required.\n\n"
+            )
+        elif self.stop_mode == "plain_text":
+            stop_guide = (
+                "Use tools freely during your work. When you are finished, submit your final result as plain text "
+                "(not as a tool call).\n\n"
+            )
+        else:
+            sys_log.error(f"SubAgent {self.agent_id}: unknown stop_mode={self.stop_mode}, using plain_text fallback")
+            stop_guide = (
+                "Use tools freely during your work. When you are finished, submit your final result as plain text "
+                "(not as a tool call).\n\n"
+            )
         system_text = (
             f"You are a `{self.subagent_type}` subagent spawned by the main SemiForge agent.\n\n"
             f"Your task: {self.prompt}\n\n"
             f"{board_note}"
-            "Work step by step. Use tools to gather information or make changes. When you are done, provide your final answer "
-            "as plain text (no tool calls). Do not ask the user questions – you are running autonomously.\n\n"
+            f"{stop_guide}"
+            "Work step by step. Use tools to gather information or make changes. "
+            "Do not ask the user questions – you are running autonomously.\n\n"
             f"Available agent types for reference:\n"
             f"{', '.join(f'{k}: {v}' for k, v in SUPPORTED_TYPES_DESC.items())}"
         )
@@ -349,19 +387,53 @@ class SubAgent:
                     count = len(tool_calls)
                     self.progress.tool_calls_done += count
                     self.stats["tool_calls_prompts"] += count
+                    if self.status == AgentStatus.DONE:
+                        break
                     continue
 
-                if content:
-                    self.result = content
-                    self.status = AgentStatus.DONE
-                    self.progress.status = AgentStatus.DONE
-                    break
+                if self.stop_mode == "plain_text":
+                    if content:
+                        self.result = content
+                        self.status = AgentStatus.DONE
+                        self.progress.status = AgentStatus.DONE
+                        break
 
-                if reasoning:
-                    self.result = reasoning
-                    self.status = AgentStatus.DONE
-                    self.progress.status = AgentStatus.DONE
-                    sys_log.warning(f"SubAgent {self.agent_id}: final response is reasoning-only, falling back")
+                    if reasoning:
+                        self.result = reasoning
+                        self.status = AgentStatus.DONE
+                        self.progress.status = AgentStatus.DONE
+                        sys_log.warning(f"SubAgent {self.agent_id}: final response is reasoning-only, falling back")
+                        break
+
+                elif self.stop_mode == "any":
+                    if content:
+                        self.result = content
+                        self.status = AgentStatus.DONE
+                        self.progress.status = AgentStatus.DONE
+                        break
+
+                    if reasoning:
+                        self.result = reasoning
+                        self.status = AgentStatus.DONE
+                        self.progress.status = AgentStatus.DONE
+                        sys_log.warning(f"SubAgent {self.agent_id}: final response is reasoning-only, falling back")
+                        break
+
+                elif self.stop_mode == "schema":
+                    stop_names = ", ".join(f"`{n}`" for n in self.stop_schemas)
+                    reminder = (
+                        f"{SYS_REMINDER_START_LABEL}\n"
+                        f"You must call one of [{stop_names}] to submit your decision. "
+                        f"Plain text responses are not accepted. Try again.\n"
+                        f"{SYS_REMINDER_END_LABEL}"
+                    )
+                    self.ctx.messages.append({"role": "user", "content": reminder})
+                    continue
+
+                else:
+                    sys_log.error(f"SubAgent {self.agent_id}: unknown stop_mode={self.stop_mode}")
+                    self.status = AgentStatus.ERROR
+                    self.error = f"Unknown stop_mode: {self.stop_mode}"
                     break
 
                 sys_log.error(f"SubAgent {self.agent_id}: empty response at step {step}")
@@ -374,6 +446,11 @@ class SubAgent:
             sys_log.error(f"SubAgent {self.agent_id} failed: {e}")
         finally:
             self.dump()
+        if self.stop_mode == "schema" and self.status not in (AgentStatus.DONE, AgentStatus.TIMEOUT, AgentStatus.ERROR):
+            self.status = AgentStatus.ERROR
+            names = ", ".join(f"`{n}`" for n in self.stop_schemas)
+            self.error = f"Max steps ({self.max_steps}) exhausted without calling required tool(s): {names}"
+            sys_log.error(f"SubAgent {self.agent_id}: {self.error}")
 
         return self.result
 
@@ -490,6 +567,10 @@ class SubAgent:
             self.progress.current_tool = format_tool_display(func_name, arguments)
             self.progress.last_activity = time.time()
 
+            if func_name in self._subagent_tool_names:
+                self._handle_subagent_tool(tool_call, func_name, arguments)
+                continue
+
             results, user_addon = call_tools(
                 func_name, arguments, self.ctx, self.board, self._dummy_progress
             )
@@ -522,6 +603,45 @@ class SubAgent:
 
         self.ctx.tool_results_prompts += len(tool_calls)
         self.stats["tool_results_prompts"] += len(tool_calls)
+
+    def _handle_subagent_tool(
+        self, tool_call: dict[str, Any], func_name: str, arguments: dict[str, Any],
+    ):
+        handler = self._tool_handlers.get(func_name)
+        if handler is not None:
+            try:
+                result = handler(arguments, self.ctx)
+            except Exception as e:
+                sys_log.error(f"SubAgent {self.agent_id}: handler for {func_name} failed: {e}")
+                result = {"status": FAIL_LABEL, "info": str(e)}
+            result_str = json.dumps(result, ensure_ascii=False)
+            self.ctx.messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "content": result_str,
+            })
+            return
+
+        if self.stop_mode == "schema" and func_name in self.stop_schemas:
+            self.result = json.dumps(arguments, ensure_ascii=False)
+            self.status = AgentStatus.DONE
+            self.progress.status = AgentStatus.DONE
+            sys_log.info(f"SubAgent {self.agent_id}: captured stop_schema tool {func_name}, DONE")
+            return
+
+        sys_log.warning(
+            f"SubAgent {self.agent_id}: tool `{func_name}` in subagent_tools has no handler "
+            f"and is not in stop_schemas (stop_mode={self.stop_mode}). "
+            f"This is a configuration error — the tool will be reported as failed."
+        )
+        self.ctx.messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": json.dumps(
+                {"status": FAIL_LABEL, "info": f"Tool `{func_name}` is not available — no handler registered and not a valid stop target"},
+                ensure_ascii=False,
+            ),
+        })
 
     @staticmethod
     def _make_dummy_progress() -> Progress:
