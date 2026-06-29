@@ -21,6 +21,5 @@
 /src/workflow/**/__pycache__
 /test/__pycache__
 /testdata/
-/test_data/
 doc/TODO.md
 nul

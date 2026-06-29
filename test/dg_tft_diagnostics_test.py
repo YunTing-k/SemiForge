@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -790,9 +790,35 @@ class TestRunStageDiagnosis(unittest.TestCase):
             "DG_TFT_ENABLE_DIAGNOSIS": enable_diagnosis,
             "DG_TFT_MODELING_PYTHON_EXE": sys.executable,
         }
+        mock_ctx.api_configs = {
+            "FAST_MODEL_NAME": "mock-model",
+            "FAST_MODEL_TEMPERATURE": 0.3,
+            "FAST_MODEL_MAX_TOKENS": 4096,
+            "FAST_MODEL_ENABLE_REASONING": False,
+            "FAST_MODEL_DEEPSEEK_SUPPORT": False,
+            "TIMEOUT_MS": 30000,
+        }
+        mock_ctx.mcps_configs = {}
+        mock_ctx.mcp_router = MagicMock()
+        mock_ctx.mcp_router.reg_tools = []
+        mock_ctx.llm_client = MagicMock()
+        mock_ctx.permissions = {}
+        mock_ctx.session_uuid = "test-diag"
         mock_ctx.subagent_mute = True
         mock_ctx.console = None
         mock_ctx.agent_list = {}
+        mock_ctx.to_dict = MagicMock(return_value={"mocked": True})
+        mock_ctx.system_read_only_paths = []
+        mock_ctx.read_only_paths = []
+        mock_ctx.loaded_skills = []
+        mock_ctx.skills = []
+        mock_ctx.url_caches = []
+        mock_ctx.durable_crons = []
+        mock_ctx.session_crons = []
+        mock_ctx.cron_tasks = []
+        mock_ctx.cron_ids = []
+        mock_ctx.args = MagicMock()
+        mock_ctx.args.dangerously_allow_all = True
 
         wm = MagicMock()
         run = WorkflowRun(run_id=1)
@@ -876,7 +902,11 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=True)
         sr = self._make_failed_stage_result(stage_name="check-data",
                                              error="FileNotFoundError: missing.csv")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
+        with patch(
+            "src.workflow.dg_tft.orchestrator._launch_diagnosis_subagent",
+            side_effect=RuntimeError("mock subagent failure"),
+        ):
+            _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         self.assertIn("diagnosis", run.extra)
@@ -890,7 +920,11 @@ class TestRunStageDiagnosis(unittest.TestCase):
         ctx = self._make_mock_ctx(enable_diagnosis=True)
         sr = self._make_failed_stage_result(stage_name="fit-physical",
                                              error="overflow encountered")
-        _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
+        with patch(
+            "src.workflow.dg_tft.orchestrator._launch_diagnosis_subagent",
+            side_effect=RuntimeError("mock subagent failure"),
+        ):
+            _run_stage_diagnosis(ctx, 1, sr, self.tmpdir, self.fake_ini)
 
         run = ctx.workflow_man.get_run(1)
         diag = run.extra["diagnosis"]

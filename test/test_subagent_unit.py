@@ -11,6 +11,7 @@ import sys
 import os
 import json
 import logging
+import shutil
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -633,3 +634,8 @@ if __name__ == "__main__":
     test_get_tools_no_handler_not_stop_schema()
 
     print("\n=== All SubAgent unit tests passed! ===")
+
+    # Cleanup test artifacts
+    _td = os.path.join(SESSION_PATH, "test-unit-001")
+    if os.path.exists(_td):
+        shutil.rmtree(_td, ignore_errors=True)

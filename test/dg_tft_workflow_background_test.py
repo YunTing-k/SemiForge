@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.workflow.dg_tft.schema import (
     WorkflowRun, WorkflowStatus, StageResult, StageName, DatasetProfile,
 )
+from src.constants import SESSION_PATH
 from src.workflow.dg_tft.manager import WorkflowManager
 
 
@@ -248,6 +249,7 @@ class TestPersistenceHooks(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+        shutil.rmtree(os.path.join(SESSION_PATH, "test_persist"), ignore_errors=True)
 
     def test_save_load_runs_basic(self):
         wm = WorkflowManager()

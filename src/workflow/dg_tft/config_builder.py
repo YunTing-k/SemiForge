@@ -83,7 +83,7 @@ def build_runtime_config(
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    output_dir = str(runs_base / run_tag)
+    output_dir = str((runs_base / run_tag).resolve())
     resolution = _build_resolution(ctx, profile, data_path, output_dir)
 
     runtime_config_path = config_dir / "model_config.ini"
