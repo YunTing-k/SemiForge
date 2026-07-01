@@ -81,8 +81,9 @@ def build_and_write_reports(
         success = False
 
     try:
-        # Full manifest — now that json/md exist on disk, their sizes are correct
-        full_manifest = _build_artifact_manifest(run_data, output_dir, include_reports=True)
+        # Full manifest — now that json/md exist on disk, their sizes are correct.
+        # Exclude the manifest itself (it can't stat itself before being written).
+        full_manifest = _build_artifact_manifest(run_data, output_dir, include_reports=True, include_self=False)
         with open(paths["manifest"], "w", encoding="utf-8") as f:
             json.dump(full_manifest, f, indent=2, ensure_ascii=False)
         sys_log.info("ARTIFACT_MANIFEST written: %s", paths["manifest"])
@@ -100,6 +101,7 @@ def _build_artifact_manifest(
     output_dir: str,
     *,
     include_reports: bool = True,
+    include_self: bool = True,
 ) -> dict[str, Any]:
     """Build ARTIFACT_MANIFEST.json content."""
 
@@ -146,6 +148,8 @@ def _build_artifact_manifest(
     if include_reports:
         report_paths = get_report_paths(output_dir)
         for report_key, report_path in report_paths.items():
+            if report_key == "manifest" and not include_self:
+                continue
             p = Path(report_path)
             exists = p.exists()
             items.append({
