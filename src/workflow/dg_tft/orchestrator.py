@@ -486,7 +486,9 @@ def _run_agent_stage(
         return attempt_dir, True
 
     elif stage_name == StageName.VERIFIER:
-        if not raw_dataset_dir and not fallback_ctx:
+        # In "verifier" entry (no DATA_PREP before us), copy the standard
+        # dataset into the attempt dir before verifying.
+        if not op_log.get_stage_attempts("data-prep"):
             copy_dataset_to_data_prep(dataset_dir, attempt_dir)
 
         verify_result = run_verifier_stage(ctx, attempt_dir)
