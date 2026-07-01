@@ -320,7 +320,7 @@ class TestToolHandler(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.session_dir = os.path.join("session", "test-uuid-placeholder")
+        self.session_dir = self.tmpdir.name
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -330,7 +330,7 @@ class TestToolHandler(unittest.TestCase):
         ctx.workflow_man = WorkflowManager()
         ctx.workflow_man.preparation_tracker = PreparationTracker()
         ctx.agent_configs = {}
-        ctx.session_uuid = "test-uuid-placeholder"
+        ctx.session_uuid = "00000000-0000-0000-0000-000000000000"
         if permissions is not None:
             ctx.permissions = permissions
         return ctx
@@ -341,8 +341,9 @@ class TestToolHandler(unittest.TestCase):
         progress = MagicMock()
         arguments = {"raw_dataset_dir": "/some/raw/path"}
 
-        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation"), \
-             patch("os.makedirs"):
+        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation_with_retry",
+                   return_value={"ok": True, "prep_id": 1, "output_dir": "/fake/out", "issues": []}), \
+             patch("src.tool.tool_def.SESSION_PATH", self.tmpdir.name):
             result = prepare_dg_tft_dataset(arguments, ctx, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIsNotNone(result.get("prep_id"))
@@ -362,18 +363,23 @@ class TestToolDispatch(unittest.TestCase):
     """P4.5-T2: prepare_dg_tft_dataset tool dispatch."""
 
     def test_dispatch_prepare_dataset(self):
+        import tempfile
         from src.tool.tool_dispatch import call_tools
         ctx = MagicMock()
         ctx.workflow_man = WorkflowManager()
         ctx.workflow_man.preparation_tracker = PreparationTracker()
+        ctx.agent_configs = {}
+        ctx.session_uuid = "00000000-0000-0000-0000-000000000000"
         ctx.permissions = {TOOL_NAME_PREPARE_DATASET: False}
         ctx.mcp_router = MagicMock()
         ctx.mcp_router.tool_registry = {}
         progress = MagicMock()
         board = MagicMock()
 
-        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation"), \
-             patch("os.makedirs"):
+        with tempfile.TemporaryDirectory() as td, \
+             patch("src.workflow.dg_tft.data_preparer.run_data_preparation_with_retry",
+                   return_value={"ok": True, "prep_id": 1, "output_dir": "/fake/out", "issues": []}), \
+             patch("src.tool.tool_def.SESSION_PATH", td):
             result, addon = call_tools(TOOL_NAME_PREPARE_DATASET, {"raw_dataset_dir": "/data"}, ctx, board, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIsNotNone(result.get("prep_id"))
