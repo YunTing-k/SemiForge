@@ -35,7 +35,7 @@ Revision:
 2026.6.7       Yu Huang      3.3      Support of agent tasks display & Refactor agent listening
 2026.6.9       Yu Huang      3.4      Add design and run support for simulator
 2026.6.10      Yu Huang      3.5      Add reminder for LLM to manage workflow proactively & Revise the live TUI with the
-                                       same console instance
+                                      same console instance
 2026.6.13      Yu Huang      3.6      Subagent integration: spawn, agent_list registry, background agent orchestration,
 2026.6.14      Yu Huang      3.7      Fix: summary trigger >= with if_summarized guard, tool calls spinner board pass args
                                       stale agent cleanup on session resume

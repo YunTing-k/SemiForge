@@ -355,7 +355,41 @@ New `src/workflow/dg_tft/knowledge/` directory:
 - No Chinese in code output; `sys_log` and `console.print()` complementary
 
 ### Test strategy
-864 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
+909 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
 
 ### Agent intervention boundaries
 LLM/subagent only at 3 points: data preparation, format verification, failure diagnosis. Training execution, config generation, quality gating, and report building are pure rule-based code.
+
+---
+
+## 2026-07-01 | INI Parameter Audit & Exposure (3.2)
+
+### Parameter definition tables (`param_defs.py`)
+- `PHYSICAL_FIT_PARAMS` — 3 params (max_iv_points / max_cv_points / max_nfev_scale)
+- `FULL_MODEL_PARAMS` — 11 params (epochs / lr / batch_iv / batch_cv / cv_weight / cv_residual_level / enable_cv_residual / finetune_base_pkan / early_stop_patience / early_stop_min_epochs / symbolic_training_weight)
+- `HYSTERESIS_PARAMS` — 6 params (enabled / regime / epochs / hidden_capture / hidden_emission / amp_parameterization)
+- Each param: type / lo / hi / default / desc; string params have `enum` constraint
+- `_STAGE_PARAM_MAP` — stage → (INI section, param_table) lookup
+
+### Auto-generated tool schema
+- `params_to_tool_schema(param_table, ...)` → OpenAI-compatible function call schema
+- `get_stage_param_schema(stage_name)` → one-liner per stage
+- Type mapping: int→"integer", float→"number", bool→"boolean", string→"string" (with enum)
+- Auto-injected bounds (minimum/maximum) + description; `reasoning` enforced as required
+
+### Hard guard (`quality_guard.py`)
+- `validate_agent_adjustments(params, param_table, stage_section, stage_name)` — 4 checks:
+  1. Whitelist — param key must exist in param_table
+  2. Type — string→numeric coercion for int/float; yes/no/true/false for bool
+  3. Enum — string values checked against allowed options
+  4. Bounds — out-of-range values clamped with warnings
+- Returns `(sanitized_params, warnings)` — never throws
+
+### Soft guard
+- `get_soft_guard_prompt()` — 5 self-check rules (bounds / physical plausibility / interaction / incrementality / expert knowledge)
+
+### Files
+- `src/workflow/dg_tft/param_defs.py` — new: param tables + schema gen + soft guard
+- `src/workflow/dg_tft/quality_guard.py` — added `validate_agent_adjustments()` + coerce helpers
+- `test/dg_tft_param_defs_test.py` — new: 45 tests
+- TODO.md — 3.2.1–3.2.7 all complete

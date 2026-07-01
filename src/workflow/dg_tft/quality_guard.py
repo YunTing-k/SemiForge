@@ -353,6 +353,190 @@ def _read_ini_value(ini_path: str, section: str, key: str) -> float | None:
         return None
 
 
+# ── Hard guard for Agent adjust_params output ─────────────────────
+
+def validate_agent_adjustments(
+    params: dict[str, int | float | bool | str],
+    param_table: dict[str, dict[str, object]],
+    stage_section: str,
+    stage_name: str = "",
+) -> tuple[dict[str, object], list[str]]:
+    """Validate and sanitize an Agent's ``adjust_params`` output against parameter definitions.
+
+    This is the **programmatic hard guard** — fast, no LLM involved.
+    It runs before any INI write and enforces:
+
+    1. **Whitelist** — param key must exist in ``param_table``.
+    2. **Type** — value type must match the definition (int/float/bool/string).
+    3. **Bounds** — numeric values are clamped to ``[lo, hi]``.
+    4. **Enum** — string/enum values must be one of the allowed options.
+    5. **Stage isolation** — unknown keys are silently dropped (not from this section).
+
+    Args:
+        params: Raw key→value dict from Agent (exclude ``reasoning``).
+        param_table: Parameter definition table for the current stage.
+        stage_section: INI section name (e.g. ``"physical_fit"``).
+        stage_name: Stage name for log messages.
+
+    Returns:
+        ``(sanitized, warnings)`` where ``sanitized`` has invalid/unknown
+        keys removed, types coerced where safe, and out-of-bounds values
+        clamped.  ``warnings`` is a list of human-readable messages.
+    """
+    sanitized: dict[str, object] = {}
+    warnings: list[str] = []
+    label = stage_name or stage_section
+
+    for key, raw_value in params.items():
+        # --- Step 1: Whitelist check ----------------------------------
+        pdef = param_table.get(key)
+        if pdef is None:
+            warnings.append(
+                f"[{label}] Unknown parameter '{key}' — not adjustable for this stage; dropped."
+            )
+            continue
+
+        # --- Step 2: Type check and coercion --------------------------
+        expected_type = _get_type_str(pdef)
+        try:
+            value = _coerce_value(raw_value, expected_type)
+        except (ValueError, TypeError):
+            warnings.append(
+                f"[{label}] Type mismatch for '{key}': "
+                f"expected {expected_type}, got {type(raw_value).__name__} ({raw_value!r}); dropped."
+            )
+            continue
+
+        # --- Step 3: Enum validation ----------------------------------
+        allowed_enum = _get_enum_options(pdef)
+        if allowed_enum is not None:
+            if isinstance(value, bool) or isinstance(value, str):
+                if str(value).lower() not in {str(e).lower() for e in allowed_enum}:
+                    warnings.append(
+                        f"[{label}] Invalid value for '{key}': {value!r} not in {allowed_enum}; dropped."
+                    )
+                    continue
+            else:
+                if value not in allowed_enum:
+                    warnings.append(
+                        f"[{label}] Invalid value for '{key}': {value!r} not in {allowed_enum}; dropped."
+                    )
+                    continue
+
+        # --- Step 4: Bounds clamping ----------------------------------
+        lo = _get_bound(pdef, "lo")
+        hi = _get_bound(pdef, "hi")
+        clamped_value = value
+
+        if lo is not None and isinstance(value, (int, float)):
+            if value < lo:
+                sys_log.warning(
+                    "[%s] Clamping '%s': %s → %s (bound lo=%s)",
+                    label, key, value, lo, lo,
+                )
+                warnings.append(
+                    f"[{label}] '{key}' = {value} below minimum {lo}; clamped to {lo}."
+                )
+                clamped_value = type(value)(lo)
+
+        if hi is not None and isinstance(value, (int, float)):
+            if value > hi:
+                sys_log.warning(
+                    "[%s] Clamping '%s': %s → %s (bound hi=%s)",
+                    label, key, value, hi, hi,
+                )
+                warnings.append(
+                    f"[{label}] '{key}' = {value} above maximum {hi}; clamped to {hi}."
+                )
+                clamped_value = type(value)(hi)
+
+        sanitized[key] = clamped_value
+
+    return sanitized, warnings
+
+
+# ── Helper stubs for param_table access ─────────────────────────────
+
+def _get_type_str(pdef: dict[str, object]) -> str:
+    """Extract type string safely."""
+    t = pdef.get("type", "string")
+    return str(t)
+
+
+def _get_enum_options(pdef: dict[str, object]) -> list[object] | None:
+    """Extract enum list if present."""
+    raw = pdef.get("enum")
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    return None
+
+
+def _get_bound(pdef: dict[str, object], bound_key: str) -> int | float | None:
+    """Extract a numeric bound (lo/hi) if present."""
+    val = pdef.get(bound_key)
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    return None
+
+
+def _coerce_value(raw_value: object, expected_type: str) -> int | float | bool | str:
+    """Coerce a raw value to the expected type.
+
+    Accepts numeric strings for int/float and common boolean representations.
+    Raises ValueError/TypeError on mismatch.
+    """
+    if expected_type == "int":
+        if isinstance(raw_value, bool):
+            raise TypeError("bool is not int")
+        if isinstance(raw_value, int):
+            return raw_value
+        if isinstance(raw_value, float) and raw_value == int(raw_value):
+            return int(raw_value)
+        if isinstance(raw_value, str):
+            try:
+                fv = float(raw_value)
+                return int(fv)
+            except (ValueError, TypeError):
+                raise
+        raise TypeError(f"cannot coerce {raw_value!r} to int")
+
+    if expected_type == "float":
+        if isinstance(raw_value, bool):
+            raise TypeError("bool is not float")
+        if isinstance(raw_value, (int, float)):
+            return float(raw_value)
+        if isinstance(raw_value, str):
+            try:
+                return float(raw_value)
+            except (ValueError, TypeError):
+                raise
+        raise TypeError(f"cannot coerce {raw_value!r} to float")
+
+    if expected_type == "bool":
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            lower = raw_value.strip().lower()
+            if lower in ("yes", "true", "1"):
+                return True
+            if lower in ("no", "false", "0"):
+                return False
+        if isinstance(raw_value, (int, float)):
+            return raw_value != 0
+        raise TypeError(f"cannot coerce {raw_value!r} to bool")
+
+    if expected_type == "string":
+        return str(raw_value)
+
+    raise TypeError(f"unknown expected type '{expected_type}'")
+
+
+# ── Legacy helpers ──────────────────────────────────────────────────
+
 def _clamp(section: str, key: str, value: float) -> float:
     """Clamp a value to its safety boundary.  Returns unchanged value
     if no bounds are defined.

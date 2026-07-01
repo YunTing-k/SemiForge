@@ -366,7 +366,45 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
 
 ### 测试策略
-当前 864 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+当前 909 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+
+### 测试策略
+当前 909 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
 
 ### Agent 介入边界
 LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。
+
+---
+
+## 2026-07-01 | INI 参数审计与暴露 (3.2)
+
+### 参数定义表 (`param_defs.py`)
+- `PHYSICAL_FIT_PARAMS`：3 个参数（max_iv_points / max_cv_points / max_nfev_scale）
+- `FULL_MODEL_PARAMS`：11 个参数（epochs / learning_rate / batch_iv / batch_cv / cv_weight / cv_residual_level / enable_cv_residual / finetune_base_pkan / early_stop_patience / early_stop_min_epochs / symbolic_training_weight）
+- `HYSTERESIS_PARAMS`：6 个参数（enabled / regime / epochs / hidden_capture / hidden_emission / amp_parameterization）
+- 每参数含 type / lo / hi / default / desc；string 类型额外含 enum 约束
+- `_STAGE_PARAM_MAP`：stage → (INI section, param_table) 映射
+
+### Tool Schema 自动生成
+- `params_to_tool_schema(param_table, tool_name, stage_label)` → OpenAI 兼容 function call schema
+- `get_stage_param_schema(stage_name)` → 一键获取阶段 schema
+- int → "integer"，float → "number"，bool → "boolean"，string → "string"（带 enum）
+- 自动注入 bounds（minimum/maximum）+ description
+- reasoning 字段置为 required
+
+### 程序化硬兜底 (`quality_guard.py`)
+- `validate_agent_adjustments(params, param_table, stage_section, stage_name)` — 四步校验：
+  1. 白名单：param key 必须在 param_table 中
+  2. 类型：int/float 支持 string→numeric 转换；bool 支持 yes/no/true/false 转换
+  3. Enum：string 值必须在允许列表中
+  4. 边界：超出 [lo, hi] 自动 clamp 并生成 warning
+- 返回 (sanitized_params, warnings) — 不抛异常
+
+### Agent 软兜底
+- `get_soft_guard_prompt()` — 5 条自查规则（bounds / 物理合理性 / 参数交互 / 渐进性 / 专家知识）
+
+### 文件
+- `src/workflow/dg_tft/param_defs.py` — 新建：参数表 + schema 生成 + 软兜底
+- `src/workflow/dg_tft/quality_guard.py` — 新增 `validate_agent_adjustments()` + 类型转换助手
+- `test/dg_tft_param_defs_test.py` — 新建：45 tests
+- TODO.md — 3.2.1–3.2.7 全部完成
