@@ -55,14 +55,15 @@ def build_and_write_reports(
     paths = get_report_paths(output_dir)
     success = True
 
-    # Build manifest data structure (used by json/md builders for artifact info).
-    # We defer writing it to disk until after json/md are written, so the
-    # manifest correctly reports them as existing.
-    manifest = _build_artifact_manifest(run_data, output_dir)
+    # Build artifact-only manifest (no report files yet — they don't exist).
+    # The full manifest with report file sizes is written last.
+    artifact_manifest = _build_artifact_manifest(run_data, output_dir, include_reports=False)
+
+    # Compute stage results with proper error/warning/skip fields for RUN_SUMMARY
+    stage_results_data = _prepare_stage_results_for_report(run_data)
 
     try:
-        # 1) JSON summary
-        json_summary = _build_json_summary(run_data, manifest, prep_info)
+        json_summary = _build_json_summary(run_data, artifact_manifest, prep_info, stage_results_data)
         with open(paths["json"], "w", encoding="utf-8") as f:
             json.dump(json_summary, f, indent=2, ensure_ascii=False)
         sys_log.info("RUN_SUMMARY.json written: %s", paths["json"])
@@ -71,8 +72,7 @@ def build_and_write_reports(
         success = False
 
     try:
-        # 2) Markdown summary
-        md_text = _build_md_summary(run_data, manifest, prep_info)
+        md_text = _build_md_summary(run_data, artifact_manifest, prep_info, stage_results_data)
         with open(paths["md"], "w", encoding="utf-8") as f:
             f.write(md_text)
         sys_log.info("RUN_SUMMARY.md written: %s", paths["md"])
@@ -81,11 +81,10 @@ def build_and_write_reports(
         success = False
 
     try:
-        # 3) Artifact manifest — written last so json/md exist on disk when
-        #    the manifest checks for them
-        manifest = _build_artifact_manifest(run_data, output_dir)
+        # Full manifest — now that json/md exist on disk, their sizes are correct
+        full_manifest = _build_artifact_manifest(run_data, output_dir, include_reports=True)
         with open(paths["manifest"], "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+            json.dump(full_manifest, f, indent=2, ensure_ascii=False)
         sys_log.info("ARTIFACT_MANIFEST written: %s", paths["manifest"])
     except Exception:
         sys_log.exception("Failed to write ARTIFACT_MANIFEST")
@@ -99,6 +98,8 @@ def build_and_write_reports(
 def _build_artifact_manifest(
     run_data: dict[str, Any],
     output_dir: str,
+    *,
+    include_reports: bool = True,
 ) -> dict[str, Any]:
     """Build ARTIFACT_MANIFEST.json content."""
 
@@ -142,19 +143,20 @@ def _build_artifact_manifest(
             "size_bytes": p.stat().st_size if exists else 0,
         })
 
-    report_paths = get_report_paths(output_dir)
-    for report_key, report_path in report_paths.items():
-        p = Path(report_path)
-        exists = p.exists()
-        items.append({
-            "stage": "report",
-            "artifact_key": ARTIFACT_KEY_RUN_SUMMARY if report_key != "manifest" else ARTIFACT_KEY_ARTIFACT_MANIFEST,
-            "filename": p.name,
-            "path": str(p),
-            "subdir": "",
-            "exists": exists,
-            "size_bytes": p.stat().st_size if exists else 0,
-        })
+    if include_reports:
+        report_paths = get_report_paths(output_dir)
+        for report_key, report_path in report_paths.items():
+            p = Path(report_path)
+            exists = p.exists()
+            items.append({
+                "stage": "report",
+                "artifact_key": ARTIFACT_KEY_RUN_SUMMARY if report_key != "manifest" else ARTIFACT_KEY_ARTIFACT_MANIFEST,
+                "filename": p.name,
+                "path": str(p),
+                "subdir": "",
+                "exists": exists,
+                "size_bytes": p.stat().st_size if exists else 0,
+            })
 
     return {
         "run_id": run_data.get("run_id"),
@@ -168,17 +170,13 @@ def _build_artifact_manifest(
 
 # ─── JSON summary ───────────────────────────────────────────────────
 
-def _build_json_summary(
+def _prepare_stage_results_for_report(
     run_data: dict[str, Any],
-    manifest: dict[str, Any],
-    prep_info: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Build RUN_SUMMARY.json content."""
-    status = run_data.get("status", "UNKNOWN")
+) -> list[dict[str, Any]]:
+    """Normalize stage results for use in JSON/MD report builders."""
     stage_results = run_data.get("stage_results", {})
-
     stages_list: list[dict[str, Any]] = []
-    for sn in ["check-data", "fit-physical", "train-static", "train-hysteresis"]:
+    for sn in ["data-prep", "verifier", "check-data", "fit-physical", "train-static", "train-hysteresis"]:
         sr = stage_results.get(sn)
         if sr is None:
             continue
@@ -193,6 +191,19 @@ def _build_json_summary(
                 "warnings_count": len(sr.get("warnings", [])),
                 "metrics": sr.get("metrics", {}),
             })
+    return stages_list
+
+
+def _build_json_summary(
+    run_data: dict[str, Any],
+    manifest: dict[str, Any],
+    prep_info: dict[str, Any] | None,
+    stage_results_data: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build RUN_SUMMARY.json content."""
+    if stage_results_data is None:
+        stage_results_data = _prepare_stage_results_for_report(run_data)
+    status = run_data.get("status", "UNKNOWN")
 
     summary: dict[str, Any] = {
         "run_id": run_data.get("run_id"),
@@ -206,7 +217,7 @@ def _build_json_summary(
         "temperature_enabled": run_data.get("temperature_enabled", False),
         "warnings_count": len(run_data.get("warnings", [])),
         "errors_count": len(run_data.get("errors", [])),
-        "stages": stages_list,
+        "stages": stage_results_data,
         "artifacts_summary": {
             "total": manifest.get("total_items", 0),
             "missing": manifest.get("missing_items", 0),
@@ -241,8 +252,11 @@ def _build_md_summary(
     run_data: dict[str, Any],
     manifest: dict[str, Any],
     prep_info: dict[str, Any] | None,
+    stage_results_data: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build RUN_SUMMARY.md content."""
+    if stage_results_data is None:
+        stage_results_data = _prepare_stage_results_for_report(run_data)
     lines: list[str] = []
 
     lines.append(f"# DG-TFT Modeling Run #{run_data.get('run_id', '?')}")
@@ -271,30 +285,25 @@ def _build_md_summary(
     # ── Stage results ──
     lines.append("## 2. Stage Results")
     lines.append("")
-    stage_results = run_data.get("stage_results", {})
-    for sn in ["check-data", "fit-physical", "train-static", "train-hysteresis"]:
-        sr = stage_results.get(sn)
-        if sr is None:
-            continue
-        if isinstance(sr, dict):
-            display = STAGE_DISPLAY_NAMES.get(sn, sn)
-            if sr.get("skipped"):
-                lines.append(f"### {display} — [SKIPPED] {sr.get('skip_reason', '')}")
-            elif sr.get("ok"):
-                lines.append(f"### {display} — [PASS]")
-            else:
-                lines.append(f"### {display} — [FAIL]")
-                if sr.get("error"):
-                    lines.append(f"")
-                    lines.append(f"```text")
-                    lines.append(f"{sr['error']}")
-                    lines.append(f"```")
-            lines.append("")
-            metrics = sr.get("metrics", {})
-            if metrics:
-                for k, v in metrics.items():
-                    lines.append(f"- **{k}**: {v}")
+    for sr in stage_results_data:
+        display = sr.get("display_name", sr["stage"])
+        if sr.get("skipped"):
+            lines.append(f"### {display} — [SKIPPED] {sr.get('skip_reason', '')}")
+        elif sr.get("ok"):
+            lines.append(f"### {display} — [PASS]")
+        else:
+            lines.append(f"### {display} — [FAIL]")
+            if sr.get("error"):
                 lines.append("")
+                lines.append("```text")
+                lines.append(sr["error"])
+                lines.append("```")
+        lines.append("")
+        metrics = sr.get("metrics", {})
+        if metrics:
+            for k, v in metrics.items():
+                lines.append(f"- **{k}**: {v}")
+            lines.append("")
 
     # ── Artifacts ──
     lines.append("## 3. Artifacts")

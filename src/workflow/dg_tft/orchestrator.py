@@ -319,6 +319,7 @@ def run_workflow(
                 pointer += 1
                 continue
 
+        t_stage_start = time.monotonic()
         sr = run_stage(
             ctx, sd.action, config_path,
             cwd=str(Path(config_path).parent),
@@ -326,6 +327,7 @@ def run_workflow(
             extra_args=sd.extra_args,
             stream_console=True,
         )
+        stage_duration = time.monotonic() - t_stage_start
 
         # ── Hard failure ──
         if not sr.ok:
@@ -379,7 +381,7 @@ def run_workflow(
             wm.add_warning(run_id, f"Stage {sd.name} reported success but missing artifacts: {missing}")
             sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
-        _log_initial_attempt(op_log, sd.name, sr, output_dir)
+        _log_initial_attempt(op_log, sd.name, sr, output_dir, stage_duration)
 
         sr, quality_issues = _enforce_quality_gate(
             ctx, run_id, sd, sr, config_path, output_dir, timeout, op_log,
@@ -1077,6 +1079,7 @@ def _log_initial_attempt(
     stage_name: str,
     sr: StageResult,
     output_dir: str,
+    duration_s: float = 0.0,
 ) -> None:
     """Log attempt_1 to the operation log unconditionally.
 
@@ -1092,6 +1095,7 @@ def _log_initial_attempt(
         metrics=dict(metrics),
         ok=sr.ok,
         error=sr.error or "",
+        duration_s=duration_s,
     )
     op_log.append_attempt(stage_name, entry)
 

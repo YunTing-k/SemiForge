@@ -273,7 +273,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertEqual(summary["run_id"], 1)
         self.assertEqual(summary["status"], "DONE")
         self.assertEqual(len(summary["stages"]), 3)
-        self.assertEqual(summary["stages"][0]["display_name"], "Dataset Audit")
+        self.assertEqual(summary["stages"][0]["display_name"], "Audit Dataset")
 
     def test_build_json_summary_includes_prep_info(self):
         run_data = self._make_run_data()

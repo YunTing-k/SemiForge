@@ -61,10 +61,12 @@ STAGE_ARTIFACTS: dict[str, dict[str, list[str]]] = {
 
 # Friendly display names for each stage
 STAGE_DISPLAY_NAMES: dict[str, str] = {
-    "check-data": "Dataset Audit",
-    "fit-physical": "Physical Kernel Fitting",
-    "train-static": "Static Model Training",
-    "train-hysteresis": "Hysteresis Training",
+    "data-prep": "Prepare Dataset",
+    "verifier": "Verify Dataset",
+    "check-data": "Audit Dataset",
+    "fit-physical": "Fit Physical Kernel",
+    "train-static": "Train Static Model",
+    "train-hysteresis": "Train Hysteresis",
     "deployment-validate": "Deployment Validation",
     "final-report": "Final Report",
 }
