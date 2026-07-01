@@ -58,7 +58,7 @@ from src.context.agent_context import AgentContext, RequestLLMCancelled
 from src.tool.scoreboard import Scoreboard
 from src.tool.tool_dispatch import ToolCallsCancelled
 from src.tool import tool_def, tool_execute, skills_support, mcps_support, summarize_support, file_io_support, cron_support
-from src.utility.basic_utils import load_configs
+from src.utility.basic_utils import load_configs, get_console
 from src.constants import *
 
 """program's parser"""
@@ -68,7 +68,7 @@ arguments = cli_args.semiforge_agent_args()
 sys_log = sys_logger.Logger(str(os.path.basename(__file__))[0:-3], arguments.log)
 
 """create console"""
-console = Console()
+console = get_console()
 
 if __name__ == '__main__':
     """Entry point for session operations"""

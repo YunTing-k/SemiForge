@@ -230,8 +230,9 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
     worker_report_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
     if result:
         try:
-            with open(worker_report_path, "w", encoding="utf-8") as f:
-                f.write(result)
+            if not os.path.exists(worker_report_path):
+                with open(worker_report_path, "w", encoding="utf-8") as f:
+                    f.write(result)
         except Exception:
             pass
 
@@ -442,6 +443,11 @@ def run_data_preparation_with_retry(
 
     if not final_ok:
         op_log.set_final_status("failed")
+
+    if last_attempt_dir:
+        manifest = _build_manifest(last_attempt_dir, run_id, final_ok, final_issues)
+        _write_manifest(last_attempt_dir, manifest)
+        _write_file_manifest(last_attempt_dir, run_id)
 
     return {
         "ok": final_ok,
