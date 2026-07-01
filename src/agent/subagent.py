@@ -42,6 +42,13 @@ from src.tool import tool_def
 from src.tool.tool_dispatch import call_tools
 from src.agent.progress import AgentStatus, SubAgentProgress, SUPPORTED_TYPES, PERMISSION_PRESETS, SUPPORTED_TYPES_DESC
 from src.utility.basic_utils import truncate_tool_result
+from src.tool.subagent_tools import (
+    SUBAGENT_TOOL_INSPECT_XLSX,
+    SUBAGENT_TOOL_ADJUST_PARAMS,
+    SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
+    SUBAGENT_TOOL_FALLBACK_TO_VERIFIER,
+    SUBAGENT_TOOL_REPORT_VERIFICATION,
+)
 from src.constants import *
 
 sys_log = logging.getLogger('logger')
@@ -65,6 +72,12 @@ _TOOL_DISPLAY_KEYS: dict[str, str] = {
     TOOL_NAME_WEB_SEARCH: "query",
     TOOL_NAME_CREATE_TASK: "subject",
     TOOL_NAME_SKILL: "name",
+    # subagent tools
+    SUBAGENT_TOOL_INSPECT_XLSX: "path",
+    SUBAGENT_TOOL_ADJUST_PARAMS: "section",
+    SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS: "target",
+    SUBAGENT_TOOL_FALLBACK_TO_VERIFIER: "target",
+    SUBAGENT_TOOL_REPORT_VERIFICATION: "summary",
 }
 
 
