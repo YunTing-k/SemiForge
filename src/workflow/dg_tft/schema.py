@@ -161,3 +161,76 @@ class WorkflowRun:
         run = cls(**{k: v for k, v in d.items() if k != "stage_results"})
         run.stage_results = stage_results
         return run
+
+
+@dataclass
+class PrepHandoff:
+    """Structured handoff from the Preparer worker to the Verifier.
+
+    The Preparer SubAgent produces this after processing raw measurement
+    data into standardized *_train.xlsx format.
+    """
+
+    observations: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    potential_issues: list[str] = field(default_factory=list)
+    output_manifest: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PrepHandoff:
+        return cls(
+            observations=list(d.get("observations", [])),
+            actions=list(d.get("actions", [])),
+            potential_issues=list(d.get("potential_issues", [])),
+            output_manifest=dict(d.get("output_manifest", {})),
+        )
+
+    @classmethod
+    def from_worker_report(cls, report: dict[str, Any]) -> PrepHandoff:
+        """Construct a PrepHandoff from a worker_report.json dict."""
+        files = report.get("files_processed", [])
+        families = report.get("iv_families", [])
+        issues = report.get("issues", [])
+        return cls(
+            observations=[f"Processed {len(files)} files across families: {', '.join(families)}" if families else ""],
+            actions=[f"Output files: {', '.join(files[:10])}" if files else ""] + ([f"({len(files) - 10} more)" if len(files) > 10 else ""] if len(files) > 10 else []),
+            potential_issues=list(issues),
+            output_manifest={
+                "iv_files": sum(1 for f in files if "CV_train" not in f),
+                "cv_files": 1 if report.get("cv_found") else 0,
+                "it_files": 0,  # inferred separately
+            },
+        )
+
+
+@dataclass
+class VerifierFeedback:
+    """Structured feedback from the Verifier after inspecting prepared data.
+
+    Produced by the Verifier SubAgent via the report_verification tool.
+    """
+
+    overall_ok: bool = False
+    critical_issues: list[dict[str, str]] = field(default_factory=list)
+    suggestion: str = ""
+    worker_notes: str = ""
+    summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> VerifierFeedback:
+        raw_critical = d.get("critical_issues", [])
+        if isinstance(raw_critical, list) and raw_critical and isinstance(raw_critical[0], str):
+            raw_critical = [{"file": "", "issue": s} for s in raw_critical]
+        return cls(
+            overall_ok=d.get("overall_ok", False),
+            critical_issues=raw_critical,
+            suggestion=d.get("suggestion", ""),
+            worker_notes=d.get("worker_notes", ""),
+            summary=d.get("summary", ""),
+        )

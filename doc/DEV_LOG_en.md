@@ -240,6 +240,68 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
+## 2026-07-01 | Data Input Stage (TODO 2.5.1–2.5.11) — Version 1.2.0
+
+### 2.5.1 handoff data structures (`schema.py`)
+- `PrepHandoff` — structured handoff from Preparer to Verifier: `observations` / `actions` / `potential_issues` / `output_manifest`
+- `VerifierFeedback` — structured Verifier feedback: `overall_ok` / `critical_issues` / `suggestion` / `worker_notes` / `summary`
+- `PrepHandoff.from_worker_report()` — factory method to convert existing `worker_report.json` into handoff
+- `VerifierFeedback.from_dict()` — supports legacy string-list format for `critical_issues`
+
+### 2.5.5 `subagent_tools.py` enhancement
+- `inspect_xlsx` handler: replaced placeholder with real `openpyxl` logic (sheet names + column headers); returns `{"sheets": {...}, "sheet_count": N}`
+- Added `_REPORT_VERIFICATION_SCHEMA` — output tool schema for Verifier, equivalent to old `build_report_verification_tool()`
+- `_STAGE_TOOLS` now includes `"data-prep"` stage: `inspect_xlsx` (investigation tool) + `report_verification` (output tool)
+- Imported `FAIL_LABEL` for handler error returns
+
+### 2.5.4 Verifier migrated to SubAgent
+- **Deleted**: `_build_verifier_tools()` / `_execute_verifier_tool()` / `_run_verifier()` manual LLM loop (~150 lines)
+- **Deleted**: `build_report_verification_tool()` — schema moved to `subagent_tools.py`
+- **Added**: `_run_verifier_subagent(ctx, output_dir, report_verification_tool_name)` — `explorer` type + `stop_mode="schema"` + `stop_schemas=["report_verification"]`
+  - Verifier SubAgent uses `glob_file` (built-in explorer type) to list files
+  - Uses `inspect_xlsx` (subagent tool, with handler) to inspect XLSX structure
+  - Uses `report_verification` (subagent tool, no handler, output tool) to submit structured findings
+  - Graceful fallback on failure: returns `overall_ok=False` placeholder dict
+- Verifier prompt updated: `read_file` → `inspect_xlsx`
+
+### 2.5.2-2.5.3 worker handoff injection
+- `_run_worker()` now accepts optional `handoff_history_text` — injected into prompt as "Previous attempt feedback" when non-empty
+- `_get_handoff_history(op_log)` — reads prior data-prep attempts from `operation_log.json` and builds a text summary of handoffs + verifier feedback
+
+### 2.5.6 retry loop
+- `_run_worker_and_verifier()` — single worker→verifier→check cycle; returns `(handoff, verifier_feedback, ok, issues)`
+- `run_data_preparation_with_retry()` — main Preparer-Verifier loop:
+  - Each attempt creates `data_prep/attempt_N/` directory
+  - Initializes `OperationLog` at `run_output_dir/operation_log.json`
+  - Initial attempt trigger = `INITIAL`, retry = `VERIFIER_FAIL`
+  - Worker exceptions do not interrupt loop; next attempt continues
+  - All attempts recorded to operation_log (handoff + verifier_feedback)
+  - Success: `final_status="done"`, exhausted: `final_status="exhausted"`
+- `run_data_preparation()` kept as compatibility wrapper, delegates to `_run_worker_and_verifier`
+
+### 2.5.7 standard data entry
+- `run_verification_only()` — skips Preparer, Verifier inspects provided dataset directly
+  - Pass: use existing data for subsequent stages
+  - Fail + `raw_dataset_dir` provided: fallback to `run_data_preparation_with_retry()`
+  - Fail + no fallback: return failure immediately
+
+### Operation Log enhancements
+- `AttemptTrigger` enum: added `VERIFIER_FAIL` and `PREP_RETRY`
+- `OperationLog` now initialized during data prep (before orchestrator); orchestrator's `run_workflow()` can reuse same file
+
+### Other changes
+- `tool_def.py`: `prepare_dg_tft_dataset` handler variable renamed to `run_output_dir` / `attempt_1_dir` for clarity
+- `data_preparer.py`: removed unused constants `_PREP_VERIFIER_MAX_TURNS` / `_PREP_VERIFIER_MODEL_TIER`; removed unused imports `client` / `deepseek_support`
+- `agent_configs.json`: `DG_TFT_PREP_MAX_RETRIES` / `DG_TFT_PREP_HANDOFF_HISTORY_SIZE` already exist
+- `DG_TFT_RUNS_SUBDIR` / `PREP_SUBDIR_NAME` constants provided by zero-change-1
+
+### Tests
+- Updated `test/dg_tft_preparer_test.py`: removed `TestBuildReportVerificationTool`, mocks patched from `_run_worker`/`_run_verifier` to `_run_worker_and_verifier`
+- Added `test/dg_tft_prep_retry_test.py`: 31 tests — `PrepHandoff`/`VerifierFeedback` serialization, `inspect_xlsx` handler, data-prep stage tool registration, `AttemptTrigger` enum values, handoff history building, worker handoff reading, retry loop (success/retry/exhausted/exception continuation/directory creation/operation_log writing/retry triggers), standard data entry (pass/fail no fallback/fallback to Preparer)
+- Full suite: 864 tests pass (0 failures, 0 errors)
+
+---
+
 ## Lessons Learned
 
 ### Python module double-import trap
@@ -259,7 +321,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 - No Chinese in code output; `sys_log` and `console.print()` complementary
 
 ### Test strategy
-833 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
+864 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
 
 ### Agent intervention boundaries
 LLM/subagent only at 3 points: data preparation, format verification, failure diagnosis. Training execution, config generation, quality gating, and report building are pure rule-based code.

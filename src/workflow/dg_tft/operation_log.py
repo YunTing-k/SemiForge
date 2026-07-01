@@ -32,6 +32,8 @@ class AttemptTrigger(str, Enum):
     FALLBACK_SENT = "fallback_sent"
     FALLBACK_RECEIVED = "fallback_received"
     UPSTREAM_CHANGED = "upstream_changed"
+    VERIFIER_FAIL = "verifier_fail"
+    PREP_RETRY = "prep_retry"
 
 
 @dataclass

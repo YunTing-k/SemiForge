@@ -41,7 +41,7 @@ as defined in doc/TODO.md sections 3.2–3.4.
 
 from typing import Any, Callable
 
-from src.constants import SUCCESS_LABEL
+from src.constants import SUCCESS_LABEL, FAIL_LABEL
 
 # ---------------------------------------------------------------------------
 # Tool name constants — use these everywhere instead of bare strings
@@ -72,8 +72,20 @@ __all__ = [
 
 
 def _inspect_xlsx_handler(arguments: dict[str, Any], ctx) -> dict[str, Any]:
-    """Placeholder handler for inspect_xlsx — real implementation in Phase 2."""
-    return {"status": SUCCESS_LABEL, "path": arguments.get("path", "")}
+    """Inspect an XLSX file: return sheet names and column headers."""
+    try:
+        import openpyxl
+        file_path = arguments.get("path", "")
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        sheets = {}
+        for name in wb.sheetnames:
+            ws = wb[name]
+            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            sheets[name] = {"columns": [str(h) if h is not None else "" for h in headers]}
+        wb.close()
+        return {"status": SUCCESS_LABEL, "sheets": sheets, "sheet_count": len(sheets)}
+    except Exception as e:
+        return {"status": FAIL_LABEL, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +142,72 @@ _FALLBACK_TO_PREVIOUS_SCHEMA: dict[str, Any] = {
     },
 }
 
+_REPORT_VERIFICATION_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_REPORT_VERIFICATION,
+        "description": (
+            "Submit structured verification findings for a prepared DG-TFT dataset. "
+            "Call this tool exactly once at the end — do not output free text."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["overall_ok"],
+            "additionalProperties": False,
+            "properties": {
+                "overall_ok": {
+                    "type": "boolean",
+                    "description": "True if all critical checks pass."
+                },
+                "iv_families": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "family": {"type": "string"},
+                            "files_found": {"type": "array", "items": {"type": "string"}},
+                            "long_sheet_ok": {"type": "boolean"},
+                            "required_columns_ok": {"type": "boolean"},
+                            "missing_columns": {"type": "array", "items": {"type": "string"}},
+                            "issues": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                    "description": "Per-family IV check results.",
+                },
+                "cv_check": {
+                    "type": "object",
+                    "properties": {
+                        "file_found": {"type": "boolean"},
+                        "sheets_ok": {"type": "object"},
+                        "issues": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "description": "CV_train.xlsx check results.",
+                },
+                "it_check": {
+                    "type": "object",
+                    "properties": {
+                        "dir_found": {"type": "boolean"},
+                        "file_count": {"type": "integer"},
+                        "issues": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "description": "I-t directory check results.",
+                },
+                "summary": {"type": "string", "description": "Brief summary of findings."},
+            },
+        },
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Stage tool registry — populated in Phase 2/3
 # ---------------------------------------------------------------------------
 
 _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]]]] = {
+    "data-prep": (
+        [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA],
+        {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+    ),
     "fit-physical": (
         [_INSPECT_XLSX_SCHEMA, _ADJUST_PARAMS_SCHEMA, _FALLBACK_TO_PREVIOUS_SCHEMA],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},

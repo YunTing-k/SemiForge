@@ -19,9 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from src.utility import client
 from src.context.agent_context import AgentContext
-from src.context.prompt import deepseek_support
 from src.constants import PREPARER_AGENT_LABEL
 
 sys_log = logging.getLogger("logger")
@@ -38,8 +36,6 @@ _PREP_IV_SHEET_NAME = "long"
 _PREP_CV_EXPECTED_SHEETS = ("cgg", "cbg", "ctg", "vds")
 
 # ── Configurable defaults ──
-_PREP_VERIFIER_MAX_TURNS = 12
-_PREP_VERIFIER_MODEL_TIER = "fast"
 _PREP_AGENT_ID_PREFIX = "prep_worker"
 _PREP_SUBJECT = "DG-TFT data preparation"
 
@@ -123,8 +119,8 @@ You are a verification specialist for DG-TFT data preparation. A worker has proc
 
 **Instructions**:
 1. Use `glob_file` to list all files in the output directory (including the it/ subdirectory).
-2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `read_file` to check that it has a "{iv_sheet}" sheet with columns: {iv_columns}.
-3. For `CV_train.xlsx`, check that it exists and report its sheets (expected: {cv_sheets}).
+2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `inspect_xlsx` to check that it has a "{iv_sheet}" sheet with columns: {iv_columns}.
+3. For `CV_train.xlsx`, use `inspect_xlsx` to check that it exists and report its sheets (expected: {cv_sheets}).
 4. For the `it/` subdirectory, check if it exists and how many files it contains.
 5. After inspecting, call `report_verification` with your structured findings.
 
@@ -132,151 +128,30 @@ You are a verification specialist for DG-TFT data preparation. A worker has proc
 """
 
 
-def _build_verifier_tools() -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "glob_file",
-                "description": "List files in a directory matching a pattern.",
-                "parameters": {
-                    "type": "object",
-                    "required": ["path", "pattern"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "path": {"type": "string", "description": "Directory path to search."},
-                        "pattern": {"type": "string", "description": "Glob pattern, e.g. * or *.xlsx."},
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read first few lines of an xlsx file to inspect sheet names and headers.",
-                "parameters": {
-                    "type": "object",
-                    "required": ["file_path"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Absolute path to the .xlsx file."},
-                    },
-                },
-            },
-        },
-        build_report_verification_tool(),
-    ]
-
-
-def _execute_verifier_tool(func_name: str, arguments: dict) -> str:
-    """Execute a verifier tool inline — returns JSON string result."""
-    if func_name == "glob_file":
-        base = Path(arguments["path"])
-        pattern = arguments.get("pattern", "*")
-        matches = sorted(base.glob(pattern))
-        result = [str(m.relative_to(base)) if m.is_relative_to(base) else str(m) for m in matches]
-        return json.dumps({"files": result, "count": len(result)})
-    elif func_name == "read_file":
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(arguments["file_path"], read_only=True, data_only=True)
-            sheets = {}
-            for name in wb.sheetnames:
-                ws = wb[name]
-                headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-                sheets[name] = {"columns": [str(h) for h in headers]}
-            wb.close()
-            return json.dumps(({"sheets": sheets, "sheet_count": len(sheets)}))
-        except Exception as e:
-            return json.dumps({"error": str(e)})
-    else:
-        return json.dumps({"error": f"Unknown tool: {func_name}"})
-
-
-def build_report_verification_tool() -> dict[str, Any]:
-    """Build the report_verification tool definition for the verifier LLM."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "report_verification",
-            "description": (
-                "Report the verification findings for prepared DG-TFT dataset. "
-                "Call this tool with your structured results — do not output free text."
-            ),
-            "parameters": {
-                "type": "object",
-                "required": ["overall_ok"],
-                "additionalProperties": False,
-                "properties": {
-                    "overall_ok": {
-                        "type": "boolean",
-                        "description": "True if all CRITICAL checks pass; False if any required file/sheet/column is missing."
-                    },
-                    "iv_families": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "family": {"type": "string"},
-                                "files_found": {"type": "array", "items": {"type": "string"}},
-                                "long_sheet_ok": {"type": "boolean"},
-                                "required_columns_ok": {"type": "boolean"},
-                                "missing_columns": {"type": "array", "items": {"type": "string"}},
-                                "issues": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
-                    "cv_check": {
-                        "type": "object",
-                        "properties": {
-                            "file_found": {"type": "boolean"},
-                            "sheets_ok": {"type": "object"},
-                            "issues": {"type": "array", "items": {"type": "string"}},
-                        },
-                    },
-                    "it_check": {
-                        "type": "object",
-                        "properties": {
-                            "dir_found": {"type": "boolean"},
-                            "file_count": {"type": "integer"},
-                            "issues": {"type": "array", "items": {"type": "string"}},
-                        },
-                    },
-                    "summary": {"type": "string"},
-                },
-            },
-        },
-    }
-
-
 def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: str, prep_id: int) -> None:
     """Run the full data preparation pipeline: worker -> verifier -> check.
 
-    Called synchronously from the tool handler. Results are written to
-    manifest.json and registered via PreparationTracker.
+    Compatibility wrapper — delegates to :func:`run_data_preparation_with_retry`
+    with max_retries=1 (no retries). New code should call the retry function directly.
 
     Args:
         ctx: Agent context.
         raw_dataset_dir: Path to raw measurement data.
-        output_dir: Path to write prepared data (e.g., session/<uuid>/runs/data-prep/attempt_1/).
+        output_dir: Path to write prepared data.
         prep_id: Preparation ID registered by the caller via PreparationTracker.
     """
     console = getattr(ctx, "console", None)
     sys_log.info("Data prep %d started: raw=%s output=%s", prep_id, raw_dataset_dir, output_dir)
 
     if console and not getattr(ctx, "subagent_mute", False):
-        console.print(f"[bold]DG-TFT Data Preparation {prep_id}[/bold] [bright_black]— converting raw measurements to *_train.xlsx format[/bright_black]")
+        console.print(f"[bold]DG-TFT Data Preparation[/bold] [bright_black]— converting raw measurements to *_train.xlsx format[/bright_black]")
 
     try:
-        if console and not getattr(ctx, "subagent_mute", False):
-            console.print("  [bold]Step 1/3[/bold] [bright_black]Worker subagent processing raw files ...[/bright_black]")
-        _run_worker(ctx, raw_dataset_dir, output_dir)
-
-        if console and not getattr(ctx, "subagent_mute", False):
-            console.print("  [bold]Step 2/3[/bold] [bright_black]Verifier checking output structure ...[/bright_black]")
-        _run_verifier(ctx, output_dir)
-
+        from src.tool.subagent_tools import SUBAGENT_TOOL_REPORT_VERIFICATION
+        handoff, verifier_feedback, ok, issues = _run_worker_and_verifier(
+            ctx, raw_dataset_dir, output_dir, SUBAGENT_TOOL_REPORT_VERIFICATION,
+            handoff_history="",
+        )
     except Exception as e:
         sys_log.error("Data prep %d failed: %s", prep_id, e)
         if console and not getattr(ctx, "subagent_mute", False):
@@ -286,7 +161,6 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
         ctx.workflow_man.preparation_tracker.update_prep(prep_id, False, [str(e)])
         return
 
-    ok, issues = _check_output(output_dir)
     manifest = _build_manifest(output_dir, prep_id, ok, issues)
     _write_manifest(output_dir, manifest)
     _write_file_manifest(output_dir, prep_id)
@@ -294,9 +168,9 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
 
     if console and not getattr(ctx, "subagent_mute", False):
         if ok:
-            console.print(f"  [bold green]Step 3/3[/bold green] [bright_black]Verification passed ({len(issues)} warnings)[/bright_black]")
+            console.print(f"  [bold green]Verification[/bold green] [bright_black]passed ({len(issues)} warnings)[/bright_black]")
         else:
-            console.print(f"  [bold red]Step 3/3[/bold red] [bright_black]Verification failed[/bright_black]")
+            console.print(f"  [bold red]Verification[/bold red] [bright_black]failed[/bright_black]")
             for issue in issues:
                 if "CRITICAL" in issue:
                     console.print(f"    [bold red]{issue}[/bold red]")
@@ -306,11 +180,15 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     sys_log.info("Data prep %d done: ok=%s issues=%s", prep_id, ok, issues)
 
 
-def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
+def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_history_text: str = "") -> None:
     """Launch a worker subagent to process raw data into standardized format.
 
-    The worker runs synchronously in the current thread with its own
-    SubAgent instance and tool loop.
+    Args:
+        ctx: Agent context.
+        raw_dir: Path to raw measurement data.
+        output_dir: Destination directory for prepared files.
+        handoff_history_text: Previous handoff and verifier feedback to inject
+                              into the worker's prompt (for retry attempts).
     """
     modeling_exe = ctx.agent_configs.get("DG_TFT_MODELING_PYTHON_EXE", "python")
     python_exe = modeling_exe if modeling_exe and Path(modeling_exe).exists() else "python"
@@ -322,6 +200,9 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
         report_name=_PREP_WORKER_REPORT_NAME,
         python_exe=python_exe,
     )
+    if handoff_history_text:
+        prompt += f"\n\n**Previous attempt feedback** (use this to fix issues):\n{handoff_history_text}"
+
     from src.agent.subagent import SubAgent
 
     agent = SubAgent(
@@ -355,111 +236,367 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str) -> None:
             pass
 
 
-def _run_verifier(ctx: AgentContext, output_dir: str) -> None:
-    """Run a lightweight LLM verifier with a mini tool execution loop.
+def _run_verifier_subagent(ctx: AgentContext, output_dir: str, report_verification_tool_name: str) -> dict[str, Any] | None:
+    """Run a SubAgent-based verifier to inspect prepared data and report findings.
 
-    The verifier has glob_file, read_file (xlsx), and report_verification tools.
-    It inspects the output directory and produces a structured report.
+    The verifier uses ``stop_mode="schema"`` with ``report_verification`` as its
+    output tool. It inspects xlsx files via ``inspect_xlsx`` (investigation tool)
+    and lists the output directory via ``glob_file`` (from the explorer type).
+
+    Args:
+        ctx: Agent context.
+        output_dir: Directory containing prepared training files.
+        report_verification_tool_name: Name constant for the report_verification tool.
+
+    Returns:
+        Parsed verifier feedback dict, or None if the verifier failed to produce one.
     """
-    system = {"role": "system", "content": "You are a data verification assistant. Use glob_file and read_file to inspect the output directory, then call report_verification with your structured findings."}
-    user = {"role": "user", "content": VERIFIER_PROMPT_TEMPLATE.format(
+    prompt = VERIFIER_PROMPT_TEMPLATE.format(
         output_dir=output_dir,
         iv_sheet=_PREP_IV_SHEET_NAME,
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
-    )}
-    messages = [system, user]
+    )
 
-    tools = _build_verifier_tools()
-    model_tier: str = ctx.agent_configs.get("DG_TFT_PREP_VERIFIER_MODEL_TIER", _PREP_VERIFIER_MODEL_TIER)
-    branch_func, deepseek_key = client.select_branch_func(model_tier)
+    from src.tool.subagent_tools import get_tools
+    from src.agent.subagent import SubAgent
+    from src.agent.progress import EXPLORER_AGENT_LABEL
 
-    max_turns = ctx.agent_configs.get("DG_TFT_VERIFIER_MAX_TURNS", _PREP_VERIFIER_MAX_TURNS)
-    if not isinstance(max_turns, int):
-        max_turns = _PREP_VERIFIER_MAX_TURNS
-    verifier_result = None
-    finished = False
+    schemas, handlers = get_tools("data-prep")
+    agent = SubAgent(
+        parent_ctx=ctx,
+        subagent_type=EXPLORER_AGENT_LABEL,
+        prompt=prompt,
+        agent_id=f"prep_verifier_{os.path.basename(output_dir)}",
+        subject="DG-TFT data verification",
+        subagent_tools=schemas,
+        tool_handlers=handlers,
+        stop_mode="schema",
+        stop_schemas=[report_verification_tool_name],
+        console=None,
+    )
+    ctx.agent_list[agent.agent_id] = agent.progress
+    agent.build_tools()
+    agent.build_messages()
+    try:
+        result = agent.run()
+    finally:
+        ctx.agent_list.pop(agent.agent_id, None)
 
-    for turn in range(max_turns):
-        turns_left = max_turns - turn - 1
-        if turns_left == 1:
-            messages.append({
-                "role": "user",
-                "content": "WARNING — Only 1 turn remaining. Call report_verification with your findings NOW. Do not call any other tools.",
-            })
-        elif turns_left == 2:
-            messages.append({
-                "role": "user",
-                "content": "Only 2 turns remaining. Begin wrapping up — call report_verification soon.",
-            })
-
+    if agent.status.value == "done" and result:
+        sys_log.info("Verifier SubAgent completed: %s", result[:200] if result else "(empty)")
         try:
-            response = branch_func(ctx.llm_client, messages, tools, ctx.api_configs)
-        except Exception as e:
-            sys_log.warning("Verifier LLM call failed at turn %d: %s", turn, e)
-            break
-
-        dumped = response.choices[0].message.model_dump(mode="json")
-        if ctx.api_configs.get(deepseek_key, False):
-            dumped = deepseek_support(dumped)
-
-        assistant_content = dumped.get("content", "")
-        tc_list = dumped.get("tool_calls")
-
-        if tc_list:
-            for tc in tc_list:
-                func_name = tc["function"]["name"]
-                try:
-                    func_args = json.loads(tc["function"]["arguments"])
-                except Exception:
-                    func_args = {}
-
-                if func_name == "report_verification":
-                    verifier_result = func_args
-                    break
-
-                tool_result = _execute_verifier_tool(func_name, func_args)
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [tc],
-                })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_result,
-                })
-
-            if verifier_result is not None:
-                finished = True
-                break
-        elif assistant_content:
-            sys_log.info("Verifier returned text without tool call: %s", assistant_content[:200])
-            messages.append({"role": "assistant", "content": assistant_content})
-            messages.append({
-                "role": "user",
-                "content": "You must call the report_verification tool to submit your findings. Do not output free text.",
-            })
-            continue
-        else:
-            sys_log.warning("Verifier returned empty response at turn %d", turn)
-            break
-
-    verifier_path = os.path.join(output_dir, _PREP_VERIFIER_RESULT_NAME)
-    if verifier_result:
-        try:
-            with open(verifier_path, "w", encoding="utf-8") as f:
-                json.dump(verifier_result, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+            return json.loads(result) if isinstance(result, str) else dict(result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            sys_log.warning("Verifier returned non-JSON result, using as summary: %s", str(result)[:200])
+            return {"overall_ok": True, "summary": str(result)[:500]}
     else:
-        sys_log.warning("Verifier exhausted %d turns without calling report_verification", max_turns)
-        fallback = {"overall_ok": False, "summary": f"Verifier did not call report_verification within {max_turns} turns"}
+        err = agent.error or "unknown error"
+        sys_log.warning("Verifier SubAgent did not call report_verification: %s", err)
+        fallback = {"overall_ok": False, "summary": f"Verifier failed to produce structured feedback: {err}"}
+        _write_verifier_result(output_dir, fallback)
+        return fallback
+
+
+def _run_worker_and_verifier(
+    ctx: AgentContext,
+    raw_dataset_dir: str,
+    output_dir: str,
+    report_verification_tool_name: str,
+    handoff_history: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, list[str]]:
+    """Run a single worker→verifier→check cycle.
+
+    Returns:
+        (handoff, verifier_feedback, ok, issues).
+        handoff is the parsed worker handoff dict.
+        verifier_feedback is the parsed verifier result dict.
+        ok is True if data prep passed programmatic checks.
+        issues is the list of warnings/errors from _check_output.
+    """
+    console = getattr(ctx, "console", None)
+    muted = getattr(ctx, "subagent_mute", False)
+
+    if console and not muted:
+        console.print("  [bold]Worker[/bold] [bright_black]processing raw files ...[/bright_black]")
+    _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+
+    handoff = _read_worker_handoff(output_dir)
+
+    if console and not muted:
+        console.print("  [bold]Verifier[/bold] [bright_black]checking output structure ...[/bright_black]")
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name)
+    _write_verifier_result(output_dir, verifier_feedback)
+
+    ok, issues = _check_output(output_dir)
+    return handoff, verifier_feedback, ok, issues
+
+
+def run_data_preparation_with_retry(
+    ctx: AgentContext,
+    raw_dataset_dir: str,
+    run_output_dir: str,
+    run_id: int,
+    preferences: str = "",
+    max_retries: int = 3,
+) -> dict[str, Any]:
+    """Run data preparation with Preparer-Verifier retry loop.
+
+    Each attempt creates a subdirectory ``data_prep/attempt_N/`` under
+    ``run_output_dir``.  The operation log is written to
+    ``run_output_dir/operation_log.json``.
+
+    Args:
+        ctx: Agent context.
+        raw_dataset_dir: Path to raw measurement data.
+        run_output_dir: Top-level run output directory (session/<uuid>/runs/run_NNNN/).
+        run_id: Workflow run ID.
+        preferences: User preferences string.
+        max_retries: Maximum number of preparer→verifier cycles (default 3).
+
+    Returns:
+        Dict with keys: ok, prep_id, output_dir, handoff, issues.
+    """
+    import time as time_mod
+    from src.constants import PREP_SUBDIR_NAME
+    from src.tool.subagent_tools import SUBAGENT_TOOL_REPORT_VERIFICATION
+    from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
+
+    console = getattr(ctx, "console", None)
+    muted = getattr(ctx, "subagent_mute", False)
+
+    if console and not muted:
+        console.print(f"[bold]DG-TFT Data Preparation[/bold] [bright_black]run {run_id} — Preparer-Verifier loop (max {max_retries} retries)[/bright_black]")
+
+    op_log = OperationLog(run_output_dir)
+    op_log.initialize(run_id, preferences)
+
+    final_handoff = None
+    final_feedback = None
+    final_ok = False
+    final_issues: list[str] = []
+    last_attempt_dir = ""
+
+    for attempt in range(1, max_retries + 1):
+        attempt_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, f"attempt_{attempt}")
+        os.makedirs(attempt_dir, exist_ok=True)
+        last_attempt_dir = attempt_dir
+
+        if console and not muted:
+            console.print(f"  [bold]Attempt {attempt}/{max_retries}[/bold] [bright_black]→ {attempt_dir}[/bright_black]")
+
+        handoff_history = _get_handoff_history(op_log)
+
+        t_start = time_mod.monotonic()
         try:
-            with open(verifier_path, "w", encoding="utf-8") as f:
-                json.dump(fallback, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+            handoff, verifier_feedback, ok, issues = _run_worker_and_verifier(
+                ctx, raw_dataset_dir, attempt_dir,
+                SUBAGENT_TOOL_REPORT_VERIFICATION,
+                handoff_history=handoff_history,
+            )
+            duration = time_mod.monotonic() - t_start
+        except Exception as e:
+            sys_log.error("Data prep attempt %d failed: %s", attempt, e)
+            trigger = AttemptTrigger.INITIAL if attempt == 1 else AttemptTrigger.VERIFIER_FAIL
+            op_log.append_attempt("data-prep", StageAttemptLog(
+                n=attempt, trigger=trigger, ok=False, error=str(e),
+            ))
+            final_issues = [str(e)]
+            continue
+
+        vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
+        all_ok = ok and vf_ok
+
+        trigger = AttemptTrigger.INITIAL if attempt == 1 else AttemptTrigger.VERIFIER_FAIL
+        op_log.append_attempt("data-prep", StageAttemptLog(
+            n=attempt,
+            trigger=trigger,
+            handoff=handoff,
+            agent_decision=verifier_feedback,
+            ok=all_ok,
+            error="" if all_ok else "verifier or programmatic check failed",
+            duration_s=duration,
+        ))
+
+        final_handoff = handoff
+        final_feedback = verifier_feedback
+        final_ok = all_ok
+        final_issues = issues if issues else []
+
+        if all_ok:
+            op_log.set_final_status("done")
+            if console and not muted:
+                console.print(f"  [bold green]Data prep passed[/bold green] [bright_black](attempt {attempt})[/bright_black]")
+            break
+        else:
+            if console and not muted:
+                failure_reason = "verifier found issues" if not vf_ok else "programmatic check failed"
+                console.print(f"  [bold yellow]Attempt {attempt} failed[/bold yellow] [bright_black]({failure_reason})[/bright_black]")
+            if attempt == max_retries:
+                op_log.set_final_status("exhausted")
+                if console and not muted:
+                    console.print(f"  [bold red]Data prep exhausted after {max_retries} attempts[/bold red]")
+    else:
+        if console and not muted:
+            console.print("  [bold]Data prep — no attempts executed[/bold]")
+
+    if not final_ok:
+        op_log.set_final_status("failed")
+
+    return {
+        "ok": final_ok,
+        "prep_id": run_id,
+        "output_dir": last_attempt_dir,
+        "handoff": final_handoff,
+        "verifier_feedback": final_feedback,
+        "issues": final_issues,
+    }
+
+
+def run_verification_only(
+    ctx: AgentContext,
+    dataset_dir: str,
+    run_output_dir: str,
+    run_id: int,
+    preferences: str = "",
+    raw_dataset_dir: str = "",
+) -> dict[str, Any]:
+    """Standard data entry: verify an already-prepared dataset, skip Preparer.
+
+    If the Verifier passes, the dataset is used as-is.  If it fails and
+    ``raw_dataset_dir`` is provided, falls back to the full
+    Preparer→Verifier retry loop.
+
+    Args:
+        ctx: Agent context.
+        dataset_dir: Directory containing prepared *_train.xlsx files.
+        run_output_dir: Top-level run output directory.
+        run_id: Workflow run ID.
+        preferences: User preferences string.
+        raw_dataset_dir: Optional raw data path for fallback.
+
+    Returns:
+        Dict with keys: ok, prep_id, output_dir, handoff, issues.
+    """
+    import time as time_mod
+    import shutil
+    from src.constants import PREP_SUBDIR_NAME
+    from src.tool.subagent_tools import SUBAGENT_TOOL_REPORT_VERIFICATION
+    from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
+
+    console = getattr(ctx, "console", None)
+    muted = getattr(ctx, "subagent_mute", False)
+
+    if console and not muted:
+        console.print(f"[bold]DG-TFT Standard Data Verification[/bold] [bright_black]run {run_id}[/bright_black]")
+
+    op_log = OperationLog(run_output_dir)
+    op_log.initialize(run_id, preferences)
+
+    attempt_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
+    os.makedirs(attempt_dir, exist_ok=True)
+
+    # Copy existing dataset into output dir
+    for item in Path(dataset_dir).iterdir():
+        src = str(item)
+        dst = os.path.join(attempt_dir, item.name)
+        if item.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        elif item.is_file():
+            shutil.copy2(src, dst)
+
+    if console and not muted:
+        console.print(f"  [bold]Verifier[/bold] [bright_black]checking standard data ...[/bright_black]")
+    t_start = time_mod.monotonic()
+    verifier_feedback = _run_verifier_subagent(ctx, attempt_dir, SUBAGENT_TOOL_REPORT_VERIFICATION)
+    _write_verifier_result(attempt_dir, verifier_feedback)
+    duration = time_mod.monotonic() - t_start
+
+    ok, issues = _check_output(attempt_dir)
+    vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
+    all_ok = ok and vf_ok
+
+    op_log.append_attempt("data-prep", StageAttemptLog(
+        n=1, trigger=AttemptTrigger.INITIAL,
+        agent_decision=verifier_feedback,
+        ok=all_ok,
+        error="" if all_ok else "standard data verification failed",
+        duration_s=duration,
+    ))
+
+    if all_ok:
+        op_log.set_final_status("done")
+        return {
+            "ok": True, "prep_id": run_id, "output_dir": attempt_dir,
+            "handoff": None, "issues": issues,
+        }
+
+    if console and not muted:
+        console.print(f"  [bold yellow]Standard data verification failed[/bold yellow] [bright_black]— falling back to Preparer[/bright_black]")
+
+    if not raw_dataset_dir:
+        op_log.set_final_status("failed")
+        return {
+            "ok": False, "prep_id": run_id, "output_dir": attempt_dir,
+            "handoff": None, "issues": issues + ["Standard data verification failed, no fallback raw data provided"],
+        }
+
+    return run_data_preparation_with_retry(
+        ctx, raw_dataset_dir, run_output_dir, run_id,
+        preferences=preferences,
+    )
+
+
+def _get_handoff_history(op_log: Any) -> str:
+    """Build a handoff history text from previous data-prep attempts in the operation log.
+
+    Extracts handoff and verifier feedback from prior attempts and formats
+    them for injection into the worker's prompt.
+    """
+    from .operation_log import OperationLog
+    if not isinstance(op_log, OperationLog):
+        return ""
+    attempts = op_log.get_stage_attempts("data-prep")
+    if not attempts:
+        return ""
+    lines: list[str] = []
+    for attempt_dict in attempts:
+        n = attempt_dict.get("n", 0)
+        handoff = attempt_dict.get("handoff")
+        feedback = attempt_dict.get("agent_decision")
+        if handoff:
+            lines.append(f"Attempt {n} handoff: {json.dumps(handoff, ensure_ascii=False)}")
+        if feedback:
+            lines.append(f"Attempt {n} verifier feedback: {json.dumps(feedback, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
+def _read_worker_handoff(output_dir: str) -> dict[str, Any] | None:
+    """Read the worker's handoff from worker_report.json and convert to a PrepHandoff dict."""
+    worker_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
+    if not os.path.exists(worker_path):
+        sys_log.warning("No worker report at %s, cannot build handoff", worker_path)
+        return None
+    try:
+        with open(worker_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        sys_log.warning("Failed to read worker report for handoff: %s", e)
+        return None
+    from .schema import PrepHandoff
+    return PrepHandoff.from_worker_report(report).to_dict()
+
+
+def _write_verifier_result(output_dir: str, result: dict[str, Any] | None) -> None:
+    """Write the verifier's structured feedback to verifier_result.json."""
+    if result is None:
+        result = {"overall_ok": False, "summary": "Verifier produced no output"}
+    verifier_path = os.path.join(output_dir, _PREP_VERIFIER_RESULT_NAME)
+    try:
+        with open(verifier_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        sys_log.error("Failed to write %s: %s", _PREP_VERIFIER_RESULT_NAME, e)
 
 
 def _check_output(output_dir: str) -> tuple[bool, list[str]]:

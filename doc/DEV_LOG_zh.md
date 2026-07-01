@@ -241,6 +241,68 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
+## 2026-07-01 | 数据输入阶段 (TODO 2.5.1–2.5.11) — Version 1.2.0
+
+### 2.5.1 handoff 数据结构 (`schema.py`)
+- `PrepHandoff` — Preparer 到 Verifier 的结构化交接信息，含 `observations` / `actions` / `potential_issues` / `output_manifest`
+- `VerifierFeedback` — Verifier 的结构化反馈，含 `overall_ok` / `critical_issues` / `suggestion` / `worker_notes` / `summary`
+- `PrepHandoff.from_worker_report()` — 从现有 `worker_report.json` 转换 handoff 的工厂方法
+- `VerifierFeedback.from_dict()` — 支持 `critical_issues` 为字符串列表的兼容格式
+
+### 2.5.5 `subagent_tools.py` 增强
+- `inspect_xlsx` handler 从占位实现替换为真实 `openpyxl` 读表逻辑（sheet 名 + 列头），返回 `{"sheets": {...}, "sheet_count": N}`
+- 新增 `_REPORT_VERIFICATION_SCHEMA` — Verifier 输出工具 schema，与旧 `build_report_verification_tool()` 等价
+- `_STAGE_TOOLS` 注册 `"data-prep"` 阶段：`inspect_xlsx`（调查工具）+ `report_verification`（输出工具）
+- 导入 `FAIL_LABEL` 供 handler 错误返回值使用
+
+### 2.5.4 Verifier 迁移到 SubAgent
+- **删除**：`_build_verifier_tools()` / `_execute_verifier_tool()` / `_run_verifier()` 手动 LLM 循环（~150 行旧代码）
+- **删除**：`build_report_verification_tool()` — 工具 schema 已迁移到 `subagent_tools.py`
+- **新增**：`_run_verifier_subagent(ctx, output_dir, report_verification_tool_name)` — 使用 `explorer` type + `stop_mode="schema"` + `stop_schemas=["report_verification"]`
+  - Verifier SubAgent 通过 `glob_file`（explorer type 自带）列出文件
+  - 通过 `inspect_xlsx`（subagent tool，有 handler）检查 XLSX 结构
+  - 通过 `report_verification`（subagent tool，无 handler，output tool）输出结构化结果
+  - 失败时有 fallback：返回 `overall_ok=False` 兜底 dict
+- Verifier prompt 更新：`read_file` → `inspect_xlsx`
+
+### 2.5.2-2.5.3 worker handoff 注入
+- `_run_worker()` 新增可选参数 `handoff_history_text` — 非空时注入 prompt 末尾作为 "Previous attempt feedback"
+- `_get_handoff_history(op_log)` — 从 `operation_log.json` 读取历史 data-prep attempts，提取 handoff + verifier feedback 拼接为文本
+
+### 2.5.6 重试循环
+- `_run_worker_and_verifier()` — 单次 worker→verifier→check 周期，返回 `(handoff, verifier_feedback, ok, issues)`
+- `run_data_preparation_with_retry()` — Preparer-Verifier 主循环：
+  - 每次 attempt 创建独立目录 `data_prep/attempt_N/`
+  - 初始化 `OperationLog` 于 `run_output_dir/operation_log.json`
+  - 初试 attempt 触发原因 = `INITIAL`，retry = `VERIFIER_FAIL`
+  - worker 异常不中断循环，继续下一 attempt
+  - 所有 attempts 记录到 operation_log，含 handoff + verifier_feedback
+  - 成功时 `final_status="done"`，耗尽时 `final_status="exhausted"`
+- `run_data_preparation()` 保留为兼容性包装，内部委托 `_run_worker_and_verifier`
+
+### 2.5.7 标准数据集入口
+- `run_verification_only()` — 跳过 Preparer，Verifier 直接验证已有数据
+  - 验证通过：使用现有数据进入后续阶段
+  - 验证失败 + 有 raw_dataset_dir：fallback 到 `run_data_preparation_with_retry()`
+  - 验证失败 + 无 raw_dataset_dir：直接返回失败
+
+### Operation Log 增强
+- `AttemptTrigger` 枚举新增 `VERIFIER_FAIL` 和 `PREP_RETRY`
+- `OperationLog` 现在在数据准备阶段初始化（早于 orchestrator），orchestrator 的 `run_workflow()` 后续可复用同一文件
+
+### 其他改动
+- `tool_def.py`：`prepare_dg_tft_dataset` handler 路径中间变量重命名为 `run_output_dir` / `attempt_1_dir`，语义更清晰
+- `data_preparer.py`：删除未使用常量 `_PREP_VERIFIER_MAX_TURNS` / `_PREP_VERIFIER_MODEL_TIER`；删除多余 import `client` / `deepseek_support`
+- `agent_configs.json`：`DG_TFT_PREP_MAX_RETRIES` / `DG_TFT_PREP_HANDOFF_HISTORY_SIZE` 已存在
+- `DG_TFT_RUNS_SUBDIR` / `PREP_SUBDIR_NAME` 常量由零改一提供，无需新增配置
+
+### 测试
+- 更新 `test/dg_tft_preparer_test.py`：删除 `TestBuildReportVerificationTool`，mock patch 从 `_run_worker` / `_run_verifier` 改为 `_run_worker_and_verifier`
+- 新增 `test/dg_tft_prep_retry_test.py`：31 项 — `PrepHandoff`/`VerifierFeedback` 序列化往返、`inspect_xlsx` handler、data-prep stage tools 注册、`AttemptTrigger` 枚举值、历史 handoff 构建、worker handoff 读取、重试循环（成功/retry/耗尽/异常继续/目录创建/operation_log 写入/retry trigger）、标准数据入口（通过/失败无 fallback/fallback 到 Preparer）
+- 全量 864 tests pass (0 failures, 0 errors)
+
+---
+
 ## 经验总结
 
 ### Python 模块双重导入陷阱
@@ -260,7 +322,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
 
 ### 测试策略
-当前 833 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+当前 864 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
 
 ### Agent 介入边界
 LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。

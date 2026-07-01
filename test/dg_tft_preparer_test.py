@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.workflow.dg_tft.schema import WorkflowRun, WorkflowStatus
 from src.workflow.dg_tft.manager import WorkflowManager, PreparationTracker
 from src.workflow.dg_tft.data_preparer import (
-    build_report_verification_tool,
     _check_output,
     _build_manifest,
     _write_manifest,
@@ -182,22 +181,6 @@ class TestCheckOutput(unittest.TestCase):
         self.assertFalse(ok)
 
 
-class TestBuildReportVerificationTool(unittest.TestCase):
-    """P4.5-T1: Verifier tool schema."""
-
-    def test_schema_structure(self):
-        tool = build_report_verification_tool()
-        self.assertEqual(tool["type"], "function")
-        func = tool["function"]
-        self.assertEqual(func["name"], "report_verification")
-        self.assertIn("overall_ok", func["parameters"]["required"])
-        props = func["parameters"]["properties"]
-        self.assertIn("iv_families", props)
-        self.assertIn("cv_check", props)
-        self.assertIn("it_check", props)
-        self.assertIn("summary", props)
-
-
 class TestWorkerPromptTemplate(unittest.TestCase):
     """P4.5-T1: Worker prompt template formatting."""
 
@@ -282,32 +265,29 @@ class TestRunDataPreparationMocked(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_run_data_preparation_success(self):
-        """Worker subagent succeeds, verifier calls tool, check_output passes."""
+        """Worker+verifier succeed, check_output passes."""
         mock_ctx = MagicMock()
         mock_ctx.workflow_man = WorkflowManager()
         mock_ctx.workflow_man.preparation_tracker = PreparationTracker()
         mock_ctx.workflow_man.preparation_tracker.register_prep("/raw", str(self.outdir))
 
-        with patch("src.workflow.dg_tft.data_preparer._run_worker") as mock_worker, \
-             patch("src.workflow.dg_tft.data_preparer._run_verifier") as mock_verifier:
+        with patch("src.workflow.dg_tft.data_preparer._run_worker_and_verifier",
+                   return_value=({}, {"overall_ok": True}, True, ["[WARNING] no CV"])):
             run_data_preparation(mock_ctx, "/raw", str(self.outdir), self.prep_id)
-
-            mock_worker.assert_called_once_with(mock_ctx, "/raw", str(self.outdir))
-            mock_verifier.assert_called_once_with(mock_ctx, str(self.outdir))
 
         prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
         self.assertIsNotNone(prep)
         self.assertTrue(os.path.exists(str(self.outdir / "manifest.json")))
 
-    def test_run_data_preparation_worker_fails(self):
-        """Worker fails — manifest marks failed."""
+    def test_run_data_preparation_fails(self):
+        """Worker+verifier raises — manifest marks failed."""
         mock_ctx = MagicMock()
         mock_ctx.workflow_man = WorkflowManager()
         mock_ctx.workflow_man.preparation_tracker = PreparationTracker()
         mock_ctx.workflow_man.preparation_tracker.register_prep("/raw", str(self.outdir))
 
-        with patch("src.workflow.dg_tft.data_preparer._run_worker", side_effect=RuntimeError("worker crash")), \
-             patch("src.workflow.dg_tft.data_preparer._run_verifier"):
+        with patch("src.workflow.dg_tft.data_preparer._run_worker_and_verifier",
+                   side_effect=RuntimeError("worker crash")):
             run_data_preparation(mock_ctx, "/raw", str(self.outdir), self.prep_id)
 
         prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
@@ -316,6 +296,22 @@ class TestRunDataPreparationMocked(unittest.TestCase):
         manifest = json.load(open(str(self.outdir / "manifest.json"), encoding="utf-8"))
         self.assertFalse(manifest["ok"])
         self.assertTrue(any("worker crash" in i for i in manifest["issues"]))
+
+    def test_run_data_preparation_verifier_fails_check_passes(self):
+        """Verifier says False but programmatic check passes — still ok."""
+        mock_ctx = MagicMock()
+        mock_ctx.workflow_man = WorkflowManager()
+        mock_ctx.workflow_man.preparation_tracker = PreparationTracker()
+        mock_ctx.workflow_man.preparation_tracker.register_prep("/raw", str(self.outdir))
+
+        with patch("src.workflow.dg_tft.data_preparer._run_worker_and_verifier",
+                   return_value=({}, {"overall_ok": False}, True, ["[WARNING] no CV"])):
+            run_data_preparation(mock_ctx, "/raw", str(self.outdir), self.prep_id)
+
+        prep = mock_ctx.workflow_man.preparation_tracker.get_prep(self.prep_id)
+        self.assertIsNotNone(prep)
+        # run_data_preparation uses programmatic check result, not verifier feedback
+        self.assertTrue(prep["ok"])
 
 
 class TestToolHandler(unittest.TestCase):
