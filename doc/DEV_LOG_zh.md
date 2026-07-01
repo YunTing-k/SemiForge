@@ -164,6 +164,59 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
+### 2026-06-29 | 零改一 — 产出路径统一到 session/\<uuid\>/
+
+所有工作流产出目录从分散的三个平级路径（`outputs/dg_tft_runs/`、`prepared_data/`、`session/`）统一聚合到 `session/<uuid>/runs/` 下。15 个子任务覆盖 8 个源文件：
+
+**路径重组**：`config_builder.py` 新增 `_runs_base_dir()` 构造 `session/<uuid>/runs/`。`tool_def.py` 中 `prepare_dg_tft_dataset` 处理器输出目录改用新路径。删除 `agent_configs.json` 中不存在的 `DG_TFT_OUTPUT_ROOT` key 引用。
+
+**代码清理**：`data_preparer.py` 删除 `_PREP_OUTPUT_BASE_DIR`，输出目录改为调用方传入。`manager.py` 使用 `SESSION_PATH` 常量替代硬编码 `"session"`。修正 `PreparationTracker`、`artifacts.py` 中的文档注释路径。`.gitignore` 删除 `/prepared_data/`、`/outputs/`、`/test_data/` 条目。
+
+**minimal_run 合并**：`quick_run` 和 `debug_run` 合并为 `minimal_run`（INI `[runtime]` section）。`run_model.py`、`prompt.py`、INI 模板同步更新。新增 2026-06-29 日 bugfix：`config_builder.py` 中 `output_dir` 使用 `Path.resolve()` 写入绝对路径，防止引擎 `resolve_path()` 对相对路径二次嵌套。
+
+**测试修复**：`dg_tft_diagnostics_test.py` 补全 `_make_mock_ctx` 缺失属性 + `@patch _launch_diagnosis_subagent` 消除 MagicMock 序列化 traceback。`dg_tft_workflow_background_test.py` tearDown 添加 `test_persist` 清理。`test_subagent_unit.py` 自带 `session/test-unit-001/` 清理。
+
+---
+
+### 2026-06-29 | 零改二 — SubAgent 增强
+
+**动机**：SubAgent 此前无法注入自定义 tool、强制结构化输出，或区分"干活 agent 文本即可"与"决策 agent 必须走 schema"两种场景。
+
+**三层改造**：
+
+1. **本地 Tool 注入**（`subagent.py` + 新建 `subagent_tools.py`）：
+   - `SubAgent.__init__` 新增 `subagent_tools`、`tool_handlers`、`stop_mode`、`stop_schemas` 四个可选参数
+   - `build_tools()`：`SUPPORTED_TYPES` 过滤后追加本地 tool schema
+   - `execute_tool_calls()`：新增 `_handle_subagent_tool()` 本地分发 — handler 有 → 执行返回；无 handler + stop_schema → 捕获 args → DONE；无 handler 非 stop → FAIL（防配置错误静默）
+
+2. **三种终止模式**：
+   - `plain_text`（默认）：LLM 纯文本响应 → DONE，空 content ⇒ reasoning 兜底 → 提醒继续
+   - `schema`：必须调用 `stop_schemas` 中列出的 tool 才能终止；纯文本不终止，提醒 LLM 调用指定 tool
+   - `any`：任何情况（文本/tool/reasoning）都可以终止
+
+3. **Tool 统一入口**（`subagent_tools.py`）：
+   - 7 个 tool name 常量（`SUBAGENT_TOOL_*`）
+   - `get_tools(stage)` 统一入口返回 `(schemas, handlers)`
+   - `_STAGE_TOOLS` 注册表：`fit-physical`（3 schemas + 1 handler）、`check-data`（1 schema + 0 handler）
+   - call site 无需分别管理 schemas 和 handlers 两个 dict
+
+**单元测试**：15 项（`test_subagent_unit.py`），覆盖 plain_text/text fallback/schema 调查→输出/schema exhaustion/any/FAIL fallback/get_tools 集成。
+
+---
+
+### 2026-06-30 | 专家知识体系 (3.5)
+
+新建 `src/workflow/dg_tft/knowledge/` 目录：
+- `loader.py`：`load_knowledge(stage)` 按阶段名读取对应 `.md` 内容；`build_agent_prompt(stage, preferences)` 拼接 **USER PREFERENCES** + **EXPERT KNOWLEDGE** 双 block 模板，支持 `discovered_dir` 参数聚合反哺摘要
+- 5 个知识文件空壳：`data_inspection.md` / `physical_kernel.md` / `static_model.md` / `hysteresis.md` / `final_interpret.md`
+- 渐进式披露设计：预编写知识全量注入 prompt；反哺知识生成双文件（详细 `.md` + 摘要 `_summary.md`），摘要聚合注入 prompt，详情按需 `read_file`
+
+**路径常量迁移**：`DG_TFT_KNOWLEDGE_DIR`、`DG_TFT_RUNS_SUBDIR`、`DG_TFT_DEFAULT_CONFIG_TEMPLATE` 从 `agent_configs.json` 移入 `constants.py`。源代码中 `ctx.agent_configs.get(...)` 全部改用常量作为 fallback 默认值。7 个源文件 + 5 个测试文件同步更新。`agent_configs.json` 保留的路径 key 仅限于机器/系统相关的可执行文件路径（`DG_TFT_AGENT_PYTHON_EXE`、`DG_TFT_MODELING_PYTHON_EXE`、`BASH_PATH`、`RIPGREP_PATH`）。
+
+**测试**：14 项（`dg_tft_knowledge_test.py`），覆盖有效阶段、未映射阶段、文件缺失、偏好/知识组合、空白偏好、空输入。
+
+---
+
 ## 经验总结
 
 ### Python 模块双重导入陷阱
@@ -183,7 +236,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
 
 ### 测试策略
-当前 793 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+当前 807 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
 
 ### Agent 介入边界
 LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。

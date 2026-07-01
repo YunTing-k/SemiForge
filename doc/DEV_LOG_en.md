@@ -164,6 +164,58 @@ Deleted `simulator_param.py` and `simulator_support.py` (DesignManager, RunManag
 
 ---
 
+### 2026-06-29 | Zero-Change One — Output Path Unification to session/\<uuid\>/
+
+Consolidated all workflow output directories from three scattered peer-level paths (`outputs/dg_tft_runs/`, `prepared_data/`, `session/`) into `session/<uuid>/runs/`. 15 subtasks across 8 source files:
+
+**Path reorganization**: `config_builder.py` gained `_runs_base_dir()` to construct `session/<uuid>/runs/`. `tool_def.py`'s `prepare_dg_tft_dataset` handler output directory switched to new path. Removed non-existent `DG_TFT_OUTPUT_ROOT` key references from `agent_configs.json`.
+
+**Code cleanup**: `data_preparer.py` removed `_PREP_OUTPUT_BASE_DIR` — output directory now passed by caller. `manager.py` uses `SESSION_PATH` constant instead of hardcoded `"session"`. Fixed doc comment paths in `PreparationTracker` and `artifacts.py`. `.gitignore` removed `/prepared_data/`, `/outputs/`, `/test_data/` entries.
+
+**minimal_run merge**: `quick_run` and `debug_run` merged into `minimal_run` (INI `[runtime]` section). `run_model.py`, `prompt.py`, and INI template synchronized. 2026-06-29 bugfix: `config_builder.py` `output_dir` uses `Path.resolve()` for absolute paths to prevent engine's `resolve_path()` from nesting relative paths twice.
+
+**Test fixes**: `dg_tft_diagnostics_test.py` completed missing `_make_mock_ctx` attributes + `@patch _launch_diagnosis_subagent` to eliminate MagicMock serialization traceback. `dg_tft_workflow_background_test.py` tearDown added `test_persist` cleanup. `test_subagent_unit.py` includes `session/test-unit-001/` cleanup.
+
+---
+
+### 2026-06-29 | Zero-Change Two — SubAgent Enhancement
+
+**Motivation**: SubAgent could not inject custom tools, enforce structured output, or distinguish between "worker agent => text is fine" vs "decision agent => must use schema."
+
+**Three-layer overhaul**:
+
+1. **Local tool injection** (`subagent.py` + new `subagent_tools.py`):
+   - `SubAgent.__init__` gained `subagent_tools`, `tool_handlers`, `stop_mode`, `stop_schemas` — all optional
+   - `build_tools()`: appends local tool schemas after `SUPPORTED_TYPES` filtering
+   - `execute_tool_calls()`: new `_handle_subagent_tool()` local dispatch — has handler → execute & return; no handler + stop_schema → capture args → DONE; no handler, not stop → FAIL (prevents silent misconfiguration)
+
+2. **Three stop modes**:
+   - `plain_text` (default): LLM plain text response → DONE; empty content ⇒ reasoning fallback → reminder to continue
+   - `schema`: must call a tool in `stop_schemas` list to terminate; plain text rejected with reminder
+   - `any`: any response (text/tool/reasoning) terminates
+
+3. **Unified tool entry point** (`subagent_tools.py`):
+   - 7 tool name constants (`SUBAGENT_TOOL_*`)
+   - `get_tools(stage)` returns `(schemas, handlers)` tuple — call site doesn't manage two separate dicts
+   - `_STAGE_TOOLS` registry: `fit-physical` (3 schemas + 1 handler), `check-data` (1 schema + 0 handler)
+
+**Unit tests**: 15 tests (`test_subagent_unit.py`), covering plain_text/text fallback/schema investigate→output/schema exhaustion/any/FAIL fallback/get_tools integration.
+
+---
+
+### 2026-06-30 | Expert Knowledge System (3.5)
+
+New `src/workflow/dg_tft/knowledge/` directory:
+- `loader.py`: `load_knowledge(stage)` reads per-stage `.md` content; `build_agent_prompt(stage, preferences)` assembles **USER PREFERENCES** + **EXPERT KNOWLEDGE** dual-block template, accepts `discovered_dir` parameter for aggregating discovered summaries
+- 5 knowledge skeleton files: `data_inspection.md` / `physical_kernel.md` / `static_model.md` / `hysteresis.md` / `final_interpret.md`
+- Progressive disclosure design: pre-written knowledge loaded in full into prompt; discovered knowledge produces dual files (detailed `.md` + concise `_summary.md`), summaries aggregated into prompt, full details read on-demand via `read_file`
+
+**Path constants migration**: `DG_TFT_KNOWLEDGE_DIR`, `DG_TFT_RUNS_SUBDIR`, `DG_TFT_DEFAULT_CONFIG_TEMPLATE` moved from `agent_configs.json` into `constants.py`. All source `ctx.agent_configs.get(...)` calls updated to use constants as fallback defaults. 7 source files + 5 test files synchronized. Path keys remaining in `agent_configs.json` are limited to machine/system-dependent executable paths (`DG_TFT_AGENT_PYTHON_EXE`, `DG_TFT_MODELING_PYTHON_EXE`, `BASH_PATH`, `RIPGREP_PATH`).
+
+**Tests**: 14 tests (`dg_tft_knowledge_test.py`), covering valid stages, unmapped stage, missing file, preferences+knowledge combinations, whitespace-only prefs, empty input.
+
+---
+
 ## Lessons Learned
 
 ### Python module double-import trap
@@ -183,7 +235,7 @@ Deleted `simulator_param.py` and `simulator_support.py` (DesignManager, RunManag
 - No Chinese in code output; `sys_log` and `console.print()` complementary
 
 ### Test strategy
-793 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
+807 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
 
 ### Agent intervention boundaries
 LLM/subagent only at 3 points: data preparation, format verification, failure diagnosis. Training execution, config generation, quality gating, and report building are pure rule-based code.

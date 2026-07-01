@@ -254,13 +254,16 @@ class TestWriteIni(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             build_runtime_config(ctx, profile, "/data/device", run_id=1, work_dir=str(self.tmpdir / "work"))
 
-    def test_template_key_not_set_raises(self):
+    def test_constant_fallback_works(self):
+        """When agent_configs has no template key, constant fallback is used."""
+        from src.constants import DG_TFT_DEFAULT_CONFIG_TEMPLATE
         ctx = AgentContext()
         ctx.agent_configs = {}
         profile = _make_profile()
 
-        with self.assertRaises(ValueError):
-            build_runtime_config(ctx, profile, "/data/device", run_id=1, work_dir=str(self.tmpdir / "work"))
+        result = build_runtime_config(ctx, profile, "/data/device", run_id=1, work_dir=str(self.tmpdir / "work"))
+        self.assertIn("config_path", result)
+        self.assertTrue(os.path.exists(result["config_path"]))
 
 
 if __name__ == "__main__":

@@ -274,8 +274,10 @@ class TestHspiceCheck(unittest.TestCase):
         self.assertFalse(is_hspice_available(ctx))
 
     def test_no_template_config_key(self):
+        tmp_ini = self.tmpdir / "no_hspice.ini"
+        tmp_ini.write_text("[paths]\nhspice_exe =\n[temperature]\nmode = auto\n[hysteresis]\nenabled = no\n[deployment]\nrun_hspice = yes\n", encoding="utf-8")
         ctx = AgentContext()
-        ctx.agent_configs = {}
+        ctx.agent_configs = {"DG_TFT_DEFAULT_CONFIG_TEMPLATE": str(tmp_ini)}
         profile = DatasetProfile()
         _check_hspice(ctx, profile)
         self.assertIn("HSPICE path not configured", profile.issues[0])

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from .dataset_inspector import is_hspice_available
 from .schema import DatasetProfile
-from src.constants import SESSION_PATH
+from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR, DG_TFT_DEFAULT_CONFIG_TEMPLATE
 
 if TYPE_CHECKING:
     from src.context.agent_context import AgentContext
@@ -32,7 +32,7 @@ sys_log = logging.getLogger("logger")
 def _runs_base_dir(ctx: AgentContext) -> Path:
     """Return the base directory for workflow run outputs under session/<uuid>/runs/."""
     session_uuid = ctx.session_uuid or "unknown"
-    runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", "runs")
+    runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
     return Path(SESSION_PATH) / session_uuid / runs_subdir
 
 
@@ -142,7 +142,7 @@ def _build_resolution(
         "iv_families": profile.iv_families,
         "total_files": profile.total_files,
         "issues": profile.issues,
-        "template_config": ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", ""),
+        "template_config": ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", DG_TFT_DEFAULT_CONFIG_TEMPLATE),
     }
 
 
@@ -158,9 +158,9 @@ def _write_ini(
     Uses direct text replacement to avoid configparser formatting issues
     (tab indentation, comment stripping, case folding).
     """
-    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", "")
+    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", DG_TFT_DEFAULT_CONFIG_TEMPLATE)
     if not template_key:
-        raise ValueError("DG_TFT_DEFAULT_CONFIG_TEMPLATE not set in agent_configs.json")
+        raise ValueError("DG_TFT_DEFAULT_CONFIG_TEMPLATE not set")
 
     template_path = Path(template_key)
     if not template_path.exists():
@@ -206,7 +206,7 @@ def _write_ini(
 def _read_template_hspice_path(ctx: AgentContext) -> str:
     import configparser
 
-    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", "")
+    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", DG_TFT_DEFAULT_CONFIG_TEMPLATE)
     if not template_key:
         return ""
     template_path = Path(template_key)

@@ -2625,10 +2625,10 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         wm = ctx.workflow_man
 
         from src.workflow.dg_tft.data_preparer import _PREP_WORKER_REPORT_NAME
-        from src.constants import PREP_SUBDIR_NAME
+        from src.constants import PREP_SUBDIR_NAME, DG_TFT_RUNS_SUBDIR
 
         # session/<uuid>/runs/data_prep/attempt_1/
-        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", "runs")
+        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
         output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, PREP_SUBDIR_NAME, "attempt_1")
 
         existing = _check_prepared_output(output_dir)

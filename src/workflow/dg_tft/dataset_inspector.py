@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .schema import DatasetProfile
+from src.constants import DG_TFT_DEFAULT_CONFIG_TEMPLATE
 
 if TYPE_CHECKING:
     from src.context.agent_context import AgentContext
@@ -228,7 +229,7 @@ def _read_template_hspice_path(ctx: AgentContext) -> str:
     """Extract hspice_exe from the default config template .ini."""
     import configparser
 
-    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", "")
+    template_key = ctx.agent_configs.get("DG_TFT_DEFAULT_CONFIG_TEMPLATE", DG_TFT_DEFAULT_CONFIG_TEMPLATE)
     if not template_key:
         return ""
     template_path = Path(template_key)

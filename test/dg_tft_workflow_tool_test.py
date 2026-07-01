@@ -35,7 +35,7 @@ def _make_mock_progress():
 
 def _make_mock_context(configs=None):
     ctx = MagicMock()
-    ctx.agent_configs = configs or {"DG_TFT_RUNS_SUBDIR": "runs"}
+    ctx.agent_configs = configs or {}
     ctx.workflow_man = WorkflowManager()
     ctx.workflow_man.session_uuid = "test_integration"
     ctx.workflow_man._save_runs = lambda: None
