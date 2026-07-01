@@ -34,7 +34,8 @@ _METRIC_SOURCES: dict[str, dict[str, str]] = {
         "keys": "metrics_summary.iv_rms_log10_error_dec",
     },
     StageName.TRAIN_STATIC: {
-        "file": "03_full_model/v90_safe_residual_metrics.json",
+        "file": "03_full_model/v93_safe_residual_metrics.json",
+        "file_fallback": "03_full_model/v92_safe_residual_metrics.json",
         "keys": "residual_iv_rms,residual_cv_rms",
     },
     StageName.TRAIN_HYSTERESIS: {
@@ -64,6 +65,10 @@ def parse_metrics(output_dir: str, stage_name: str) -> dict[str, float]:
         return {}
 
     json_path = Path(output_dir) / source["file"]
+    if not json_path.exists():
+        fallback = source.get("file_fallback")
+        if fallback:
+            json_path = Path(output_dir) / fallback
     if not json_path.exists():
         sys_log.warning("Metric source not found for stage [%s]: %s", stage_name, json_path)
         return {}

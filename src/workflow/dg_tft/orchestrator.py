@@ -276,6 +276,12 @@ def run_workflow(
                     return False, f"Failed at {sd.name}: verifier exhausted"
             else:
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+                # Record agent stage result in workflow_runs for unified reporting
+                agent_sr = StageResult(
+                    ok=True, stage=sd.name,
+                    summary=f"Completed attempt {retry_counts.get(f'{sd.name}_retries', 1)}",
+                )
+                wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, agent_sr)
                 # Update prep output dir after Verifier passes
                 if sd.name == StageName.VERIFIER and attempt_dir:
                     prep_output_dir = attempt_dir

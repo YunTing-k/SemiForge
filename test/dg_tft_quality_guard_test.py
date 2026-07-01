@@ -109,7 +109,7 @@ class TestMetricsParser(unittest.TestCase):
     def test_parse_train_static_metrics(self):
         subdir = Path(self.tmpdir) / "03_full_model"
         subdir.mkdir()
-        json_path = subdir / "v90_safe_residual_metrics.json"
+        json_path = subdir / "v93_safe_residual_metrics.json"
         json_path.write_text(json.dumps({
             "residual_iv_rms": 0.012,
             "residual_cv_rms": 0.034,
