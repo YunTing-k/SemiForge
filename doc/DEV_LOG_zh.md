@@ -594,3 +594,26 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **校验**：15 处 `assert_valid_grids()` 调用（checkpoint 加载后 + 每 epoch）
 
 **Metrics**：2 处 `kan_grid_audit` 字典（各 4 个 KAN block）
+
+### 2026-07-01 | Pipeline 稳定化 — Agent 阶段检查、Verifier 入口、报表修复
+
+**Agent 阶段成败检查**：`_run_agent_stage` 现在返回 `(attempt_dir, ok)`。while+pointer 仅在 ok 时前进；失败时重试或回退到 Preparer。
+
+**Verifier 入口修复**：标准数据集在 Verifier 检查前先拷贝到 `data_prep/attempt_N/`（之前检查空目录）。
+
+**Verifier→Preparer 回退**：Verifier 失败 → pointer 跳回 DATA_PREP，worker 带着 handoff history 重处理。
+
+**报表修复**：
+- RUN_SUMMARY 0KB：manifest 在报告文件写入后构建
+- operation_log duration_s：`run_stage` 环绕 `time.monotonic()` 计时
+- ARTIFACT_MANIFEST 自指：排除自身条目
+
+**Metrics 统一**：`metrics_parser` v90→v93。引擎只写 `v93_safe_residual_metrics.json`（删除 v92 双写）。
+
+**Agent 阶段记入 stage_results**：verifier/data-prep 现在通过 `wm.update_stage()` 记入 `workflow_runs.stage_results`，与脚本阶段统一。
+
+**Stage display names**：补了 `data-prep`/`verifier` 条目。
+
+**v96 bug 修复**：`kan_grid_audit` 循环变量 `audit` 遮蔽了 DataFrame `audit` — 改名为 `block_audit`。
+
+**测试**：911 pass (0 failures, 0 errors, 11 skipped)

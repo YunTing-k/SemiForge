@@ -544,3 +544,26 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 **Validation**: 15 × `assert_valid_grids()` calls added after checkpoint loads and per training epoch
 
 **Metrics**: 2 × `kan_grid_audit` dicts (4 blocks each) in final metrics output
+
+### 2026-07-01 | Pipeline Stabilization — Agent Stage Checks, Verifier Entry, Report Fixes
+
+**Agent stage result check**: `_run_agent_stage` now returns `(attempt_dir, ok)`. while+pointer only advances on success; on failure retries or falls back to Preparer.
+
+**Verifier entry fix**: standard dataset copied into `data_prep/attempt_N/` before Verifier checks (was checking empty dirs).
+
+**Verifier→Preparer fallback**: Verifier failure → pointer jumps back to DATA_PREP with handoff history for worker re-processing.
+
+**Report fixes**:
+- RUN_SUMMARY 0KB: manifest built after report files written, not before
+- operation_log duration_s: `run_stage` wrapped with `time.monotonic()` timing
+- ARTIFACT_MANIFEST self-reference: excluded its own entry
+
+**Metrics unification**: `metrics_parser` v90→v93. Engine writes only `v93_safe_residual_metrics.json` (removed v92 double-write).
+
+**Agent stages in stage_results**: verifier/data-prep now recorded in `workflow_runs.stage_results` via `wm.update_stage()` — unified with script stages for RUN_SUMMARY.
+
+**Stage display names**: added `data-prep`/`verifier` entries in `STAGE_DISPLAY_NAMES`.
+
+**v96 bug fix**: `kan_grid_audit` loop variable `audit` shadowed DataFrame `audit` — renamed to `block_audit`.
+
+**Tests**: 911 pass (0 failures, 0 errors, 11 skipped)
