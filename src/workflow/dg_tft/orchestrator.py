@@ -249,10 +249,21 @@ def run_workflow(
                 current = retry_counts.get(retry_key, 0)
                 max_r = prep_max_retries if sd.name == StageName.DATA_PREP else prep_max_retries
                 if current < max_r:
-                    _console(ctx, f"  [{WF_STATUS_WARN}]{sd.name} attempt {current} failed, retrying...[/{WF_STATUS_WARN}]")
-                    fallback_ctx = None
-                    run = wm.get_run(run_id)
-                    continue
+                    if sd.name == StageName.VERIFIER:
+                        _console(ctx, f"  [{WF_STATUS_WARN}]Verifier failed → back to Preparer (attempt {current}/{max_r})[/{WF_STATUS_WARN}]")
+                        # Go back to DATA_PREP so the worker re-processes with verifier feedback
+                        prep_idx = _find_stage_pointer(stages, StageName.DATA_PREP)
+                        if prep_idx >= 0:
+                            pointer = prep_idx
+                            _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                        fallback_ctx = None
+                        run = wm.get_run(run_id)
+                        continue
+                    else:
+                        _console(ctx, f"  [{WF_STATUS_WARN}]{sd.name} attempt {current} failed, retrying...[/{WF_STATUS_WARN}]")
+                        fallback_ctx = None
+                        run = wm.get_run(run_id)
+                        continue
                 # Exhausted — fail if required
                 if sd.name == StageName.DATA_PREP:
                     _console(ctx, f"  [{WF_STATUS_ERROR}]Preparer exhausted after {max_r} attempts, falling through to Verifier[/{WF_STATUS_ERROR}]")
