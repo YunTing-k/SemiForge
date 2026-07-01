@@ -4441,7 +4441,8 @@ class ResidualDiagnostic(nn.Module):
     outputs are obtained by differentiating terminal charge.
     """
 
-    def __init__(self, base: UnifiedIVCVModel, iv_resid: CompactKAN, cv_param_resid: CompactKAN, base_scale: float):
+    def __init__(self, base: UnifiedIVCVModel, iv_resid: CompactKAN, cv_param_resid: CompactKAN, base_scale: float,
+                 temp_kan_hidden: int = 8, temp_kan_grid: int = 3, temp_kan_k: int = 3):
         super().__init__()
         self.base = base
         self.iv_resid = iv_resid
@@ -4551,9 +4552,9 @@ class ResidualDiagnostic(nn.Module):
         )
         self.temperature_kan = CompactKAN(
             temp_norm,
-            width=[len(TEMP_FEATURE_NAMES), 8, len(TEMP_KAN_NAMES)],
-            grid=3,
-            k=3,
+            width=[len(TEMP_FEATURE_NAMES), temp_kan_hidden, len(TEMP_KAN_NAMES)],
+            grid=temp_kan_grid,
+            k=temp_kan_k,
             ranges={
                 "dalpha_common_V_per_K": 0.9e-3,
                 "dalpha_asym_V_per_K": 0.35e-3,
@@ -9332,10 +9333,18 @@ def train_current_device_iv_residual(
         json.dumps(report, indent=2), encoding="utf-8"
     )
     if not accepted:
-        raise RuntimeError(
-            "IV residual failed held-out complete-curve acceptance: "
-            f"balanced_gain={gain:.6g}, required={args.iv_residual_min_heldout_gain:.6g}."
-        )
+        if getattr(args, "skip_precision_gates", False):
+            print(
+                f"[IV residual] held-out acceptance gate skipped "
+                f"(balanced_gain={gain:.6g} < required={args.iv_residual_min_heldout_gain:.6g}). "
+                f"Proceeding with unverified residual.",
+                flush=True,
+            )
+        else:
+            raise RuntimeError(
+                "IV residual failed held-out complete-curve acceptance: "
+                f"balanced_gain={gain:.6g}, required={args.iv_residual_min_heldout_gain:.6g}."
+            )
     if bool(getattr(args, "freeze_iv_residual_after_stage", True)):
         for prm in params:
             prm.requires_grad_(False)
@@ -9664,11 +9673,18 @@ def train_current_device_base_iv_pkan(
             for key, item in gate_checks.items()
             if not item["pass"]
         )
-        raise RuntimeError(
-            "Base IV-PKAN complete-curve precision gate failed: "
-            f"{failures}. "
-            "The residual stage is not allowed to hide a weak base model."
-        )
+        if getattr(args, "skip_precision_gates", False):
+            print(
+                f"[base IV-PKAN] precision gate skipped (--skip-precision-gates): "
+                f"{failures}. Proceeding with degraded base model.",
+                flush=True,
+            )
+        else:
+            raise RuntimeError(
+                "Base IV-PKAN complete-curve precision gate failed: "
+                f"{failures}. "
+                "The residual stage is not allowed to hide a weak base model."
+            )
     print(
         "[base IV-PKAN] accepted current-device base: "
         f"nonzero={selected_metrics['iv_nonzero_rms']:.5g}, "
@@ -16916,6 +16932,14 @@ def parse_args():
         help="Fast iteration preset: smaller data/epoch budget and skip HSPICE, edge-symbolic export, and release packaging. Do not use for final signoff.",
     )
     ap.add_argument(
+        "--skip-precision-gates",
+        action="store_true",
+        default=False,
+        help="Skip post-training precision gates (base IV, IV residual, deployment HSPICE). "
+             "Training still runs but failing gate thresholds are logged as warnings instead of "
+             "raising RuntimeError. Use with --quick-run for minimal-run smoke tests.",
+    )
+    ap.add_argument(
         "--smoke-check",
         action="store_true",
         default=False,
@@ -17508,6 +17532,9 @@ def parse_args():
     ap.add_argument("--weight-decay", type=float, default=1e-6)
     ap.add_argument("--lr-eta-min-frac", type=float, default=0.02)
     ap.add_argument("--grad-clip", type=float, default=5.0)
+    ap.add_argument("--temperature-kan-hidden", type=int, default=8)
+    ap.add_argument("--temperature-kan-grid", type=int, default=3)
+    ap.add_argument("--temperature-kan-k", type=int, default=3)
     ap.add_argument("--deriv-warmup-epochs", type=int, default=80)
     ap.add_argument("--deriv-warmup-multiplier", type=int, default=3)
     ap.add_argument("--eval-every", type=int, default=40)
@@ -17916,6 +17943,7 @@ def apply_quick_run_preset(args):
     args.max_cv_points = min(int(args.max_cv_points), 9000)
     args.epochs = min(int(args.epochs), 100)
     args.base_iv_epochs = min(int(args.base_iv_epochs), 140)
+    args.iv_residual_stage_epochs = min(int(args.iv_residual_stage_epochs), 140)
     args.base_iv_restarts = 1
     args.base_iv_early_stop_min_epochs = min(
         int(args.base_iv_early_stop_min_epochs), 100
@@ -18128,7 +18156,12 @@ def main():
         CV_RESID_PARAM_NAMES,
         hidden_override=max(8, int(meta["training_args"]["kan_hidden"]) // 2),
     )
-    diag = ResidualDiagnostic(base, iv_resid, cv_resid, final_scale).to(device=device, dtype=dtype)
+    diag = ResidualDiagnostic(
+        base, iv_resid, cv_resid, final_scale,
+        temp_kan_hidden=int(args.temperature_kan_hidden),
+        temp_kan_grid=int(args.temperature_kan_grid),
+        temp_kan_k=int(args.temperature_kan_k),
+    ).to(device=device, dtype=dtype)
     if args.reset_base_from_physical_fit and args.resume_diag_state is None:
         zero_compact_kan_output_head(diag.cv_q_resid)
         print("Initialized current-device CV parameter/residual KAN at exact zero correction.")
@@ -18375,7 +18408,15 @@ def main():
         )
         print(json.dumps(report, indent=2))
         if not report["pass"]:
-            raise RuntimeError("Deployment-only HSPICE validation failed.")
+            if getattr(args, "skip_precision_gates", False):
+                print(
+                    "[deployment] HSPICE validation gate skipped "
+                    f"(--skip-precision-gates): {json.dumps(report)}. "
+                    "Proceeding without HSPICE signoff.",
+                    flush=True,
+                )
+            else:
+                raise RuntimeError("Deployment-only HSPICE validation failed.")
         return
 
     if args.checkpoint_diagnostic_only:

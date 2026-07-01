@@ -504,6 +504,43 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
             "Disable only for debugging or if loss weights should remain static."
         ),
     },
+    "weight_decay": {
+        "type": "float",
+        "lo": 1e-8,
+        "hi": 1e-3,
+        "default": 1e-6,
+        "section": "full_model",
+        "desc": (
+            "AdamW weight decay (L2 regularization) for full model training. "
+            "Higher values penalize large weights more strongly. "
+            "Increase if model overfits the training data."
+        ),
+    },
+    "grad_clip": {
+        "type": "float",
+        "lo": 0.1,
+        "hi": 50.0,
+        "default": 5.0,
+        "section": "full_model",
+        "desc": (
+            "Maximum gradient norm for gradient clipping. "
+            "Prevents exploding gradients during training. "
+            "Decrease if loss spikes occur; increase if training is too slow."
+        ),
+    },
+    "lr_eta_min_frac": {
+        "type": "float",
+        "lo": 0.001,
+        "hi": 0.5,
+        "default": 0.02,
+        "section": "full_model",
+        "desc": (
+            "Minimum learning rate as a fraction of initial LR "
+            "(CosineAnnealingLR scheduler). "
+            "Lower values allow the scheduler to decay further. "
+            "Increase if training converges too quickly to a suboptimal minimum."
+        ),
+    },
     "cv_train_subset": {
         "type": "string",
         "lo": None,
@@ -655,6 +692,42 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
             "Temperature KAN scaling factor. "
             "Controls the contribution weight of temperature-dependent terms. "
             "Increase to make temperature effects more prominent."
+        ),
+    },
+    "temperature_kan_hidden": {
+        "type": "int",
+        "lo": 4,
+        "hi": 32,
+        "default": 8,
+        "section": "temperature",
+        "desc": (
+            "Hidden layer size for the temperature KAN sub-network. "
+            "Larger values increase capacity for complex temperature-dependence. "
+            "Increase if temperature trends are poorly captured."
+        ),
+    },
+    "temperature_kan_grid": {
+        "type": "int",
+        "lo": 2,
+        "hi": 20,
+        "default": 3,
+        "section": "temperature",
+        "desc": (
+            "Grid resolution for temperature KAN B-splines. "
+            "Higher values provide finer temperature interpolation. "
+            "Increase for devices with sharp temperature-dependent transitions."
+        ),
+    },
+    "temperature_kan_k": {
+        "type": "int",
+        "lo": 2,
+        "hi": 5,
+        "default": 3,
+        "section": "temperature",
+        "desc": (
+            "Spline degree for temperature KAN B-splines. "
+            "Higher-order splines are smoother but may oscillate. "
+            "k=3 (cubic) is standard; increase only for higher-order continuity."
         ),
     },
 }

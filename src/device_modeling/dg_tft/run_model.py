@@ -458,6 +458,18 @@ def train_full_model(cfg, p, *, quick: bool = False) -> None:
         cfg["temperature"]["minimum_span_K"],
         "--temperature-kan-scale",
         cfg["temperature"]["kan_scale"],
+        "--temperature-kan-hidden",
+        cfg["temperature"].get("kan_hidden", "8"),
+        "--temperature-kan-grid",
+        cfg["temperature"].get("kan_grid", "3"),
+        "--temperature-kan-k",
+        cfg["temperature"].get("kan_k", "3"),
+        "--weight-decay",
+        section.get("weight_decay", "1e-6"),
+        "--grad-clip",
+        section.get("grad_clip", "5.0"),
+        "--lr-eta-min-frac",
+        section.get("lr_eta_min_frac", "0.02"),
         "--iv-stage-alignment",
         cfg["preprocessing"]["iv_stage_alignment"],
         "--iv-stage-max-shift-V",
@@ -524,7 +536,7 @@ def train_full_model(cfg, p, *, quick: bool = False) -> None:
             "--skip-hspice-cv-grid-equivalence",
         ]
     if quick:
-        command.append("--quick-run")
+        command += ["--quick-run", "--skip-precision-gates"]
     run(command)
 
 
@@ -577,12 +589,18 @@ def train_base_pkan(cfg, p) -> None:
         "--disable-cv-residual",
         "--disable-temperature-kan",
         "--no-auto-enable-temperature-kan",
+        "--temperature-kan-hidden",
+        cfg["temperature"].get("kan_hidden", "8"),
+        "--temperature-kan-grid",
+        cfg["temperature"].get("kan_grid", "3"),
+        "--temperature-kan-k",
+        cfg["temperature"].get("kan_k", "3"),
         "--skip-hspice-smoke",
         "--skip-hspice-grid-equivalence",
         "--skip-hspice-cv-grid-equivalence",
     ]
     if yes(cfg, "runtime", "minimal_run"):
-        command.append("--quick-run")
+        command += ["--quick-run", "--skip-precision-gates"]
     run(command)
 
 

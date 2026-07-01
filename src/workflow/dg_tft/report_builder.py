@@ -55,18 +55,13 @@ def build_and_write_reports(
     paths = get_report_paths(output_dir)
     success = True
 
-    try:
-        # 1) Artifact manifest (must run first so the other reports can reference it)
-        manifest = _build_artifact_manifest(run_data, output_dir)
-        with open(paths["manifest"], "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
-        sys_log.info("ARTIFACT_MANIFEST written: %s", paths["manifest"])
-    except Exception:
-        sys_log.exception("Failed to write ARTIFACT_MANIFEST")
-        success = False
+    # Build manifest data structure (used by json/md builders for artifact info).
+    # We defer writing it to disk until after json/md are written, so the
+    # manifest correctly reports them as existing.
+    manifest = _build_artifact_manifest(run_data, output_dir)
 
     try:
-        # 2) JSON summary
+        # 1) JSON summary
         json_summary = _build_json_summary(run_data, manifest, prep_info)
         with open(paths["json"], "w", encoding="utf-8") as f:
             json.dump(json_summary, f, indent=2, ensure_ascii=False)
@@ -76,13 +71,24 @@ def build_and_write_reports(
         success = False
 
     try:
-        # 3) Markdown summary
+        # 2) Markdown summary
         md_text = _build_md_summary(run_data, manifest, prep_info)
         with open(paths["md"], "w", encoding="utf-8") as f:
             f.write(md_text)
         sys_log.info("RUN_SUMMARY.md written: %s", paths["md"])
     except Exception:
         sys_log.exception("Failed to write RUN_SUMMARY.md")
+        success = False
+
+    try:
+        # 3) Artifact manifest — written last so json/md exist on disk when
+        #    the manifest checks for them
+        manifest = _build_artifact_manifest(run_data, output_dir)
+        with open(paths["manifest"], "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        sys_log.info("ARTIFACT_MANIFEST written: %s", paths["manifest"])
+    except Exception:
+        sys_log.exception("Failed to write ARTIFACT_MANIFEST")
         success = False
 
     return success

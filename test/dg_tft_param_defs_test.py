@@ -49,7 +49,8 @@ class TestParamTables(unittest.TestCase):
             self.assertIn(p, self.FULL_MODEL_PARAMS, f"Missing KAN param: {p}")
 
     def test_temperature_params_present(self):
-        for p in ("temperature_mode", "minimum_span_K", "kan_scale"):
+        for p in ("temperature_mode", "minimum_span_K", "kan_scale",
+                  "temperature_kan_hidden", "temperature_kan_grid", "temperature_kan_k"):
             self.assertIn(p, self.FULL_MODEL_PARAMS, f"Missing temperature param: {p}")
 
     def test_print_every_present(self):
@@ -63,6 +64,10 @@ class TestParamTables(unittest.TestCase):
         self.assertEqual(cross["epochs_shared"]["section"], "base_pkan")
         self.assertIn("temperature_mode", cross)
         self.assertEqual(cross["temperature_mode"]["section"], "temperature")
+        self.assertIn("temperature_kan_hidden", cross)
+        self.assertEqual(cross["temperature_kan_hidden"]["section"], "temperature")
+        self.assertIn("weight_decay", cross)
+        self.assertEqual(cross["weight_decay"]["section"], "full_model")
 
     def test_primary_section_params_have_no_section_field(self):
         """Params in the primary [full_model] section should NOT have a section field."""
@@ -73,7 +78,7 @@ class TestParamTables(unittest.TestCase):
 
     def test_full_model_table_structure(self):
         self._check_table(self.FULL_MODEL_PARAMS, "FULL_MODEL")
-        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 44)
+        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 50)
 
     def test_hysteresis_table_structure(self):
         self._check_table(self.HYSTERESIS_PARAMS, "HYSTERESIS")

@@ -18,6 +18,9 @@
 /src/utility/__pycache__
 /src/agent/__pycache__
 /src/device_modeling/**/__pycache__
+/src/device_modeling/.runtime_cache/
+/src/device_modeling/trained_model/
+/src/device_modeling/validation/
 /src/workflow/**/__pycache__
 /test/__pycache__
 /testdata/
