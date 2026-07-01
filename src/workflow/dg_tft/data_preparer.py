@@ -319,15 +319,24 @@ def _run_worker_and_verifier(
     muted = getattr(ctx, "subagent_mute", False)
 
     if console and not muted:
-        console.print("  [bold]Worker[/bold] [bright_black]processing raw files ...[/bright_black]")
+        console.print("  [bold]Preparer[/bold] [bright_black]SubAgent processing raw files ...[/bright_black]")
     _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
 
     handoff = _read_worker_handoff(output_dir)
+    if console and not muted:
+        iv_count = handoff.get("output_manifest", {}).get("iv_files", 0) if handoff else 0
+        cv_ok = "✓" if (handoff.get("output_manifest", {}).get("cv_files", 0) if handoff else 0) else "✗"
+        console.print(f"  [bold green]Preparer done[/bold green] [bright_black]({iv_count} IV files, CV:{cv_ok})[/bright_black]")
 
     if console and not muted:
-        console.print("  [bold]Verifier[/bold] [bright_black]checking output structure ...[/bright_black]")
+        console.print("  [bold]Verifier[/bold] [bright_black]SubAgent checking output structure ...[/bright_black]")
     verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name)
     _write_verifier_result(output_dir, verifier_feedback)
+    if console and not muted:
+        vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
+        status = "[bold green]Verifier done ✓[/bold green]" if vf_ok else "[bold red]Verifier done ✗[/bold red]"
+        summary = verifier_feedback.get("summary", "")[:120] if verifier_feedback else ""
+        console.print(f"  {status} [bright_black]{summary}[/bright_black]")
 
     ok, issues = _check_output(output_dir)
     return handoff, verifier_feedback, ok, issues
