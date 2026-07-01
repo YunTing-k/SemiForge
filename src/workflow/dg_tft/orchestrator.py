@@ -240,14 +240,36 @@ def run_workflow(
 
         # ── Execute stage ──
         if sd.kind == "agent":
-            attempt_dir = _run_agent_stage(ctx, run_id, sd, output_dir, dataset_dir,
-                                           raw_dataset_dir, preferences,
-                                           op_log, fallback_ctx, retry_counts, prep_max_retries)
-            # Update prep output dir after Verifier passes
-            if sd.name == StageName.VERIFIER and attempt_dir:
-                prep_output_dir = attempt_dir
-            _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
-            pointer += 1
+            attempt_dir, agent_ok = _run_agent_stage(ctx, run_id, sd, output_dir, dataset_dir,
+                                                     raw_dataset_dir, preferences,
+                                                     op_log, fallback_ctx, retry_counts, prep_max_retries)
+
+            if not agent_ok:
+                retry_key = f"{sd.name}_retries"
+                current = retry_counts.get(retry_key, 0)
+                max_r = prep_max_retries if sd.name == StageName.DATA_PREP else prep_max_retries
+                if current < max_r:
+                    _console(ctx, f"  [{WF_STATUS_WARN}]{sd.name} attempt {current} failed, retrying...[/{WF_STATUS_WARN}]")
+                    fallback_ctx = None
+                    run = wm.get_run(run_id)
+                    continue
+                # Exhausted — fail if required
+                if sd.name == StageName.DATA_PREP:
+                    _console(ctx, f"  [{WF_STATUS_ERROR}]Preparer exhausted after {max_r} attempts, falling through to Verifier[/{WF_STATUS_ERROR}]")
+                    pointer += 1
+                else:
+                    wm.mark_failed(run_id, f"Required stage {sd.name} exhausted after {max_r} attempts")
+                    op_log.set_final_status("failed")
+                    _finalize_run(ctx, run_id, output_dir, t_start, stages,
+                                  failed=True, failed_stage=sd.name, failed_error=f"Verifier exhausted")
+                    return False, f"Failed at {sd.name}: verifier exhausted"
+            else:
+                _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+                # Update prep output dir after Verifier passes
+                if sd.name == StageName.VERIFIER and attempt_dir:
+                    prep_output_dir = attempt_dir
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
+                pointer += 1
             fallback_ctx = None
             run = wm.get_run(run_id)
             continue
@@ -394,10 +416,11 @@ def _run_agent_stage(
     fallback_ctx: dict[str, Any] | None,
     retry_counts: dict[str, int],
     max_retries: int,
-) -> str:
+) -> tuple[str, bool]:
     """Execute an agent-type stage (Preparer or Verifier).
 
-    Returns the attempt directory path.
+    Returns (attempt_dir, ok).  ok=False means the stage should be retried
+    if attempts remain, or the pipeline should fail if exhausted.
     """
     from src.constants import PREP_SUBDIR_NAME
     from src.workflow.dg_tft.data_preparer import (
@@ -447,6 +470,9 @@ def _run_agent_stage(
             else:
                 sys_log.error("Preparer exhausted after %d attempts", max_retries)
                 wm.mark_failed(run_id, error or "Preparer exhausted")
+            return attempt_dir, False
+
+        return attempt_dir, True
 
     elif stage_name == StageName.VERIFIER:
         if not raw_dataset_dir and not fallback_ctx:
@@ -471,8 +497,11 @@ def _run_agent_stage(
             else:
                 sys_log.error("Verifier exhausted after %d attempts", max_retries)
                 wm.mark_failed(run_id, "Verifier exhausted")
+            return attempt_dir, False
 
-    return attempt_dir
+        return attempt_dir, True
+
+    return attempt_dir, False
 
 
 def _build_handoff_history(op_log: OperationLog | None) -> str:
