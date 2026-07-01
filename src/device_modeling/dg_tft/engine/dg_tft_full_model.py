@@ -4303,7 +4303,7 @@ def checkpoint_output_policy(
     if not isinstance(policy, dict):
         metrics = checkpoint.get("metrics") if isinstance(checkpoint, dict) else None
         if not isinstance(metrics, dict):
-            sibling = source.parent / "v92_safe_residual_metrics.json"
+            sibling = source.parent / "v93_safe_residual_metrics.json"
             if sibling.exists():
                 metrics = json.loads(sibling.read_text(encoding="utf-8"))
         if isinstance(metrics, dict):
@@ -16783,7 +16783,6 @@ def write_release_package(
     metrics["hspice_cv_grid_equivalence"] = hspice_cv_grid
     metrics["deployment_equivalence_summary"] = _deployment_equivalence_summary(metrics)
     metrics_text = json.dumps(metrics, indent=2)
-    (out_dir / "v92_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     (out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     status = _release_pass_fail(safe_scan, safe_shape, metrics, args)
     manifest = {
@@ -17656,7 +17655,7 @@ def parse_args():
         default=False,
         help=(
             "In finalize-only mode, reuse accepted scales/modes from the existing "
-            "v92_safe_residual_metrics.json instead of repeating expensive scans."
+            "v93_safe_residual_metrics.json instead of repeating expensive scans."
         ),
     )
     ap.add_argument(
@@ -18421,7 +18420,7 @@ def main():
     print(f"Active external CV charge-PKAN outputs: {getattr(diag, 'active_cv_charge_pkan_outputs', [])}")
 
     if args.deployment_validation_only:
-        metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
+        metrics_path = args.out_dir / "v93_safe_residual_metrics.json"
         if not metrics_path.exists():
             raise FileNotFoundError(
                 f"Deployment-only validation requires existing accepted metrics: {metrics_path}"
@@ -18517,7 +18516,7 @@ def main():
         if args.resume_diag_state is None:
             raise ValueError("--checkpoint-diagnostic-only requires --resume-diag-state")
         reference_metrics = (
-            args.resume_diag_state.parent / "v92_safe_residual_metrics.json"
+            args.resume_diag_state.parent / "v93_safe_residual_metrics.json"
         )
         if not reference_metrics.exists():
             legacy_metrics = args.resume_diag_state.parent / "safe_residual_metrics.json"
@@ -18712,7 +18711,7 @@ def main():
     cv_eval_df = cv_train_df_all.copy()
     ext_iv = extrapolation_iv_dataframe()
     ext_cv = extrapolation_cv_dataframe(trap)
-    accepted_metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
+    accepted_metrics_path = args.out_dir / "v93_safe_residual_metrics.json"
     if args.reuse_safe_selection:
         if not accepted_metrics_path.exists():
             raise FileNotFoundError(
@@ -18949,7 +18948,7 @@ def main():
     cv_decomp.to_csv(args.out_dir / "v92_cv_kernel_decomposition.csv", index=False, encoding="utf-8-sig")
     audit.to_csv(args.out_dir / "v92_cv_quality_audit.csv", index=False, encoding="utf-8-sig")
     metrics_text = json.dumps(metrics, indent=2)
-    (args.out_dir / "v92_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
+    (args.out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     (args.out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     plot_diag(iv_out, cv_out, args.out_dir)
     plot_stage_outputs(iv_out, cv_out, metrics, args.out_dir)
