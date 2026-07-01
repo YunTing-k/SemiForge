@@ -475,3 +475,13 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 **Files Affected**: `dg_tft_full_model.py`, `run_model.py`, `model_config_new_device_template.ini`, `param_defs.py`, `quality_guard.py`, `report_builder.py`, `.gitignore`, 2 test files.
 
 **Tests**: 911 pass (11 skipped).
+
+---
+
+### 2026-07-01 | Development Order Adjustment — Tool Unification Promoted
+
+**Change**: Promoted 1.5 Tool Unification (`dg_tft_run` / `dg_tft_status` / `dg_tft_report`) from original Step 13 to Step 6, before Agent infrastructure.
+
+**Rationale**: Subsequent Agent development must target a unified interface. Building agents on 4 scattered tools through Step 12 and then unifying would cause compacted agents to be misled by legacy tool schemas.
+
+**New Development Order**: 0-5 (done) → 6. Tool Unification → 7. Agent Infrastructure → 8-12. Agents A-E → 13. Agent E interpretation.

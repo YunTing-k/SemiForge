@@ -487,3 +487,13 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **受影响文件**：`dg_tft_full_model.py`、`run_model.py`、`model_config_new_device_template.ini`、`param_defs.py`、`quality_guard.py`、`report_builder.py`、`.gitignore`、测试 2 个。
 
 **测试**：911 pass（11 skipped）。
+
+---
+
+### 2026-07-01 | 开发顺序调整 — Tool 统一提前
+
+**变更**：将 1.5 Tool 统一（`dg_tft_run` / `dg_tft_status` / `dg_tft_report`）从原 Step 13 提至 Step 6，置于 Agent 基础设施之前。
+
+**原因**：后续 Agent 开发需面向统一接口构建；若在 4 个散 tool 上开发 Agent 到 Step 12 再统一，compact 后的 agent 会被旧接口误导。
+
+**新的开发顺序**：0-5（已完成）→ 6. Tool 统一 → 7. Agent 基础设施 → 8-12. Agent A-E → 13. Agent E 解读。
