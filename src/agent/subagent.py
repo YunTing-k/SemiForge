@@ -30,7 +30,7 @@ import json
 import time
 import logging
 
-from typing import Any, Callable
+from typing import Any, Callable  # Callable for subagent_tools handlers
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from rich.console import Console
@@ -41,13 +41,14 @@ from src.tool.scoreboard import Scoreboard
 from src.tool import tool_def
 from src.tool.tool_dispatch import call_tools
 from src.agent.progress import AgentStatus, SubAgentProgress, SUPPORTED_TYPES, PERMISSION_PRESETS, SUPPORTED_TYPES_DESC
+from src.utility.basic_utils import truncate_tool_result
 from src.constants import *
 
 sys_log = logging.getLogger('logger')
 
 # subagent config keys read from ctx.agent_configs at init time
 _CONFIG_KEY_MAX_STEPS = "SUBAGENT_MAX_STEPS"
-_CONFIG_KEY_WARN_STEPS = "SUBAGENT_WARN_STEPS"
+_CONFIG_KEY_WARN_STEPS = "SUBAGENT_EARLY_WARN_STEPS"
 _CONFIG_KEY_MODEL_TYPE = "SUBAGENT_MODEL_TYPE"
 _CONFIG_KEY_TIMEOUT_S = "SUBAGENT_TIMEOUT_S"
 _CONFIG_KEY_API_RETRY = "SUBAGENT_API_RETRY_COUNT"
@@ -216,6 +217,7 @@ class SubAgent:
         self._dummy_progress = self._make_dummy_progress()
         self.stop_mode = stop_mode
         self.stop_schemas = stop_schemas or []
+        self.start_time: float = 0.0
         self._subagent_tool_schemas = subagent_tools or []
         self._subagent_tool_names = {t["function"]["name"] for t in self._subagent_tool_schemas}
         self._tool_handlers: dict[str, Callable[..., Any]] = tool_handlers or {}
@@ -317,6 +319,7 @@ class SubAgent:
             f"Your task: {self.prompt}\n\n"
             f"{board_note}"
             f"{stop_guide}"
+            "The bash tool uses GNU bash (Git Bash on Windows). Do NOT use PowerShell/cmd.exe commands.\n\n"
             "Work step by step. Use tools to gather information or make changes. "
             "Do not ask the user questions – you are running autonomously.\n\n"
             f"Available agent types for reference:\n"
@@ -339,13 +342,14 @@ class SubAgent:
             return self.result
         self.status = AgentStatus.RUNNING
         self.progress.status = AgentStatus.RUNNING
-        _start_time = time.time()
+        self.start_time = time.time()
+        self.progress.start_time = self.start_time
 
         try:
             assert self.max_steps is not None
             for step in range(1, self.max_steps + 1):
                 """check if timeout"""
-                if self.timeout_s is not None and time.time() - _start_time > self.timeout_s:
+                if self.timeout_s is not None and time.time() - self.start_time > self.timeout_s:
                     self.status = AgentStatus.TIMEOUT
                     self.error = f"Timeout after {self.timeout_s:.0f}s"
                     break
@@ -445,6 +449,8 @@ class SubAgent:
             self.error = str(e)
             sys_log.error(f"SubAgent {self.agent_id} failed: {e}")
         finally:
+            if self.start_time > 0:
+                self.progress.elapsed_s = time.time() - self.start_time
             self.dump()
         if self.stop_mode == "schema" and self.status not in (AgentStatus.DONE, AgentStatus.TIMEOUT, AgentStatus.ERROR):
             self.status = AgentStatus.ERROR
@@ -574,11 +580,7 @@ class SubAgent:
             results, user_addon = call_tools(
                 func_name, arguments, self.ctx, self.board, self._dummy_progress
             )
-            result_str = json.dumps(results, ensure_ascii=False)
-            if len(result_str) > self._tool_result_limit:
-                result_str = result_str[:self._tool_result_limit] + (
-                    f"...[{TRUNCATED_LABEL}: {len(result_str) - self._tool_result_limit} chars omitted from tool result]"
-                )
+            result_str = truncate_tool_result(results, self._tool_result_limit, TOOL_RESULT_TRUNCATION_ROUNDS)
             self.ctx.messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call["id"],

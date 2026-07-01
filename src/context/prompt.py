@@ -337,6 +337,12 @@ def query_prompts(ctx: AgentContext, session_uuid: str | None, console: Console)
     return messages
 
 
+_SYSTEM_REMINDER_STR = "⚑"
+_SKILL_STR = "▲"
+_CRON_STR = "❖"
+_SUBAGENT_STR = "⬟"
+
+
 def print_messages(messages: list[dict[str, Any]], ctx: AgentContext, console: Console):
     """print the given messages (exclude system) with AgentContext"""
     try:
@@ -463,6 +469,20 @@ def print_messages(messages: list[dict[str, Any]], ctx: AgentContext, console: C
         sys_log.error(f"Failed to print the history messages with error: {e}")
         console.print(f"Failed to print the history messages with error: {e}", style="bold red")
         raise RuntimeError(e)
+
+
+def get_msg_render(msg: dict[str, Any], as_md: bool) -> str:
+    """get the icon-based render string for a message type"""
+    content = msg.get("content", "")
+    if SYS_REMINDER_START_LABEL in content:
+        return f" {_SYSTEM_REMINDER_STR} "
+    if SKILL_START_LABEL in content:
+        return f" {_SKILL_STR} "
+    if CRON_START_LABEL in content:
+        return f" {_CRON_STR} "
+    if SUBAGENT_START_LABEL in content:
+        return f" {_SUBAGENT_STR} "
+    return ""
 
 
 def get_reasoning(message: dict[str, Any]) -> str | None:
@@ -747,8 +767,8 @@ def llm_stream_manage(response: Stream[ChatCompletionChunk], ctx: AgentContext, 
     """realization of managing stream LLM responses in main agent-loop"""
 
     """initialize collectors for streaming response"""
-    collected_reasoning = ""
-    collected_content = ""
+    collected_reasoning = None
+    collected_content = None
     collected_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool_call dict
 
     final_usage = None
@@ -779,10 +799,12 @@ def llm_stream_manage(response: Stream[ChatCompletionChunk], ctx: AgentContext, 
 
             # Collect content
             if delta.content:
-                collected_content += delta.content
+                collected_content = (collected_content or "") + delta.content
 
             # Collect reasoning (for DeepSeek and similar models)
-            collected_reasoning += get_reasoning_stream(delta)
+            reason_delta = get_reasoning_stream(delta)
+            if reason_delta:
+                collected_reasoning = (collected_reasoning or "") + reason_delta
 
             """collect tool calls"""
             if delta.tool_calls:
@@ -889,6 +911,8 @@ def llm_stream_manage(response: Stream[ChatCompletionChunk], ctx: AgentContext, 
     """extract parts for display"""
     assistant_reasoning = get_reasoning(dumped_msg)
     assistant_chat = dumped_msg.get("content")
+    if assistant_chat is not None and len(assistant_chat.strip()) == 0:
+        assistant_chat = None
 
     """validate response"""
     if (assistant_chat is None or assistant_chat == "") and (converted_tool_calls is None):

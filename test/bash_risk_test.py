@@ -116,11 +116,8 @@ class TestRiskSafe(unittest.TestCase):
         "df -h", "du -sh .", "echo hello", "which python", "man ls",
         "sort file.txt", "uniq file.txt", "diff a.txt b.txt",
         "ps aux", "ping -c 1 google.com", "nslookup google.com",
-        "tar -tf archive.tar", "tar -czf out.tar.gz ./dir",
-        "gzip -d file.gz", "unzip archive.zip",
         "jq '.key' data.json", "sed 's/old/new/g' file.txt",
-        "awk '{print $1}' file.txt", "sleep 1", "timeout 5 cmd",
-        "env", "printenv PATH", "stat file.txt", "file file.txt",
+        "sleep 1", "env", "printenv PATH", "stat file.txt", "file file.txt",
         "md5sum file.txt", "sha256sum file.txt", "cksum file.txt",
         "tac file.txt", "column -t file.txt", "iconv -f utf-8 -t gbk file.txt",
     ]

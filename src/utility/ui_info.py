@@ -263,6 +263,47 @@ def get_subagent_render(agent_list: dict[str, SubAgentProgress], now_time: datet
     return Text("").join(lines) if lines else None
 
 
+def render_subagent_line(p: SubAgentProgress) -> Text:
+    """render a one-line final summary for a completed foreground subagent"""
+    _icon_map = {
+        AGENT_PENDING_LABEL: SUBAGENT_PENDING_ICON,
+        AGENT_RUNNING_LABEL: SUBAGENT_IN_PROGRESS_ICON,
+        AGENT_DONE_LABEL: SUBAGENT_DONE_ICON,
+        AGENT_TIMEOUT_LABEL: SUBAGENT_ERROR_ICON,
+        AGENT_ERROR_LABEL: SUBAGENT_ERROR_ICON,
+    }
+    sv = p.status.value
+    icon = _icon_map.get(sv, SUBAGENT_PENDING_ICON)
+
+    if sv == AGENT_DONE_LABEL:
+        icon_style = f"bold {TASK_COMPLETED_COLOR}"
+        name_style = "bright_black"
+        usage_style = "bright_black"
+    elif sv == AGENT_ERROR_LABEL:
+        icon_style = "bold red"
+        name_style = "bold red"
+        usage_style = "bright_black"
+    elif sv == AGENT_TIMEOUT_LABEL:
+        icon_style = "bold yellow"
+        name_style = "bold yellow"
+        usage_style = "bright_black"
+    else:
+        icon_style = "bright_black"
+        name_style = "bright_black"
+        usage_style = "bright_black"
+
+    line = Text()
+    line.append(f" {icon} ", style=icon_style)
+    line.append(f"{p.subagent_type} ", style=name_style)
+    subject_display = p.subject[:SUBAGENT_SUBJECT_CHAR_LIMIT] if len(p.subject) > SUBAGENT_SUBJECT_CHAR_LIMIT else p.subject
+    line.append(f"{subject_display} ", style="bright_black")
+    line.append("↑", style=f"bold {MAJOR_COLOR2}")
+    line.append(f" {p.input_tokens / 1000:.1f}K", style=usage_style)
+    line.append(" ↓", style=f"bold {MAJOR_COLOR1}")
+    line.append(f" {p.output_tokens / 1000:.1f}K", style=usage_style)
+    return line
+
+
 def loading_spinner(func: Callable, *args,
                     waiting_desc: str, done_desc: str, intrp_desc: str, fail_desc: str, spinner: str, out_except: Exception,
                     console: Console, with_progress: bool = False,

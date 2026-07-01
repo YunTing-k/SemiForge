@@ -39,6 +39,7 @@ spawn calls, runs normal tools sequentially, then spawns agents concurrently in 
 Spinner wrappers integrate with Rich display. `call_tools` dispatch lives in `tool_dispatch.py`.
 """
 import json
+import os
 import uuid
 import time
 import random
@@ -48,7 +49,7 @@ import threading
 from typing import Callable, Any
 from rich.console import Console
 from rich.progress import Progress
-from src.utility.ui_info import loading_spinner, loading_spinner_with_board, pause_for_permission, resume_from_permission
+from src.utility.ui_info import loading_spinner, loading_spinner_with_board, pause_for_permission, resume_from_permission, render_subagent_line
 from src.context.agent_context import AgentContext
 from src.tool.scoreboard import Scoreboard
 from src.tool.tool_dispatch import ToolCallsCancelled, if_tool_mute, call_tools
@@ -56,6 +57,8 @@ from src.tool.ask_permission import ask_permission_tui
 from src.agent.subagent import SubAgent
 from src.agent.progress import AgentStatus, SubAgentProgress
 from src.constants import *
+
+from src.utility.basic_utils import truncate_tool_result
 
 sys_log = logging.getLogger('logger')
 
@@ -197,9 +200,7 @@ def execute_tools(tool_calls: list[dict[str, Any]], ctx: AgentContext, board: Sc
         if not if_tool_mute(func_name):
             progress.console.print(f"Using tool: [{MAJOR_COLOR1}]{func_name}[/{MAJOR_COLOR1}]", style="bright_black")
         results, user_addon = call_tools(func_name, arguments, ctx, board, progress)
-        result_str = json.dumps(results, ensure_ascii=False)
-        if len(result_str) > limit:
-            result_str = result_str[:limit] + f"...[{TRUNCATED_LABEL}: {len(result_str) - limit} chars omitted from tool result]"
+        result_str = truncate_tool_result(results, limit, TOOL_RESULT_TRUNCATION_ROUNDS)
         messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
@@ -252,9 +253,27 @@ def execute_tools(tool_calls: list[dict[str, Any]], ctx: AgentContext, board: Sc
             messages.append({
                 "role": "user",
                 "content": json.dumps(addon, ensure_ascii=False),
-            })
+        })
 
     return messages
+
+
+
+def _save_subagent_summaries(session_uuid: str, entries: dict[str, dict]) -> None:
+    """persist subagent summaries keyed by tool_call_id to summaries.json (read-merge-write)"""
+    path = os.path.join(SESSION_PATH, session_uuid, SUBAGENT_DUMP_DIR, SUBAGENT_SUMMARIES_NAME)
+    try:
+        summaries: dict[str, dict] = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                summaries = json.load(f)
+        summaries.update(entries)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(summaries, f, indent=2, ensure_ascii=False)
+        sys_log.debug(f"Subagent summaries saved: {list(entries.keys())}")
+    except Exception as e:
+        sys_log.error(f"Failed to save subagent summaries: {e}")
 
 
 def generate_agent_id(ctx: AgentContext) -> str:
@@ -471,6 +490,7 @@ def execute_subagents(agent_calls: list[dict[str, Any]], main_ctx: AgentContext,
         main_ctx.tool_results_prompts += agent.stats["tool_results_prompts"]
     """gather subagent results"""
     messages = []
+    summary_entries: dict[str, dict] = {}
     for tc, agent in subagents:
         if agent.status == AgentStatus.DONE:
             if agent.result:
@@ -513,10 +533,20 @@ def execute_subagents(agent_calls: list[dict[str, Any]], main_ctx: AgentContext,
             progress.console.print(f"Subagent {agent.agent_id} terminated with {agent.status.value} status with "
                                    f"unknown reason.", style="bold yellow")
         agent.progress.if_archived = True
+        progress.console.print(render_subagent_line(agent.progress))
+        summary_entries[tc["id"]] = {
+            "agent_id": agent.agent_id,
+            "subagent_type": agent.subagent_type,
+            "status": agent.status.value,
+            "result": agent.result,
+            "error": agent.error,
+        }
         messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
             "content": json.dumps(result, ensure_ascii=False),
         })
+
+    _save_subagent_summaries(main_ctx.session_uuid, summary_entries)
 
     return messages

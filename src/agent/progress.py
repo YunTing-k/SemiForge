@@ -45,6 +45,8 @@ class SubAgentProgress:
     tool_calls_done: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    start_time: float = 0.0
+    elapsed_s: float = 0.0
     last_activity: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +62,8 @@ class SubAgentProgress:
             "tool_calls_done": self.tool_calls_done,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "start_time": self.start_time,
+            "elapsed_s": self.elapsed_s,
             "last_activity": self.last_activity,
         }
 
@@ -77,6 +81,8 @@ class SubAgentProgress:
             tool_calls_done=d.get("tool_calls_done", 0),
             input_tokens=d.get("input_tokens", 0),
             output_tokens=d.get("output_tokens", 0),
+            start_time=d.get("start_time", 0.0),
+            elapsed_s=d.get("elapsed_s", 0.0),
             last_activity=d.get("last_activity", 0.0),
         )
 
