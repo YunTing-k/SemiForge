@@ -2627,27 +2627,31 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         from src.workflow.dg_tft.data_preparer import _PREP_WORKER_REPORT_NAME
         from src.constants import PREP_SUBDIR_NAME, DG_TFT_RUNS_SUBDIR
 
-        # session/<uuid>/runs/data_prep/attempt_1/
+        # Create a pending run to get a unified run_id for prep
+        ok, run_id, now = wm.create_run(dataset_dir=raw_dataset_dir)
+        if not ok:
+            return {"status": FAIL_LABEL, "info": "Failed to create workflow run for prep"}
+
+        # session/<uuid>/runs/run_{run_id}/data_prep/attempt_1/
         runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-        output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, PREP_SUBDIR_NAME, "attempt_1")
+        output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id}", PREP_SUBDIR_NAME, "attempt_1")
 
         existing = _check_prepared_output(output_dir)
         if existing:
-            prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir)
+            prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir, run_id=run_id)
             wm.preparation_tracker.update_prep(prep_id, True, ["[SKIP] previously prepared data found"])
             return {
                 "status": SUCCESS_LABEL,
-                "info": f"Data already prepared. Prep ID: {prep_id}. Skipping re-preparation.",
+                "info": f"Data already prepared. Run ID / Prep ID: {run_id}. Skipping re-preparation.",
                 "prep_id": prep_id,
+                "run_id": run_id,
                 "output_dir": output_dir,
                 "ok": True,
                 "issues": ["[SKIP] previously prepared data found"],
             }
 
-        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir)
-
         os.makedirs(output_dir, exist_ok=True)
-        wm.preparation_tracker._preps[prep_id]["output_dir"] = output_dir
+        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, output_dir, run_id=run_id)
 
         from src.workflow.dg_tft.data_preparer import run_data_preparation
         run_data_preparation(ctx, raw_dataset_dir, output_dir, prep_id)
@@ -2655,11 +2659,12 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
         prep = wm.preparation_tracker.get_prep(prep_id)
         ok = prep["ok"] if prep else False
         issues = prep["issues"] if prep else []
-        sys_log.info("%s: data prep %d done: ok=%s issues=%s", func_name, prep_id, ok, issues)
+        sys_log.info("%s: data prep %d (run %d) done: ok=%s issues=%s", func_name, prep_id, run_id, ok, issues)
         return {
             "status": SUCCESS_LABEL,
-            "info": f"Data preparation complete. Prep ID: {prep_id}. OK: {ok}.",
+            "info": f"Data preparation complete. Run ID / Prep ID: {run_id}. OK: {ok}.",
             "prep_id": prep_id,
+            "run_id": run_id,
             "output_dir": output_dir,
             "ok": ok,
             "issues": issues,

@@ -216,6 +216,31 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
+### 2026-07-01 | Stage Attempt Logging (3.6)
+
+**`operation_log.py`** — `StageAttemptLog` + `OperationLog` infrastructure:
+
+- `AttemptTrigger` enum: `INITIAL` / `QUALITY_FAIL` / `AGENT_ADJUST` / `FALLBACK_SENT` / `FALLBACK_RECEIVED` / `UPSTREAM_CHANGED`
+- `StageAttemptLog` dataclass: `n` / `trigger` / `upstream` / `handoff` / `agent_decision` / `ini_snapshot` / `duration_s` / `metrics` / `adjustments` / `ok` / `error` / `quality_pass` — full `to_dict()` ↔ `from_dict()` serialization
+- `OperationLog`: `initialize(run_id, preferences)` → `append_attempt(stage, attempt)` → `set_final_status(status)` + `load()` / `get_stage_attempts()` / `get_last_attempt()` query API
+
+**Orchestrator integration**:
+- `run_workflow()` initializes `OperationLog` and passes it to the quality gate
+- Initial attempt logged after quality check (`trigger=INITIAL`, n=1)
+- Each retry logged as a separate attempt (`trigger=QUALITY_FAIL`, n=N+1)
+- `final_status` written on pipeline completion, timeout, or failure
+- Retry directory renamed: `_retry_N` → `attempt_{N+1}` (attempt_1 = initial run, attempt_2 = first retry)
+- `_cleanup_retry_dirs()` removed — all attempt directories preserved for Agent E interpretation
+
+**`run_id` unification**:
+- `PreparationTracker.register_prep()` now accepts optional `run_id` parameter; uses run_id as key when provided
+- `prepare_dg_tft_dataset` handler: creates pending run to get run_id; prep output at `session/<uuid>/runs/run_{run_id}/data_prep/attempt_1/`
+- `_get_prep_info()` supports run_id fallback lookup
+
+**Tests**: 26 tests (`dg_tft_operation_log_test.py`), covering enum values, dataclass serialization/deserialization/missing-field resilience, OperationLog init/append/multi-stage/persistence/corrupted file/nested dir auto-create/order preservation.
+
+---
+
 ## Lessons Learned
 
 ### Python module double-import trap
@@ -235,7 +260,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 - No Chinese in code output; `sys_log` and `console.print()` complementary
 
 ### Test strategy
-807 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
+833 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
 
 ### Agent intervention boundaries
 LLM/subagent only at 3 points: data preparation, format verification, failure diagnosis. Training execution, config generation, quality gating, and report building are pure rule-based code.

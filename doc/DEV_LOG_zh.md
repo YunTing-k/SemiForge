@@ -217,6 +217,31 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
+### 2026-07-01 | 参数试次记录 (3.6)
+
+**`operation_log.py`** — `StageAttemptLog` + `OperationLog` 基础组件：
+
+- `AttemptTrigger` 枚举：`INITIAL` / `QUALITY_FAIL` / `AGENT_ADJUST` / `FALLBACK_SENT` / `FALLBACK_RECEIVED` / `UPSTREAM_CHANGED`
+- `StageAttemptLog` dataclass：`n` / `trigger` / `upstream` / `handoff` / `agent_decision` / `ini_snapshot` / `duration_s` / `metrics` / `adjustments` / `ok` / `error` / `quality_pass` — 完整 `to_dict()` → `from_dict()` 序列化
+- `OperationLog`：`initialize(run_id, preferences)` → `append_attempt(stage, attempt)` → `set_final_status(status)` + `load()` / `get_stage_attempts()` / `get_last_attempt()` 查询接口
+
+**编排器集成**：
+- `run_workflow()` 初始化 `OperationLog` 并传递给质量门
+- 质量标准通过后记录初始 attempt（`trigger=INITIAL`，n=1）
+- 每次重试记录独立 attempt（`trigger=QUALITY_FAIL`，n=N+1）
+- 流水线完成/超时/失败均写入 `final_status`
+- 重试目录 `_retry_N` → `attempt_{N+1}`（attempt_1 为初始执行，attempt_2 为第一次重试）
+- 移除 `_cleanup_retry_dirs()` 函数 — 所有 attempt 目录保留不删，供 Agent E 解读
+
+**`run_id` 统一**：
+- `PreparationTracker.register_prep()` 新增可选 `run_id` 参数，传入时以 run_id 作为 key
+- `prepare_dg_tft_dataset` handler 先创建 pending run 获取 run_id，prep 产物存入 `session/<uuid>/runs/run_{run_id}/data_prep/attempt_1/`
+- `_get_prep_info()` 支持 run_id 回退查找
+
+**测试**：26 项（`dg_tft_operation_log_test.py`），覆盖枚举值、dataclass 序列化/反序列化/缺字段容错、OperationLog 初始化/追加/多阶段/持久化/损坏文件/嵌套目录自动创建/顺序保持。
+
+---
+
 ## 经验总结
 
 ### Python 模块双重导入陷阱
@@ -236,7 +261,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
 
 ### 测试策略
-当前 807 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+当前 833 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
 
 ### Agent 介入边界
 LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。

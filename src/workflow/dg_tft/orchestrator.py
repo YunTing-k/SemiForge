@@ -50,6 +50,7 @@ from .quality_guard import (
     apply_adjustments,
     stage_display_label,
 )
+from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
 from src.constants import (
     MAJOR_COLOR2,
     WF_STATUS_ERROR,
@@ -134,6 +135,10 @@ def run_workflow(
     config_path_abs = str(Path(config_path).resolve())
     output_dir = _read_output_dir(config_path_abs)
 
+    op_log = OperationLog(output_dir)
+    pref = run.extra.get("preferences", "")
+    op_log.initialize(run_id, pref)
+
     profile = _load_profile(run)
     stages = get_stages(profile)
     task_map: dict[str, int] = {}
@@ -170,6 +175,7 @@ def run_workflow(
             failed_stage = sd.name
             failed_error = f"Run overall timeout ({run_timeout}s) exceeded before stage {sd.name}"
             wm.mark_failed(run_id, failed_error)
+            op_log.set_final_status("failed")
             _finalize_run(ctx, run_id, output_dir, t_start, stages,
                           failed=True, failed_stage=failed_stage, failed_error=failed_error)
             return False, failed_error
@@ -229,6 +235,7 @@ def run_workflow(
                 failed_stage = sd.name
                 failed_error = sr.error or "unknown error"
                 _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path_abs)
+                op_log.set_final_status("failed")
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
                               failed=True, failed_stage=failed_stage, failed_error=failed_error)
                 return False, f"Failed at {sd.name}: {sr.error}"
@@ -251,7 +258,7 @@ def run_workflow(
 
         # ── Quality gate (Phase 7) ──
         sr, quality_issues = _enforce_quality_gate(
-            ctx, run_id, sd, sr, config_path_abs, output_dir, timeout,
+            ctx, run_id, sd, sr, config_path_abs, output_dir, timeout, op_log,
         )
 
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
@@ -281,6 +288,7 @@ def run_workflow(
         run = wm.get_run(run_id)
 
     # All stages completed
+    op_log.set_final_status("done")
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
@@ -308,6 +316,8 @@ def _finalize_run(
 
     # Build reports from whatever stage data is available
     prep_info = _get_prep_info(ctx, run.prep_id)
+    if prep_info is None and run.run_id is not None:
+        prep_info = _get_prep_info(ctx, run.run_id)
     run_data = run.to_dict()
     build_and_write_reports(run_data, output_dir, prep_info=prep_info)
 
@@ -691,13 +701,18 @@ def _enforce_quality_gate(
     config_path: str,
     output_dir: str,
     timeout: int | None,
+    op_log: OperationLog | None = None,
 ) -> tuple[StageResult, list[str]]:
     """Check stage output quality and conditionally retry with adjusted parameters.
 
     When a stage exits with ok=True but quality metrics fall below configured
     thresholds, this function enters a progressive retry loop: adjust parameters,
     re-run the stage, re-assess quality — up to ``DG_TFT_QUALITY_MAX_RETRIES``
-    attempts.
+    attempts.  All attempts (initial + retries) are logged to the operation log.
+
+    Retry directories are named ``attempt_N`` (starting from 2, since attempt_1
+    is the initial run) and are **not** deleted afterwards — Agent E needs the
+    full history for interpretation.
 
     Returns:
         (final_result, quality_issues) — ``final_result`` is the best
@@ -707,6 +722,7 @@ def _enforce_quality_gate(
     wm = ctx.workflow_man
     run = wm.get_run(run_id)
     stage_name = sd.name
+    t_stage_start = time.monotonic()
 
     if _is_minimal_run(config_path):
         sys_log.info("Stage [%s] minimal_run enabled, skipping quality gate", stage_name)
@@ -714,9 +730,8 @@ def _enforce_quality_gate(
 
     thresholds = get_quality_thresholds(ctx.agent_configs)
     if not thresholds:
-        return stage_result, []  # No thresholds configured → skip quality check
+        return stage_result, []
 
-    # Skip stages that have no quality metrics defined (e.g. check-data)
     if not get_primary_metric(stage_name):
         sys_log.info("Stage [%s] has no quality metric source, skipping quality gate", stage_name)
         return stage_result, []
@@ -730,6 +745,19 @@ def _enforce_quality_gate(
     sr = stage_result
     sr.metrics = metrics
     q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
+
+    duration = time.monotonic() - t_stage_start
+    initial_entry = StageAttemptLog(
+        n=1,
+        trigger=AttemptTrigger.INITIAL,
+        metrics=dict(metrics),
+        duration_s=duration,
+        ok=sr.ok,
+        error=sr.error or "",
+        quality_pass=q_ok,
+    )
+    if op_log:
+        op_log.append_attempt(stage_name, initial_entry)
 
     if q_ok:
         sys_log.info("Stage [%s] quality PASS (initial)", stage_name)
@@ -761,15 +789,18 @@ def _enforce_quality_gate(
             break
 
         retry_num = attempt + 1
-        retry_dir = str(Path(base_output_dir) / f"_retry_{retry_num}")
-        Path(retry_dir).mkdir(parents=True, exist_ok=True)
+        attempt_n = retry_num + 1  # attempt_1 was the initial run
+        attempt_dir = str(Path(base_output_dir) / f"attempt_{attempt_n}")
+        Path(attempt_dir).mkdir(parents=True, exist_ok=True)
 
         _print_retry_start(ctx, stage_label, retry_num, max_retries, adjustments)
 
         config_path = apply_adjustments(config_path, {
             **adjustments,
-            "paths.output_dir": retry_dir,
+            "paths.output_dir": attempt_dir,
         })
+
+        t_retry_start = time.monotonic()
 
         # Re-run stage (stream stdout during retries)
         sr = run_stage(
@@ -780,6 +811,8 @@ def _enforce_quality_gate(
             stream_console=True,
         )
 
+        retry_duration = time.monotonic() - t_retry_start
+
         retry_entry: dict = {
             "attempt": retry_num,
             "adjustments": dict(adjustments),
@@ -789,6 +822,17 @@ def _enforce_quality_gate(
             "quality_pass": False,
         }
 
+        attempt_entry = StageAttemptLog(
+            n=attempt_n,
+            trigger=AttemptTrigger.QUALITY_FAIL,
+            metrics={},
+            duration_s=retry_duration,
+            adjustments=dict(adjustments),
+            ok=sr.ok,
+            error=sr.error or "",
+            quality_pass=False,
+        )
+
         if not sr.ok:
             sys_log.warning(
                 "Stage [%s] retry %d/%d hard-failed: %s",
@@ -796,22 +840,29 @@ def _enforce_quality_gate(
             )
             _console(ctx, f"  [bright_black]Retry {retry_num}: stage crashed ({sr.error})[/bright_black]")
             retry_log.append(retry_entry)
+            if op_log:
+                op_log.append_attempt(stage_name, attempt_entry)
             break
 
         # Re-assess quality (from retry output directory)
-        metrics = parse_metrics(retry_dir, stage_name)
+        metrics = parse_metrics(attempt_dir, stage_name)
         sr.metrics = metrics
         retry_entry["metrics"] = dict(metrics)
+        attempt_entry.metrics = dict(metrics)
         q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
         retry_entry["quality_pass"] = q_ok
+        attempt_entry.quality_pass = q_ok
         retry_log.append(retry_entry)
+
+        if op_log:
+            op_log.append_attempt(stage_name, attempt_entry)
 
         current_score = _best_metric_value(metrics, stage_name)
         if current_score < best_score:
             best_sr = sr
             best_metrics = metrics
             best_score = current_score
-            best_retry_dir = retry_dir
+            best_retry_dir = attempt_dir
             best_retry_num = retry_num
 
         if q_ok:
@@ -820,10 +871,9 @@ def _enforce_quality_gate(
                 stage_name, retry_num,
             )
             _print_quality_pass(ctx, stage_label, metrics)
-            _copy_retry_to_main(retry_dir, base_output_dir)
-            _cleanup_retry_dirs(base_output_dir)
+            _copy_retry_to_main(attempt_dir, base_output_dir)
             apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
-            _console(ctx, f"  [bright_black]Restored artifacts to output directory[/bright_black]")
+            _console(ctx, f"  [bright_black]Restored artifacts to output directory (attempt_{attempt_n} kept)[/bright_black]")
             return sr, []
         else:
             _print_retry_quality_fail(ctx, stage_label, retry_num, q_failures)
@@ -835,10 +885,9 @@ def _enforce_quality_gate(
     )
     if best_retry_dir:
         _copy_retry_to_main(best_retry_dir, base_output_dir)
-        _console(ctx, f"  [bright_black]Restored artifacts from retry {best_retry_num}[/bright_black]")
+        _console(ctx, f"  [bright_black]Restored artifacts from retry {best_retry_num} (attempt dirs kept)[/bright_black]")
     else:
         _console(ctx, f"  [bright_black]Keeping initial artifacts[/bright_black]")
-    _cleanup_retry_dirs(base_output_dir)
     apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
     _, best_failures = assess_quality(stage_name, best_metrics, thresholds)
     _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds, best_retry_num)
@@ -943,17 +992,11 @@ def _copy_retry_to_main(retry_dir: str, main_dir: str) -> None:
     sys_log.info("Copied retry artifacts from %s to %s", retry_dir, main_dir)
 
 
-def _cleanup_retry_dirs(base_output_dir: str) -> None:
-    """Remove all ``_retry_*`` subdirectories under the output root."""
-    base = Path(base_output_dir)
-    for d in base.glob("_retry_*"):
-        if d.is_dir():
-            shutil.rmtree(str(d), ignore_errors=True)
-            sys_log.info("Cleaned up retry directory: %s", d)
-
-
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:
-    """Look up data preparation info from the preparation tracker."""
+    """Look up data preparation info from the preparation tracker.
+
+    *prep_id* is typically the workflow run_id (prep and run ids are unified).
+    """
     if prep_id is None:
         return None
     tracker = ctx.workflow_man.preparation_tracker

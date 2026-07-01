@@ -37,8 +37,12 @@ _SESSION_PATH = SESSION_PATH
 class PreparationTracker:
     """Manages the lifecycle of data preparation sessions.
 
-    Each preparation session has a unique prep_id, a source directory,
-    and an output directory under session/<uuid>/runs/run_NNNN/data-prep/attempt_N/.
+    Each preparation session corresponds to a workflow run (via run_id).
+    Prep records are keyed by run_id when available, falling back to an
+    auto-incrementing counter for standalone prep calls.
+
+    The output directory convention is:
+    ``session/<uuid>/runs/run_{run_id}/data_prep/attempt_N/``.
     """
 
     def __init__(self):
@@ -46,12 +50,28 @@ class PreparationTracker:
         self._lock = threading.Lock()
         self._preps: dict[int, dict] = {}
 
-    def register_prep(self, raw_dataset_dir: str, output_dir: str) -> int:
+    def register_prep(self, raw_dataset_dir: str, output_dir: str, run_id: int | None = None) -> int:
+        """Register a new data preparation session.
+
+        Args:
+            raw_dataset_dir: Source directory with raw measurement files.
+            output_dir: Destination directory for prepared data.
+            run_id: Workflow run id.  When provided, the prep is keyed by
+                    this value (unifying prep_id with run_id).
+
+        Returns:
+            The prep identifier (equals *run_id* when provided, otherwise
+            an auto-incrementing integer).
+        """
         with self._lock:
-            prep_id = self._next_prep_id
-            self._next_prep_id += 1
+            prep_id = run_id if run_id is not None else self._next_prep_id
+            if run_id is None:
+                self._next_prep_id += 1
+            elif prep_id >= self._next_prep_id:
+                self._next_prep_id = prep_id + 1
             self._preps[prep_id] = {
                 "prep_id": prep_id,
+                "run_id": run_id,
                 "raw_dataset_dir": raw_dataset_dir,
                 "output_dir": output_dir,
                 "ok": False,
