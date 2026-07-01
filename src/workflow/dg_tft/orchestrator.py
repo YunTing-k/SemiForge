@@ -256,6 +256,9 @@ def run_workflow(
             )
             sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
+        # ── Log initial attempt (always, regardless of quality gate) ──
+        _log_initial_attempt(op_log, sd.name, sr, output_dir)
+
         # ── Quality gate (Phase 7) ──
         sr, quality_issues = _enforce_quality_gate(
             ctx, run_id, sd, sr, config_path_abs, output_dir, timeout, op_log,
@@ -693,6 +696,29 @@ def _noop_stage(sd: StageDef) -> bool:
 
 # ── Quality gate (Phase 7) ─────────────────────────────────────────
 
+def _log_initial_attempt(
+    op_log: OperationLog | None,
+    stage_name: str,
+    sr: StageResult,
+    output_dir: str,
+) -> None:
+    """Log attempt_1 to the operation log unconditionally.
+
+    Called after every successful stage run, before the quality gate.
+    minimal_run runs also get logged — the overhead is negligible.
+    """
+    if op_log is None:
+        return
+    metrics = parse_metrics(output_dir, stage_name)
+    entry = StageAttemptLog(
+        n=1,
+        trigger=AttemptTrigger.INITIAL,
+        metrics=dict(metrics),
+        ok=sr.ok,
+        error=sr.error or "",
+    )
+    op_log.append_attempt(stage_name, entry)
+
 def _enforce_quality_gate(
     ctx: AgentContext,
     run_id: int,
@@ -708,7 +734,8 @@ def _enforce_quality_gate(
     When a stage exits with ok=True but quality metrics fall below configured
     thresholds, this function enters a progressive retry loop: adjust parameters,
     re-run the stage, re-assess quality — up to ``DG_TFT_QUALITY_MAX_RETRIES``
-    attempts.  All attempts (initial + retries) are logged to the operation log.
+    attempts.  Retry attempts (n >= 2) are logged to the operation log;
+    the initial attempt (n=1) is already logged by the caller.
 
     Retry directories are named ``attempt_N`` (starting from 2, since attempt_1
     is the initial run) and are **not** deleted afterwards — Agent E needs the
@@ -722,7 +749,6 @@ def _enforce_quality_gate(
     wm = ctx.workflow_man
     run = wm.get_run(run_id)
     stage_name = sd.name
-    t_stage_start = time.monotonic()
 
     if _is_minimal_run(config_path):
         sys_log.info("Stage [%s] minimal_run enabled, skipping quality gate", stage_name)
@@ -745,19 +771,6 @@ def _enforce_quality_gate(
     sr = stage_result
     sr.metrics = metrics
     q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
-
-    duration = time.monotonic() - t_stage_start
-    initial_entry = StageAttemptLog(
-        n=1,
-        trigger=AttemptTrigger.INITIAL,
-        metrics=dict(metrics),
-        duration_s=duration,
-        ok=sr.ok,
-        error=sr.error or "",
-        quality_pass=q_ok,
-    )
-    if op_log:
-        op_log.append_attempt(stage_name, initial_entry)
 
     if q_ok:
         sys_log.info("Stage [%s] quality PASS (initial)", stage_name)

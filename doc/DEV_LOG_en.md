@@ -225,9 +225,8 @@ New `src/workflow/dg_tft/knowledge/` directory:
 - `OperationLog`: `initialize(run_id, preferences)` → `append_attempt(stage, attempt)` → `set_final_status(status)` + `load()` / `get_stage_attempts()` / `get_last_attempt()` query API
 
 **Orchestrator integration**:
-- `run_workflow()` initializes `OperationLog` and passes it to the quality gate
-- Initial attempt logged after quality check (`trigger=INITIAL`, n=1)
-- Each retry logged as a separate attempt (`trigger=QUALITY_FAIL`, n=N+1)
+- `_log_initial_attempt()` — records attempt_1 unconditionally (with metrics), called after `_verify_artifacts` and before `_enforce_quality_gate`. Logged even for minimal_run and stages without quality thresholds
+- `_enforce_quality_gate()` handles retries only (n≥2); no longer duplicates the initial attempt log
 - `final_status` written on pipeline completion, timeout, or failure
 - Retry directory renamed: `_retry_N` → `attempt_{N+1}` (attempt_1 = initial run, attempt_2 = first retry)
 - `_cleanup_retry_dirs()` removed — all attempt directories preserved for Agent E interpretation

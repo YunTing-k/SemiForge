@@ -226,9 +226,8 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - `OperationLog`：`initialize(run_id, preferences)` → `append_attempt(stage, attempt)` → `set_final_status(status)` + `load()` / `get_stage_attempts()` / `get_last_attempt()` 查询接口
 
 **编排器集成**：
-- `run_workflow()` 初始化 `OperationLog` 并传递给质量门
-- 质量标准通过后记录初始 attempt（`trigger=INITIAL`，n=1）
-- 每次重试记录独立 attempt（`trigger=QUALITY_FAIL`，n=N+1）
+- `_log_initial_attempt()` — 无条件记录 attempt_1（含 metrics），在 `_verify_artifacts` 之后、`_enforce_quality_gate` 之前调用。minimal_run / 无 quality threshold 的阶段也会被记录
+- `_enforce_quality_gate()` 仅负责 retry（n≥2），不再重复记录初始 attempt
 - 流水线完成/超时/失败均写入 `final_status`
 - 重试目录 `_retry_N` → `attempt_{N+1}`（attempt_1 为初始执行，attempt_2 为第一次重试）
 - 移除 `_cleanup_retry_dirs()` 函数 — 所有 attempt 目录保留不删，供 Agent E 解读
