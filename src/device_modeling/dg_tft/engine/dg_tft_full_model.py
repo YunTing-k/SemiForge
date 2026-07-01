@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# DG-TFT v95 fresh-training Top-1 compact model engine.
+# DG-TFT v96 fresh-training Top-1 compact model engine.
 # Includes charge-first parameter PKAN, top-1 symbolic export, temperature hooks,
 # static IV/CV signoff utilities, and embedded legacy kernel bodies so the
 # delivery script remains standalone.
@@ -639,6 +639,12 @@ class CompactKAN(nn.Module):
                 nn.Linear(width[1], width[-1]),
             ).to(device=device, dtype=dtype)
 
+        # Preserve pykan's constructor-time trainability contract. Structural
+        # knot grids, masks, and node affine metadata are intentionally frozen.
+        self._optimizer_parameter_names = tuple(
+            name for name, prm in self.named_parameters() if prm.requires_grad
+        )
+
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
         return torch.clamp((x - self.center) / self.scale, -3.0, 3.0)
 
@@ -658,6 +664,67 @@ class CompactKAN(nn.Module):
             "ranges": self.ranges,
             "uses_pykan": PYKAN_AVAILABLE,
         }
+
+    def optimizer_parameters(self, enabled: bool = True) -> list[nn.Parameter]:
+        """Return only weights pykan declared trainable at construction.
+
+        Enabling every parameter also enables ``act_fun.*.grid``. Adam can
+        then move B-spline knots out of order, producing visible IDVG/IDVD
+        steps. This restores the intended contract after a stage-wide freeze.
+        """
+
+        allowed = set(self._optimizer_parameter_names)
+        params: list[nn.Parameter] = []
+        for name, prm in self.named_parameters():
+            trainable = bool(enabled and name in allowed)
+            prm.requires_grad_(trainable)
+            if trainable:
+                params.append(prm)
+        return params
+
+    def grid_audit(self, min_spacing: float = 1.0e-7) -> dict[str, object]:
+        """Audit the strict knot ordering required by numerical B-splines."""
+
+        layers = getattr(self.net, "act_fun", []) if PYKAN_AVAILABLE else []
+        detail: list[dict[str, object]] = []
+        bad_total = 0
+        min_seen = float("inf")
+        for layer_index, layer in enumerate(layers):
+            grid = layer.grid.detach()
+            spacing = grid[:, 1:] - grid[:, :-1]
+            bad = spacing <= grid.new_tensor(float(min_spacing))
+            bad_count = int(bad.sum().detach().cpu())
+            bad_total += bad_count
+            layer_min = (
+                float(spacing.min().detach().cpu())
+                if spacing.numel()
+                else float("inf")
+            )
+            min_seen = min(min_seen, layer_min)
+            detail.append(
+                {
+                    "layer": int(layer_index),
+                    "bad_spacing_count": bad_count,
+                    "minimum_spacing": layer_min,
+                }
+            )
+        return {
+            "pass": bad_total == 0,
+            "bad_spacing_count": bad_total,
+            "minimum_spacing": min_seen if detail else None,
+            "minimum_required_spacing": float(min_spacing),
+            "layers": detail,
+        }
+
+    def assert_valid_grids(self, context: str) -> None:
+        audit = self.grid_audit()
+        if not bool(audit["pass"]):
+            raise RuntimeError(
+                f"{context}: non-monotonic KAN B-spline grid detected; "
+                f"bad_spacing_count={audit['bad_spacing_count']}, "
+                f"minimum_spacing={audit['minimum_spacing']}. "
+                "Structural knot grids must never be optimized."
+            )
 
 
 class PhysicalMicroDeltas(nn.Module):
@@ -4188,6 +4255,12 @@ def load_diagnostic_state_atomic(
     merged = {key: value for key, value in current.items()}
     merged.update(checkpoint_state)
     diag.load_state_dict(merged, strict=True)
+    diag.base.kan.assert_valid_grids(f"loaded diagnostic base IV-PKAN {source}")
+    diag.base.cv_kan.assert_valid_grids(f"loaded diagnostic base CV-PKAN {source}")
+    diag.iv_resid.assert_valid_grids(f"loaded diagnostic IV residual KAN {source}")
+    diag.cv_q_resid.assert_valid_grids(
+        f"loaded diagnostic CV parameter/residual KAN {source}"
+    )
     return missing
 
 
@@ -6290,6 +6363,8 @@ def load_trained_base(
             f"Unrecognized checkpoint format in {model_dir}. Refusing to continue "
             "with silently initialized KAN blocks."
         )
+    model.kan.assert_valid_grids(f"loaded base IV-PKAN checkpoint {model_dir}")
+    model.cv_kan.assert_valid_grids(f"loaded base CV-PKAN checkpoint {model_dir}")
     model.eval()
     for prm in model.parameters():
         prm.requires_grad_(False)
@@ -9106,9 +9181,8 @@ def train_current_device_iv_residual(
     base_full = _iv_residual_accuracy(diag, iv_train, 0.0)
     base_score = _base_iv_selection_score(base_val)
 
-    params = list(diag.iv_resid.parameters())
-    for prm in params:
-        prm.requires_grad_(True)
+    params = diag.iv_resid.optimizer_parameters(enabled=True)
+    diag.iv_resid.assert_valid_grids("before independent IV residual training")
     optimizer = torch.optim.AdamW(
         params,
         lr=float(args.iv_residual_stage_lr),
@@ -9183,6 +9257,9 @@ def train_current_device_iv_residual(
         torch.nn.utils.clip_grad_norm_(params, float(args.grad_clip))
         optimizer.step()
         scheduler.step()
+        diag.iv_resid.assert_valid_grids(
+            f"after independent IV residual epoch {epoch}"
+        )
         if (
             epoch == 1
             or epoch % int(args.iv_residual_stage_eval_every) == 0
@@ -9264,6 +9341,7 @@ def train_current_device_iv_residual(
         best_metrics = accepted_best_metrics
         best_state = accepted_best_state
     diag.iv_resid.load_state_dict(best_state, strict=True)
+    diag.iv_resid.assert_valid_grids("selected independent IV residual checkpoint")
     selected_val = _iv_residual_accuracy(diag, val_data, 1.0)
     selected_full = _iv_residual_accuracy(diag, iv_train, 1.0)
     gain = base_score - _base_iv_selection_score(selected_val)
@@ -9404,7 +9482,10 @@ def train_current_device_base_iv_pkan(
             generator.manual_seed(int(args.seed) + 1009 * restart)
             with torch.no_grad():
                 for name, prm in base.kan.named_parameters():
-                    if not prm.is_floating_point() or "mask" in name:
+                    if (
+                        not prm.is_floating_point()
+                        or name not in set(base.kan._optimizer_parameter_names)
+                    ):
                         continue
                     spread = float(prm.detach().std().cpu()) if prm.numel() > 1 else 0.0
                     noise_scale = 0.015 * max(spread, 0.05)
@@ -9416,9 +9497,12 @@ def train_current_device_base_iv_pkan(
                     )
                     prm.add_(noise_scale * noise)
 
-        kan_params = list(base.kan.parameters())
+        kan_params = base.kan.optimizer_parameters(enabled=True)
+        base.kan.assert_valid_grids(
+            f"before independent base IV-PKAN restart {restart + 1}"
+        )
         phys_params = list(base.phys_delta.parameters())
-        for prm in kan_params + phys_params:
+        for prm in phys_params:
             prm.requires_grad_(True)
         optimizer = torch.optim.AdamW(
             [
@@ -9452,7 +9536,7 @@ def train_current_device_base_iv_pkan(
             small = correction_smallness(base, ib, base_scale)
             coupling = physical_coupling_loss(base, ib, base_scale)
             sparse = torch.stack(
-                [torch.mean(torch.abs(p)) for p in base.kan.parameters()]
+                [torch.mean(torch.abs(p)) for p in kan_params]
             ).mean()
             progress = epoch / max(int(args.base_iv_epochs), 1)
             symbolic_ramp = _symbolic_training_ramp(progress, args)
@@ -9481,6 +9565,9 @@ def train_current_device_base_iv_pkan(
             )
             optimizer.step()
             scheduler.step()
+            base.kan.assert_valid_grids(
+                f"after independent base IV-PKAN epoch {epoch}"
+            )
 
             do_eval = (
                 epoch == 1
@@ -9571,6 +9658,7 @@ def train_current_device_base_iv_pkan(
             break
 
     base.load_state_dict(best["state"], strict=True)
+    base.kan.assert_valid_grids("selected independent base IV-PKAN checkpoint")
     selected_metrics = _base_iv_accuracy(base, iv_train, base_scale)
     report = {
         "enabled": True,
@@ -9648,8 +9736,7 @@ def train_current_device_base_iv_pkan(
         },
         args.out_dir / "v93_base_pkan_current_device.pt",
     )
-    for prm in diag.iv_resid.parameters():
-        prm.requires_grad_(True)
+    diag.iv_resid.optimizer_parameters(enabled=True)
 
     gate_pass, gate_checks = _base_iv_precision_gate(selected_metrics, args)
     selected_top1 = float(
@@ -9699,15 +9786,14 @@ def train_current_device_base_iv_pkan(
 
 def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_anchor, args):
     if bool(getattr(args, "freeze_iv_residual_after_stage", True)):
-        for prm in diag.iv_resid.parameters():
-            prm.requires_grad_(False)
+        diag.iv_resid.optimizer_parameters(enabled=False)
         fast_residual_params = []
         print(
             "Protected accepted IV residual checkpoint during CV/charge training.",
             flush=True,
         )
     else:
-        fast_residual_params = list(diag.iv_resid.parameters())
+        fast_residual_params = diag.iv_resid.optimizer_parameters(enabled=True)
     if getattr(diag, "cv_platform_enabled", False):
         fast_residual_params += [
             diag.cv_platform_amp_raw,
@@ -9721,7 +9807,7 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
     # cv_q_resid now provides terminal-voltage CV parameter-PKAN corrections
     # even when the optional charge residual itself is disabled by safe scan.
     # Therefore it must be trainable independent of cv_residual_enabled.
-    fast_residual_params += list(diag.cv_q_resid.parameters())
+    fast_residual_params += diag.cv_q_resid.optimizer_parameters(enabled=True)
     cv_res_level = int(getattr(args, "cv_residual_level", 0)) if getattr(args, "enable_cv_residual", False) else 0
     if cv_res_level >= 1 and abs(float(getattr(args, "cv_shared_residual_factor", 0.0))) > 0.0:
         fast_residual_params.append(diag.cv_shared_resid_amp_raw)
@@ -9796,7 +9882,11 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
         diag.temp_cit_tc_raw,
         diag.temp_tau_ea_raw,
     ]
-    temperature_kan_params = list(diag.temperature_kan.parameters()) if getattr(args, "enable_temperature_kan", False) else []
+    temperature_kan_params = (
+        diag.temperature_kan.optimizer_parameters(enabled=True)
+        if getattr(args, "enable_temperature_kan", False)
+        else []
+    )
     residual_params = fast_residual_params + physical_cv_params + temperature_params_train
     base_kan_params = []
     base_phys_params = []
@@ -9817,10 +9907,13 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
         # not called by that charge law, so training it wastes time and creates
         # a misleading second set of Vfb/Cit corrections. Keep only the IV
         # parameter KAN from the imported base architecture.
-        base_kan_params = list(diag.base.kan.parameters())
+        base_kan_params = diag.base.kan.optimizer_parameters(enabled=True)
+        diag.base.kan.assert_valid_grids(
+            "before optional joint base-PKAN fine-tuning"
+        )
         base_phys_params = list(diag.base.phys_delta.parameters())
         base_other_params = [diag.base.cv_pair_cpar_raw, diag.base.cgg_common_raw, diag.base.cv_gate_coupling_raw]
-        for prm in base_kan_params + base_phys_params + base_other_params:
+        for prm in base_phys_params + base_other_params:
             prm.requires_grad_(True)
     params = residual_params + temperature_kan_params + base_kan_params + base_phys_params + base_other_params
     param_groups = []
@@ -10274,7 +10367,8 @@ def polish_cv_charge_residual(diag: ResidualDiagnostic, cv_train, args) -> None:
             diag.cv_tb_resid_center_raw,
             diag.cv_tb_resid_width_raw,
         ]
-    kan_params = list(diag.cv_q_resid.parameters())
+    kan_params = diag.cv_q_resid.optimizer_parameters(enabled=True)
+    diag.cv_q_resid.assert_valid_grids("before CV charge-residual polish")
     params = scalar_params + kan_params
     hooks = _register_output_only_gradient_hooks(
         diag.cv_q_resid,
@@ -10396,7 +10490,7 @@ def polish_cv_level2_intergate(diag: ResidualDiagnostic, cv_train, args) -> None
     tb_names = {"tb_amp_raw", "tb_center_raw", "tb_width_raw"}
     polish_names = set(tb_names)
     handles = _register_output_only_gradient_hooks(diag.cv_q_resid, polish_names)
-    params = list(diag.cv_q_resid.parameters()) + [
+    params = diag.cv_q_resid.optimizer_parameters(enabled=True) + [
         diag.cv_tb_resid_amp_raw,
         diag.cv_tb_resid_center_raw,
         diag.cv_tb_resid_width_raw,
@@ -10666,7 +10760,7 @@ def polish_cv_neural_corrections(diag: ResidualDiagnostic, cv_train, args) -> No
 
     if args.cv_neural_polish_epochs <= 0 or len(cv_train.get("vbg", [])) == 0:
         return
-    params = list(diag.cv_q_resid.parameters())
+    params = diag.cv_q_resid.optimizer_parameters(enabled=True)
     residual_idx = [
         i
         for i, name in enumerate(CV_RESID_PARAM_NAMES)
@@ -18454,6 +18548,12 @@ def main():
             safe_cv_scale,
         )
         metrics = summarize(iv_out, cv_out)
+        metrics["kan_grid_audit"] = {
+            "base_iv": diag.base.kan.grid_audit(),
+            "base_cv": diag.base.cv_kan.grid_audit(),
+            "iv_residual": diag.iv_resid.grid_audit(),
+            "cv_parameter_residual": diag.cv_q_resid.grid_audit(),
+        }
         metrics["disabled_iv_pkan_outputs"] = sorted(
             getattr(diag.base, "_v92_disabled_iv_pkan", [])
         )
@@ -18727,6 +18827,17 @@ def main():
     print("[finalize 2/5] evaluating fitted and extrapolated IV/CV", flush=True)
     iv_out, cv_out = predict_outputs(diag, iv_eval_df, cv_eval_df, device, dtype, args, safe_iv_scale, safe_cv_scale)
     metrics = summarize(iv_out, cv_out)
+    metrics["kan_grid_audit"] = {
+        "base_iv": diag.base.kan.grid_audit(),
+        "base_cv": diag.base.cv_kan.grid_audit(),
+        "iv_residual": diag.iv_resid.grid_audit(),
+        "cv_parameter_residual": diag.cv_q_resid.grid_audit(),
+    }
+    for block, audit in metrics["kan_grid_audit"].items():
+        if not bool(audit.get("pass", False)):
+            raise RuntimeError(
+                f"Final KAN grid audit failed for {block}: {audit}"
+            )
     metrics["iv_residual_safety_split"] = iv_residual_split_report
     if base_iv_training_report is not None:
         metrics["base_iv_training"] = base_iv_training_report

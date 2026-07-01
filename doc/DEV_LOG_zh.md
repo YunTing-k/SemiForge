@@ -578,3 +578,19 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **data_preparer.py 新增**：`run_preparer_stage()`、`run_verifier_stage()`、`copy_dataset_to_data_prep()`。
 
 **测试**：911 pass (0 failures, 0 errors, 11 skipped)，session 目录零残留。
+
+### 2026-07-01 | Engine v95→v96 合并 — 冻结 KAN Grid 参数
+
+**根因**：`list(kan.parameters())` 将所有参数（含 `act_fun.*.grid` B-spline 节点位置）传给 Adam。Adam 移动节点导致非单调间距 → IV 曲线 IDVG/IDVD 出现可见跳变。
+
+**CompactKAN 变更**：
+- `_optimizer_parameter_names`：记录 pykan 构造时的可训练参数合约
+- `optimizer_parameters(enabled)`：仅返回 pykan 标记的可训练权重，过滤 grid/mask/affine 元数据
+- `grid_audit()`：校验 B-spline 节点严格单调性
+- `assert_valid_grids(context)`：grid 非单调时抛 RuntimeError
+
+**训练调点**：11 处 `list(x.parameters())` → `x.optimizer_parameters(enabled=True/False)`
+
+**校验**：15 处 `assert_valid_grids()` 调用（checkpoint 加载后 + 每 epoch）
+
+**Metrics**：2 处 `kan_grid_audit` 字典（各 4 个 KAN block）

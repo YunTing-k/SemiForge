@@ -529,4 +529,18 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 **Tests**: 911 pass (0 failures, 0 errors, 11 skipped), zero session residue.
 
-**Tests**: 911 pass (0 failures, 0 errors, 11 skipped).
+### 2026-07-01 | Engine v95→v96 Merge — Frozen KAN Grid Parameters
+
+**Root cause**: `list(kan.parameters())` passed ALL parameters to Adam, including `act_fun.*.grid` (B-spline knot positions). Adam shifted the knots, creating non-monotonic spacing → visible IDVG/IDVD plateau jumps in IV curves.
+
+**CompactKAN changes**:
+- `_optimizer_parameter_names`: captures pykan's constructor-time trainability contract
+- `optimizer_parameters(enabled)`: returns only weights pykan declared trainable, filters out grid/mask/affine metadata
+- `grid_audit()`: validates strict knot ordering required by B-spline numerics
+- `assert_valid_grids(context)`: raises RuntimeError on non-monotonic grid
+
+**Training call sites**: 11 × `list(x.parameters())` → `x.optimizer_parameters(enabled=True/False)`
+
+**Validation**: 15 × `assert_valid_grids()` calls added after checkpoint loads and per training epoch
+
+**Metrics**: 2 × `kan_grid_audit` dicts (4 blocks each) in final metrics output
