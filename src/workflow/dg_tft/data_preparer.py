@@ -219,7 +219,8 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
     try:
         result = agent.run()
     finally:
-        ctx.agent_list.pop(agent.agent_id, None)
+        agent.progress.status = agent.status
+        agent.progress.if_archived = True
 
     if agent.status.value == "done":
         sys_log.info("Data prep worker completed: %s", result[:200] if result else "(empty)")
@@ -282,7 +283,8 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str, report_verificati
     try:
         result = agent.run()
     finally:
-        ctx.agent_list.pop(agent.agent_id, None)
+        agent.progress.status = agent.status
+        agent.progress.if_archived = True
 
     if agent.status.value == "done" and result:
         sys_log.info("Verifier SubAgent completed: %s", result[:200] if result else "(empty)")

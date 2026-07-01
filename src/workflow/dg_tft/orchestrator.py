@@ -602,7 +602,8 @@ def _launch_diagnosis_subagent(
     try:
         result = agent.run()
     finally:
-        ctx.agent_list.pop(agent_id, None)
+        agent.progress.status = agent.status
+        agent.progress.if_archived = True
 
     if agent.status.value == "done" and result:
         return result
