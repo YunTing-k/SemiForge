@@ -8,6 +8,7 @@ import copy
 import json
 import math
 import os
+import time
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -67,6 +68,57 @@ def predict(
     )
 
 
+def predict_batch(
+    models: dict,
+    rows: list[dict],
+    hard: bool,
+    amp_parameterization: str = "independent",
+) -> tuple[list[torch.Tensor], dict[str, torch.Tensor]]:
+    """Evaluate each KAN once for the complete segment bank.
+
+    Segment time vectors have different lengths, so only the inexpensive SRH
+    exponentials remain in a Python loop.  The costly KAN forwards are batched
+    over all segments and reused by waveform, parameter, anchor and tail
+    losses.
+    """
+
+    x_fast = torch.cat([row["x_fast"] for row in rows], dim=0)
+    x_slow = torch.cat([row["x_slow"] for row in rows], dim=0)
+    raw: dict[str, torch.Tensor] = {}
+    decoded: dict[str, torch.Tensor] = {}
+    for name, model in models.items():
+        x = x_slow if name == "tau_slow" else x_fast
+        z = model(x, hard_top1=hard).reshape(-1)
+        raw[name] = z
+        decoded[name] = z * float(model.target_scale) + float(model.target_center)
+
+    log_tf = decoded["tau_fast"]
+    log_ts = decoded["tau_slow"]
+    if amp_parameterization == "conservative":
+        total_raw = decoded["total_amp"]
+        exchange_raw = decoded["exchange_amp"]
+        total = 5.0 * torch.tanh(total_raw / 5.0)
+        exchange = 2.5 * torch.tanh(exchange_raw / 2.5)
+        af = 0.5 * total + exchange
+        ass = 0.5 * total - exchange
+    else:
+        af = 5.0 * torch.tanh(decoded["amp_fast"] / 5.0)
+        ass = 5.0 * torch.tanh(decoded["amp_slow"] / 5.0)
+    tf = torch.pow(log_tf.new_tensor(10.0), torch.clamp(log_tf, -8.0, 3.0))
+    ts = torch.pow(log_ts.new_tensor(10.0), torch.clamp(log_ts, -8.0, 3.0))
+
+    waves: list[torch.Tensor] = []
+    for i, row in enumerate(rows):
+        t = row["t"]
+        y0 = row["y_teacher"][0]
+        waves.append(
+            y0
+            + af[i] * (torch.exp(-t / torch.clamp(tf[i], min=1.0e-8)) - 1.0)
+            + ass[i] * (torch.exp(-t / torch.clamp(ts[i], min=1.0e-8)) - 1.0)
+        )
+    return waves, raw
+
+
 def init_group(
     rows: list[dict],
     hidden_capture: int,
@@ -121,7 +173,7 @@ def fit_group(
     hidden_capture: int = 16,
     hidden_emission: int = 20,
     amp_parameterization: str = "independent",
-    print_every: int = 1,
+    optimizer_policy: str = "optimized",
 ) -> tuple[dict, dict]:
     models = init_group(
         rows,
@@ -131,11 +183,36 @@ def fit_group(
     )
     params = [p for model in models.values() for p in model.parameters()]
     opt = torch.optim.AdamW(params, lr=2.5e-3, weight_decay=1.0e-4)
+    sched = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt,
+            T_max=max(epochs, 1),
+            eta_min=5.0e-5,
+        )
+        if optimizer_policy == "optimized"
+        else None
+    )
     best_score = float("inf")
     best_state = None
     history = []
+    no_improve_checks = 0
+    early_stop_patience = 16
+    early_stop_min_epochs = min(400, max(150, epochs // 3))
+    started = time.perf_counter()
+    print(
+        f"  SRH-KAN bank: segments={len(rows)}, epochs={epochs}, "
+        f"hidden=[{hidden_capture},{hidden_emission}], amp={amp_parameterization}, "
+        f"optimizer={optimizer_policy}",
+        flush=True,
+    )
     for ep in range(epochs):
         opt.zero_grad()
+        soft_predictions, soft_raw = predict_batch(
+            models, rows, False, amp_parameterization
+        )
+        hard_predictions, hard_raw = predict_batch(
+            models, rows, True, amp_parameterization
+        )
         soft_wave = []
         hard_wave = []
         anchor_terms = []
@@ -143,9 +220,9 @@ def fit_group(
         endpoint_terms = []
         param_terms = []
         hard_param_terms = []
-        for row in rows:
-            soft = predict(models, row, False, amp_parameterization)
-            hard = predict(models, row, True, amp_parameterization)
+        for row_idx, row in enumerate(rows):
+            soft = soft_predictions[row_idx]
+            hard = hard_predictions[row_idx]
             teacher = row["y_teacher"]
             soft_wave.append(F.smooth_l1_loss(soft, teacher, beta=0.010))
             hard_wave.append(F.smooth_l1_loss(hard, teacher, beta=0.012))
@@ -198,8 +275,8 @@ def fit_group(
                 )
             for name, x, target in target_items:
                 model = models[name]
-                raw = model(x, hard_top1=False).squeeze(0)
-                raw_h = model(x, hard_top1=True).squeeze(0)
+                raw = soft_raw[name][row_idx]
+                raw_h = hard_raw[name][row_idx]
                 target_z = (float(target) - float(model.target_center)) / float(model.target_scale)
                 target_t = raw.new_tensor(target_z)
                 param_terms.append(F.smooth_l1_loss(raw, target_t, beta=0.10))
@@ -211,26 +288,14 @@ def fit_group(
         endpoint_loss = torch.stack(endpoint_terms).mean()
         param_loss = torch.stack(param_terms).mean()
         hard_param_loss = torch.stack(hard_param_terms).mean()
+        hard_rms = torch.stack(
+            [
+                torch.sqrt(torch.mean((pred - row["y_teacher"]) ** 2))
+                for pred, row in zip(hard_predictions, rows)
+            ]
+        )
         tail = torch.topk(
-            torch.stack(
-                [
-                    torch.sqrt(
-                        torch.mean(
-                            (
-                                predict(
-                                    models,
-                                    row,
-                                    True,
-                                    amp_parameterization,
-                                )
-                                - row["y_teacher"]
-                            )
-                            ** 2
-                        )
-                    )
-                    for row in rows
-                ]
-            ),
+            hard_rms,
             k=max(1, int(math.ceil(0.25 * len(rows)))),
         ).values.mean()
         sparsity = torch.stack([m.sparsity_loss() for m in models.values()]).mean()
@@ -250,56 +315,65 @@ def fit_group(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 5.0)
         opt.step()
-        if ep % print_every == 0 or ep == epochs - 1:
+        if sched is not None:
+            sched.step()
+        if ep % 25 == 0 or ep == epochs - 1:
             with torch.no_grad():
+                eval_waves, _ = predict_batch(
+                    models, rows, True, amp_parameterization
+                )
                 rms = np.asarray(
                     [
-                        float(
-                            torch.sqrt(
-                                torch.mean(
-                                    (
-                                        predict(
-                                            models,
-                                            row,
-                                            True,
-                                            amp_parameterization,
-                                        )
-                                        - row["y_teacher"]
-                                    )
-                                    ** 2
-                                )
-                            )
-                        )
-                        for row in rows
+                        float(torch.sqrt(torch.mean((pred - row["y_teacher"]) ** 2)))
+                        for pred, row in zip(eval_waves, rows)
                     ]
                 )
-            mean_rms = float(np.mean(rms))
-            p90_rms = float(np.quantile(rms, 0.9))
-            max_rms = float(np.max(rms))
-            score = mean_rms + 0.8 * p90_rms + 0.3 * max_rms
-            if score < best_score:
+            score = float(np.mean(rms) + 0.8 * np.quantile(rms, 0.9) + 0.3 * np.max(rms))
+            minimum_improvement = 1.0e-5 if optimizer_policy == "optimized" else 0.0
+            if score < best_score - minimum_improvement:
                 best_score = score
                 best_state = {
                     name: copy.deepcopy(model.state_dict())
                     for name, model in models.items()
                 }
-            print(
-                f"Hysteresis ep {ep:5d}/{epochs} "
-                f"loss={loss.item():.5g} "
-                f"soft={float(soft_wave_loss):.4g} hard={float(hard_wave_loss):.4g} "
-                f"endpoint={float(endpoint_loss):.4g} "
-                f"mean={mean_rms:.4g} p90={p90_rms:.4g} max={max_rms:.4g} "
-                f"best={best_score:.4g}"
-            )
-            if ep % 200 == 0 or ep == epochs - 1:
+                no_improve_checks = 0
+            else:
+                no_improve_checks += 1
+            if ep % 100 == 0 or ep == epochs - 1:
+                elapsed = time.perf_counter() - started
+                eta = elapsed / max(ep + 1, 1) * max(epochs - ep - 1, 0)
                 history.append(
                     {
                         "epoch": ep,
-                        "mean_teacher_rmse_dec": mean_rms,
-                        "p90_teacher_rmse_dec": p90_rms,
-                        "max_teacher_rmse_dec": max_rms,
+                        "mean_teacher_rmse_dec": float(np.mean(rms)),
+                        "p90_teacher_rmse_dec": float(np.quantile(rms, 0.9)),
+                        "max_teacher_rmse_dec": float(np.max(rms)),
                     }
                 )
+                print(
+                    f"  epoch {ep + 1:4d}/{epochs}: mean={np.mean(rms):.5f} "
+                    f"p90={np.quantile(rms, 0.9):.5f} "
+                    f"max={np.max(rms):.5f} dec, "
+                    f"elapsed={elapsed/60.0:.1f}m ETA={eta/60.0:.1f}m",
+                    flush=True,
+                )
+            if (
+                optimizer_policy == "optimized"
+                and ep >= early_stop_min_epochs
+                and no_improve_checks >= early_stop_patience
+            ):
+                history.append(
+                    {
+                        "epoch": ep,
+                        "early_stop": True,
+                        "best_score": best_score,
+                    }
+                )
+                print(
+                    f"  early stop at epoch {ep}; best score={best_score:.6g}",
+                    flush=True,
+                )
+                break
     for name, state in best_state.items():
         models[name].load_state_dict(state)
     return models, {"score": best_score, "history": history}
@@ -313,38 +387,72 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=1800)
     parser.add_argument("--regime", choices=("all", "fast", "slow"), default="all")
-    parser.add_argument("--print-every", type=int, default=1)
     parser.add_argument("--hidden-capture", type=int, default=16)
     parser.add_argument("--hidden-emission", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=20260524)
+    parser.add_argument("--fast-restarts", type=int, default=1)
+    parser.add_argument("--slow-restarts", type=int, default=2)
     parser.add_argument("--tag", default="")
     parser.add_argument(
         "--amp-parameterization",
         choices=("independent", "conservative"),
         default="independent",
     )
+    parser.add_argument(
+        "--optimizer-policy",
+        choices=("optimized", "v90"),
+        default="optimized",
+        help=(
+            "v90 preserves the historical fixed-AdamW full-budget policy; "
+            "optimized adds cosine decay and validation early stopping."
+        ),
+    )
+    parser.add_argument(
+        "--fast-amp-parameterization",
+        choices=("independent", "conservative"),
+        default=None,
+    )
+    parser.add_argument(
+        "--slow-amp-parameterization",
+        choices=("independent", "conservative"),
+        default=None,
+    )
+    parser.add_argument(
+        "--fast-optimizer-policy",
+        choices=("optimized", "v90"),
+        default=None,
+    )
+    parser.add_argument(
+        "--slow-optimizer-policy",
+        choices=("optimized", "v90"),
+        default=None,
+    )
+    parser.add_argument("--max-top2-rmse-mean", type=float, default=0.020)
+    parser.add_argument("--max-student-teacher-rmse-mean", type=float, default=0.006)
+    parser.add_argument("--max-student-teacher-rmse-p90", type=float, default=0.012)
+    parser.add_argument("--max-endpoint-drift-error-mean", type=float, default=0.070)
+    parser.add_argument("--max-endpoint-drift-error-p95", type=float, default=0.230)
+    parser.add_argument(
+        "--max-v90-slow-top2-rmse-mean",
+        type=float,
+        default=0.0033323642404866406,
+    )
+    parser.add_argument(
+        "--enforce-v90-slow-reference",
+        action="store_true",
+        help=(
+            "Optional release-audit comparison for the bundled validation "
+            "dataset. Leave disabled for a new device, whose quality is gated "
+            "only by its own teacher, waveform, endpoint, and holdout metrics."
+        ),
+    )
     return parser.parse_args()
 
 
-def run_train_srh(
-    *,
-    epochs: int = 1800,
-    target_regime: str = "all",
-    hidden_capture: int = 16,
-    hidden_emission: int = 20,
-    amp_parameterization: str = "independent",
-    print_every: int = 1,
-    tag: str = "",
-    out_dir_override: Path | None = None,
-) -> Path:
-    """Importable entry point — train SRH top-2 regime bank models.
-
-    Returns the output directory path.
-    """
-    suffix = f"_{tag}" if tag else ""
-    if out_dir_override is not None:
-        out_dir = out_dir_override
-    else:
-        out_dir = OUT if target_regime == "all" and not suffix else OUT / f"{target_regime}_only{suffix}"
+def main() -> None:
+    args = parse_args()
+    suffix = f"_{args.tag}" if args.tag else ""
+    out_dir = OUT if args.regime == "all" and not suffix else OUT / f"{args.regime}_only{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     label, norm = base.build_label_table()
     label, norm = base._stabilize_temperature_normalization(label, norm)
@@ -352,7 +460,7 @@ def run_train_srh(
     grouped: dict[tuple[str, str, str], list[dict]] = {}
     for row in rows:
         row_regime = regime(row)
-        if target_regime != "all" and row_regime != target_regime:
+        if args.regime != "all" and row_regime != args.regime:
             continue
         key = (row_regime, row["family"], row["process"])
         grouped.setdefault(key, []).append(row)
@@ -362,16 +470,76 @@ def run_train_srh(
     metric_rows = []
     pred_rows = []
     formulas = {}
-    for key, subset in sorted(grouped.items()):
-        models, report = fit_group(
-            subset,
-            epochs=epochs,
-            hidden_capture=hidden_capture,
-            hidden_emission=hidden_emission,
-            amp_parameterization=amp_parameterization,
-            print_every=print_every,
+    total_groups = len(grouped)
+    selected_amp_policies: dict[str, str] = {}
+    selected_optimizer_policies: dict[str, str] = {}
+    for group_index, (key, subset) in enumerate(sorted(grouped.items()), start=1):
+        group_regime = str(key[0])
+        group_amp_parameterization = (
+            getattr(args, f"{group_regime}_amp_parameterization")
+            or args.amp_parameterization
         )
+        group_optimizer_policy = (
+            getattr(args, f"{group_regime}_optimizer_policy")
+            or args.optimizer_policy
+        )
+        selected_amp_policies[group_regime] = group_amp_parameterization
+        selected_optimizer_policies[group_regime] = group_optimizer_policy
+        print(
+            f"[hysteresis bank {group_index}/{total_groups}] "
+            f"{'|'.join(key)} segments={len(subset)}",
+            flush=True,
+        )
+        restart_count = max(
+            1,
+            int(
+                args.fast_restarts
+                if group_regime == "fast"
+                else args.slow_restarts
+            ),
+        )
+        models = None
+        report = None
+        restart_reports = []
+        for restart in range(restart_count):
+            restart_seed = (
+                int(args.seed)
+                + group_index * 1009
+                + restart * 9176
+            )
+            np.random.seed(restart_seed)
+            torch.manual_seed(restart_seed)
+            candidate_models, candidate_report = fit_group(
+                subset,
+                epochs=args.epochs,
+                hidden_capture=args.hidden_capture,
+                hidden_emission=args.hidden_emission,
+                amp_parameterization=group_amp_parameterization,
+                optimizer_policy=group_optimizer_policy,
+            )
+            restart_reports.append(
+                {
+                    "restart": restart,
+                    "seed": restart_seed,
+                    "score": float(candidate_report["score"]),
+                }
+            )
+            if report is None or candidate_report["score"] < report["score"]:
+                models = candidate_models
+                report = candidate_report
+        if models is None or report is None:
+            raise RuntimeError(f"No restart completed for {'|'.join(key)}")
+        report["restart_selection"] = {
+            "count": restart_count,
+            "candidates": restart_reports,
+            "selected": min(restart_reports, key=lambda item: item["score"]),
+        }
         all_models[key] = models
+        print(
+            f"[hysteresis bank {group_index}/{total_groups}] complete; "
+            f"score={report['score']:.6g}",
+            flush=True,
+        )
         group_reports["|".join(key)] = report
         formulas["|".join(key)] = {
             name: {
@@ -387,7 +555,7 @@ def run_train_srh(
                     models,
                     row,
                     True,
-                    amp_parameterization,
+                    group_amp_parameterization,
                 ).cpu().numpy()
                 teacher = row["y_teacher"].cpu().numpy()
                 measured = row["y"].cpu().numpy()
@@ -424,19 +592,23 @@ def run_train_srh(
                     )
     metrics = pd.DataFrame(metric_rows)
     predictions = pd.DataFrame(pred_rows)
-    metrics["top1_rmse_dec"] = metrics["top2_rmse_dec"]
-    metrics["top1_dynamic_shape_rmse_norm"] = metrics["top2_dynamic_shape_rmse_norm"]
-    metrics["top1_drift_dec"] = metrics["top2_drift_dec"]
-    metrics["top1_endpoint_drift_abs_error_dec"] = metrics["top2_endpoint_drift_abs_error_dec"]
-    predictions["log_id_top1"] = predictions["log_id_top2"]
+    # Hysteresis is intentionally strict top-2.  Do not publish misleading
+    # top-1 aliases: IV/CV/temperature are top-1, while both SRH state banks
+    # retain two primitives per symbolic edge.
     metrics.to_csv(out_dir / "srh_top2_regime_bank_metrics.csv", index=False, encoding="utf-8-sig")
     predictions.to_csv(out_dir / "srh_top2_regime_bank_predictions.csv", index=False, encoding="utf-8-sig")
     summary = {
         "architecture": "two independent two-trap SRH banks: fast us-ms and slow seconds",
-        "trained_regime": target_regime,
-        "hidden_capture": hidden_capture,
-        "hidden_emission": hidden_emission,
-        "amp_parameterization": amp_parameterization,
+        "trained_regime": args.regime,
+        "hidden_capture": args.hidden_capture,
+        "hidden_emission": args.hidden_emission,
+        "amp_parameterization": selected_amp_policies,
+        "optimizer_policy": selected_optimizer_policies,
+        "seed": args.seed,
+        "restarts": {
+            "fast": args.fast_restarts,
+            "slow": args.slow_restarts,
+        },
         "normalization": norm,
         "formulas": formulas,
         "groups": group_reports,
@@ -445,6 +617,68 @@ def run_train_srh(
         "student_teacher_rmse_dec_mean": float(metrics["student_teacher_rmse_dec"].mean()),
         "student_teacher_rmse_dec_p90": float(metrics["student_teacher_rmse_dec"].quantile(0.9)),
         "student_teacher_rmse_dec_max": float(metrics["student_teacher_rmse_dec"].max()),
+    }
+    slow_metrics = metrics.loc[metrics["regime"].astype(str).eq("slow")]
+    if len(slow_metrics):
+        summary["slow_teacher_rmse_dec_mean"] = float(
+            slow_metrics["teacher_rmse_dec"].mean()
+        )
+        summary["slow_top2_rmse_dec_mean"] = float(
+            slow_metrics["top2_rmse_dec"].mean()
+        )
+        summary["slow_student_teacher_rmse_dec_mean"] = float(
+            slow_metrics["student_teacher_rmse_dec"].mean()
+        )
+    topology_topk = []
+    for group_formula in formulas.values():
+        for formula in group_formula.values():
+            if isinstance(formula, dict) and "symbolic_topk" in formula:
+                topology_topk.append(int(formula["symbolic_topk"]))
+    endpoint_mean = float(metrics["top2_endpoint_drift_abs_error_dec"].mean())
+    endpoint_p95 = float(metrics["top2_endpoint_drift_abs_error_dec"].quantile(0.95))
+    acceptance_checks = {
+        "strict_top2_symbolic_topology": bool(
+            topology_topk and all(value == 2 for value in topology_topk)
+        ),
+        "top2_rmse_mean": bool(summary["top2_rmse_dec_mean"] <= args.max_top2_rmse_mean),
+        "student_teacher_rmse_mean": bool(
+            summary["student_teacher_rmse_dec_mean"]
+            <= args.max_student_teacher_rmse_mean
+        ),
+        "student_teacher_rmse_p90": bool(
+            summary["student_teacher_rmse_dec_p90"]
+            <= args.max_student_teacher_rmse_p90
+        ),
+        "endpoint_drift_error_mean": bool(
+            endpoint_mean <= args.max_endpoint_drift_error_mean
+        ),
+        "endpoint_drift_error_p95": bool(
+            endpoint_p95 <= args.max_endpoint_drift_error_p95
+        ),
+    }
+    if len(slow_metrics) and args.enforce_v90_slow_reference:
+        acceptance_checks["slow_not_worse_than_v90"] = bool(
+            summary["slow_top2_rmse_dec_mean"]
+            <= args.max_v90_slow_top2_rmse_mean
+        )
+    summary["top2_symbolic_formula_count"] = len(topology_topk)
+    summary["top2_endpoint_drift_abs_error_dec_mean"] = endpoint_mean
+    summary["top2_endpoint_drift_abs_error_dec_p95"] = endpoint_p95
+    summary["acceptance"] = {
+        "pass": all(acceptance_checks.values()),
+        "checks": acceptance_checks,
+        "limits": {
+            "top2_rmse_dec_mean": args.max_top2_rmse_mean,
+            "student_teacher_rmse_dec_mean": args.max_student_teacher_rmse_mean,
+            "student_teacher_rmse_dec_p90": args.max_student_teacher_rmse_p90,
+            "endpoint_drift_abs_error_dec_mean": args.max_endpoint_drift_error_mean,
+            "endpoint_drift_abs_error_dec_p95": args.max_endpoint_drift_error_p95,
+            "v90_slow_top2_rmse_dec_mean": (
+                args.max_v90_slow_top2_rmse_mean
+                if args.enforce_v90_slow_reference
+                else None
+            ),
+        },
     }
     (out_dir / "srh_top2_regime_bank_summary.json").write_text(
         json.dumps(summary, indent=2),
@@ -465,20 +699,11 @@ def run_train_srh(
         out_dir / "srh_top2_regime_bank_checkpoint.pt",
     )
     print(json.dumps({k: v for k, v in summary.items() if k.endswith("_mean") or k.endswith("_p90") or k.endswith("_max")}, indent=2))
-    return out_dir
-
-
-def main() -> None:
-    args = parse_args()
-    run_train_srh(
-        epochs=args.epochs,
-        target_regime=args.regime,
-        hidden_capture=args.hidden_capture,
-        hidden_emission=args.hidden_emission,
-        amp_parameterization=args.amp_parameterization,
-        print_every=args.print_every,
-        tag=args.tag,
-    )
+    if not summary["acceptance"]["pass"]:
+        raise RuntimeError(
+            "Top-2 SRH hysteresis acceptance failed: "
+            f"{summary['acceptance']}"
+        )
 
 
 if __name__ == "__main__":

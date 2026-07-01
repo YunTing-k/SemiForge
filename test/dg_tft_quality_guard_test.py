@@ -523,9 +523,18 @@ class TestStrategyTables(unittest.TestCase):
                                       f"{full_key} used in {stage_name} strategy but not in whitelist")
 
     def test_all_whitelisted_params_have_bounds(self):
+        _string_or_bool_params = {
+            "amp_parameterization",
+            "fast_amp_parameterization",
+            "slow_amp_parameterization",
+            "fast_optimizer_policy",
+            "slow_optimizer_policy",
+            "cv_train_subset",
+            "staged_loss_schedule",
+        }
         for full_key in _PARAMETER_WHITELIST:
             section, key = full_key.split(".", 1)
-            if key == "amp_parameterization":
+            if key in _string_or_bool_params:
                 continue
             self.assertIn(section, _PARAMETER_BOUNDS,
                           f"No bounds defined for section [{section}] (key {full_key})")

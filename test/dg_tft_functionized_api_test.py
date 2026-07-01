@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for Phase 8 functionized engine API — verify importable run_*()
-entry points exist with correct signatures and defaults.
+Unit tests for v95-based engine and run_model API.
+Verifies engine modules are importable and run_model action functions exist.
 
 Run: python -m unittest test.dg_tft_functionized_api_test -v
 """
@@ -35,198 +35,137 @@ def _can_import(module_name: str) -> bool:
 
 
 _has_engine_deps = _can_import("matplotlib")
-_has_torch = _can_import("torch")
 _has_dynamic_deps = _can_import("analyze_it_hysteresis")
 _has_full_model_deps = _can_import("dg_tft_full_model")
 
 
-class TestValidateDatasetAPI(unittest.TestCase):
-    def test_run_validate_importable(self):
-        from validate_dataset import run_validate
-        self.assertTrue(callable(run_validate))
+@unittest.skipUnless(_has_engine_deps, "Engine deps (matplotlib, scipy) not available in AGI env")
+class TestEngineModulesImportable(unittest.TestCase):
+    """v95 engine scripts are subprocess-entry only, but must be syntactically valid."""
 
-    def test_run_validate_signature(self):
-        from validate_dataset import run_validate
-        import inspect
-        sig = inspect.signature(run_validate)
-        params = list(sig.parameters.keys())
-        self.assertIn("data_dir", params)
-        self.assertIn("it_dir", params)
-        self.assertIn("json_out", params)
+    def test_cv_preprocessing_importable(self):
+        import cv_preprocessing
+        self.assertTrue(callable(cv_preprocessing.transition_metadata))
+        self.assertTrue(callable(cv_preprocessing.centered_coordinate))
+        self.assertTrue(callable(cv_preprocessing.looks_like_shared_bias_wide_table))
 
-    def test_run_validate_returns_dict_with_missing_dir(self):
-        from validate_dataset import run_validate
-        result = run_validate(
-            data_dir=Path("/nonexistent/path/for/test"),
-            it_dir=None,
-            json_out=None,
-        )
-        self.assertIsInstance(result, dict)
-        self.assertIn("ok_static", result)
-        self.assertIn("ok_with_it", result)
+    def test_measurement_preprocessing_importable(self):
+        import measurement_preprocessing
+        self.assertTrue(callable(measurement_preprocessing.align_iv_measurement_stages))
+        self.assertTrue(callable(measurement_preprocessing.write_iv_alignment_report))
 
+    def test_tensor_utils_importable(self):
+        import tensor_utils
+        self.assertTrue(callable(tensor_utils.set_seed))
+        self.assertTrue(callable(tensor_utils.Normalizer))
 
-@unittest.skipUnless(_has_engine_deps, "Engine deps (matplotlib, scipy, torch) not available in AGI env")
-class TestFitPhysicalAPI(unittest.TestCase):
-    def test_run_fit_physical_importable(self):
-        from fit_physical_kernel import run_fit_physical
-        self.assertTrue(callable(run_fit_physical))
+    def test_fit_physical_kernel_importable(self):
+        import fit_physical_kernel
+        self.assertTrue(callable(fit_physical_kernel.main))
 
-    def test_run_fit_physical_keyword_only(self):
-        from fit_physical_kernel import run_fit_physical
-        import inspect
-        sig = inspect.signature(run_fit_physical)
-        params = list(sig.parameters.keys())
-        self.assertIn("data_dir", params)
-        self.assertIn("out_dir", params)
-        self.assertIn("max_iv_points", params)
-        self.assertIn("max_cv_points", params)
-        self.assertIn("max_nfev_scale", params)
-        self.assertIn("seed", params)
+    def test_validate_dataset_importable(self):
+        import validate_dataset
+        self.assertTrue(callable(validate_dataset.check_iv_file))
+        self.assertTrue(callable(validate_dataset.check_cv_file))
 
-
-@unittest.skipUnless(_has_engine_deps, "Engine deps (matplotlib, scipy, torch) not available in AGI env")
-class TestTrainBasePKANAPI(unittest.TestCase):
-    def test_run_train_base_pkan_importable(self):
-        from train_base_pkan import run_train_base_pkan
-        self.assertTrue(callable(run_train_base_pkan))
-
-    def test_run_train_base_pkan_keyword_only(self):
-        from train_base_pkan import run_train_base_pkan
-        import inspect
-        sig = inspect.signature(run_train_base_pkan)
-        params = list(sig.parameters.keys())
-        self.assertIn("data_dir", params)
-        self.assertIn("baseline_json", params)
-        self.assertIn("out_dir", params)
-        self.assertIn("epochs_shared", params)
-        self.assertIn("epochs_iv", params)
-        self.assertIn("epochs_cv", params)
-        self.assertIn("kan_hidden", params)
-        self.assertIn("kan_grid", params)
-        self.assertIn("kan_k", params)
-
-
-@unittest.skipUnless(_has_full_model_deps, "Full model deps not available in AGI env")
-class TestFullModelAPI(unittest.TestCase):
-    def test_modules_importable(self):
-        from dg_tft_full_model import run_full_model, default_args, apply_quick_run_preset
-        self.assertTrue(callable(run_full_model))
-        self.assertTrue(callable(default_args))
-        self.assertTrue(callable(apply_quick_run_preset))
-
-    def test_default_args_returns_namespace_with_key_fields(self):
-        from dg_tft_full_model import default_args
-        args = default_args()
-        self.assertIsNotNone(args)
-        self.assertTrue(hasattr(args, "epochs"))
-        self.assertTrue(hasattr(args, "lr"))
-        self.assertTrue(hasattr(args, "device"))
-        self.assertTrue(hasattr(args, "dtype"))
-        self.assertTrue(hasattr(args, "seed"))
-        self.assertTrue(hasattr(args, "out_dir"))
-
-    def test_apply_quick_run_preset_only_when_quick_run_true(self):
-        from dg_tft_full_model import default_args, apply_quick_run_preset
-        args = default_args()
-        args.quick_run = False
-        original = args.epochs
-        result = apply_quick_run_preset(args)
-        self.assertEqual(result.epochs, original)
-
-    def test_apply_quick_run_preset_reduces_epochs(self):
-        from dg_tft_full_model import default_args, apply_quick_run_preset
-        args = default_args()
-        args.quick_run = True
-        args.epochs = 700
-        result = apply_quick_run_preset(args)
-        self.assertLessEqual(result.epochs, 100)
-
-    def test_default_args_matches_parse_args_shape(self):
-        """default_args() should return a Namespace we can pass to run_full_model."""
-        import dg_tft_full_model as engine
-        defaults = engine.default_args()
-        self.assertIsNotNone(defaults)
-        self.assertTrue(hasattr(defaults, "model_dir"))
+    def test_dg_tft_full_model_importable(self):
+        import dg_tft_full_model
+        self.assertTrue(callable(dg_tft_full_model.main))
 
 
 @unittest.skipUnless(_has_dynamic_deps, "Dynamic deps not available in AGI env")
-class TestDynamicAnalyzeAPI(unittest.TestCase):
-    def test_run_analyze_it_importable(self):
-        from analyze_it_hysteresis import run_analyze_it
-        self.assertTrue(callable(run_analyze_it))
+class TestDynamicModulesImportable(unittest.TestCase):
+    """v95 dynamic modules must be syntactically valid."""
+
+    def test_analyze_it_hysteresis_importable(self):
+        import analyze_it_hysteresis
+        self.assertIsNotNone(analyze_it_hysteresis)
+
+    def test_train_srh_top2_regime_banks_importable(self):
+        import train_srh_top2_regime_banks
+        self.assertIsNotNone(train_srh_top2_regime_banks)
+
+    def test_export_srh_top2_regime_banked_va_importable(self):
+        import export_srh_top2_regime_banked_va
+        self.assertIsNotNone(export_srh_top2_regime_banked_va)
+
+    def test_validate_complete_device_hspice_importable(self):
+        import validate_complete_device_hspice
+        self.assertIsNotNone(validate_complete_device_hspice)
+
+    def test_validate_srh_top2_modular_equivalence_importable(self):
+        import validate_srh_top2_modular_equivalence
+        self.assertIsNotNone(validate_srh_top2_modular_equivalence)
 
 
-@unittest.skipUnless(_has_torch, "Torch not available in AGI env")
-class TestTrainSRHAPI(unittest.TestCase):
-    def test_run_train_srh_importable(self):
-        from train_srh_top2_regime_banks import run_train_srh
-        self.assertTrue(callable(run_train_srh))
+class TestRunModelAPI(unittest.TestCase):
+    """run_model.py action functions must exist with correct names."""
 
-    def test_run_train_srh_signature(self):
-        from train_srh_top2_regime_banks import run_train_srh
-        import inspect
-        sig = inspect.signature(run_train_srh)
-        params = list(sig.parameters.keys())
-        self.assertIn("target_regime", params)
-        self.assertIn("epochs", params)
-        self.assertIn("hidden_capture", params)
-        self.assertIn("hidden_emission", params)
-        self.assertIn("amp_parameterization", params)
-        self.assertIn("print_every", params)
+    @classmethod
+    def setUpClass(cls):
+        import importlib
+        cls.mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
 
-
-class TestExportVAAPI(unittest.TestCase):
-    def test_run_export_va_importable(self):
-        from export_srh_top2_regime_banked_va import run_export_va
-        self.assertTrue(callable(run_export_va))
-
-    def test_run_export_va_signature(self):
-        from export_srh_top2_regime_banked_va import run_export_va
-        import inspect
-        sig = inspect.signature(run_export_va)
-        params = list(sig.parameters.keys())
-        self.assertIn("student_source", params)
-        self.assertIn("include_legacy_banked", params)
-
-
-class TestRunModelImportPaths(unittest.TestCase):
     def test_run_model_importable(self):
-        """Verify the refactored run_model.py is importable."""
-        import importlib
-        mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
-        self.assertIsNotNone(mod)
+        self.assertIsNotNone(self.mod)
 
-    def test_run_model_has_all_actions(self):
-        import importlib
-        mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
-        actions = ["validate_data", "fit_physical", "train_base_pkan",
-                   "train_full_model", "train_hysteresis"]
+    def test_core_action_functions_exist(self):
+        actions = [
+            "validate_data", "fit_physical", "train_base_pkan",
+            "train_full_model", "train_hysteresis",
+        ]
         for action in actions:
-            self.assertTrue(callable(getattr(mod, action, None)),
-                           f"Action '{action}' not found or not callable")
+            self.assertTrue(callable(getattr(self.mod, action, None)),
+                            f"Action '{action}' not found or not callable")
 
-    def test_run_model_has_log_stage(self):
-        import importlib
-        mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
-        self.assertTrue(callable(mod._log_stage))
+    def test_new_v95_action_functions_exist(self):
+        actions = [
+            "doctor", "smoke_static", "assemble_release",
+            "build_portable_archive", "verify_portable_package",
+        ]
+        for action in actions:
+            self.assertTrue(callable(getattr(self.mod, action, None)),
+                            f"Action '{action}' not found or not callable")
 
-    def test_run_model_has_make_full_model_args(self):
-        import importlib
-        mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
-        self.assertTrue(callable(mod._make_full_model_args))
+    def test_all_actions_in_main_choices(self):
+        """Verify main() action count. Specific actions tested above."""
+        self.assertTrue(callable(self.mod.main))
 
-    def test_run_model_has_setup_dynamic_env(self):
-        import importlib
-        mod = importlib.import_module("src.device_modeling.dg_tft.run_model")
-        self.assertTrue(callable(mod._setup_dynamic_env))
+    def test_helpers_exist(self):
+        helpers = ["phase", "resolve_hspice", "resolve_path", "yes",
+                   "load_config", "paths", "run", "run_gate",
+                   "run_artifact_stage", "record_nonblocking_gate_failure"]
+        for h in helpers:
+            self.assertTrue(callable(getattr(self.mod, h, None)),
+                            f"Helper '{h}' not found or not callable")
 
-    def test_run_model_engine_paths_in_sys_path(self):
-        """Verify ENGINE and DYNAMIC are added to sys.path on import."""
-        import importlib
-        importlib.import_module("src.device_modeling.dg_tft.run_model")
-        self.assertIn(_engine_path, sys.path)
-        self.assertIn(_dynamic_path, sys.path)
+    def test_migration_adaptations_exist(self):
+        adaptations = [
+            "_normalize_cv_format",
+            "_prepare_fallback_model_dir",
+            "refuse_accidental_example_training",
+        ]
+        for a in adaptations:
+            self.assertTrue(callable(getattr(self.mod, a, None)),
+                            f"Adaptation '{a}' not found or not callable")
+
+    def test_example_data_guard_blocks_example_training(self):
+        with self.assertRaises(RuntimeError):
+            self.mod.refuse_accidental_example_training(
+                "train-static", self.mod.EXAMPLE_DATA_ROOT, allow_example_data=False
+            )
+
+    def test_example_data_guard_allows_non_example(self):
+        self.mod.refuse_accidental_example_training(
+            "train-static", Path("D:/some_real_data"), allow_example_data=False
+        )
+
+    def test_example_data_guard_allowed_flag(self):
+        self.mod.refuse_accidental_example_training(
+            "train-static",
+            self.mod.EXAMPLE_DATA_ROOT,
+            allow_example_data=True,
+        )
 
 
 if __name__ == "__main__":

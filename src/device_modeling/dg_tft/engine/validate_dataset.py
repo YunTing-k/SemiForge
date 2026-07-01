@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from cv_preprocessing import looks_like_shared_bias_wide_table
+
 
 IV_FAMILIES = {
     "IDVBG": ("IDVBG*_train.xlsx", "IDVBG_train.xlsx"),
@@ -77,14 +79,29 @@ def check_cv_file(path: Path) -> dict:
             continue
         raw = pd.read_excel(path, sheet_name=lower_to_real[sheet], header=None, nrows=8)
         usable_pairs = 0
+        detected_layout = "unknown"
         if raw.shape[0] >= 3 and raw.shape[1] >= 2:
-            for col in range(0, raw.shape[1] - 1, 2):
-                x = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
-                c = pd.to_numeric(raw.iloc[2:, col + 1], errors="coerce")
-                if (x.notna() & c.notna()).any():
-                    usable_pairs += 1
+            if looks_like_shared_bias_wide_table(raw):
+                detected_layout = "shared_bias_wide"
+                x = pd.to_numeric(raw.iloc[2:, 0], errors="coerce")
+                for col in range(1, raw.shape[1]):
+                    c = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
+                    if (x.notna() & c.notna()).any():
+                        usable_pairs += 1
+            else:
+                detected_layout = "paired_columns"
+                for col in range(0, raw.shape[1] - 1, 2):
+                    x = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
+                    c = pd.to_numeric(raw.iloc[2:, col + 1], errors="coerce")
+                    if (x.notna() & c.notna()).any():
+                        usable_pairs += 1
         issues = [] if usable_pairs else ["no usable x/C paired columns found"]
-        item["sheets"][sheet] = {"exists": True, "usable_curve_pairs_preview": usable_pairs, "issues": issues}
+        item["sheets"][sheet] = {
+            "exists": True,
+            "detected_layout": detected_layout,
+            "usable_curve_pairs_preview": usable_pairs,
+            "issues": issues,
+        }
     item["ok"] = not item["issues"] and any(v.get("usable_curve_pairs_preview", 0) for v in item["sheets"].values())
     return item
 
@@ -134,41 +151,29 @@ def check_it_dir(path: Path | None) -> dict:
     return item
 
 
-def run_validate(
-    data_dir: Path,
-    it_dir: Path | None = None,
-    json_out: Path | None = None,
-) -> dict:
-    """Importable entry point — validate DG-TFT dataset layout.
-
-    Returns the validation report dict (same as the JSON output).
-    """
-    report: dict = {
-        "data_dir": str(data_dir),
-        "iv": [
-            check_iv_family(data_dir, family, patterns)
-            for family, patterns in IV_FAMILIES.items()
-        ],
-        "cv": check_cv_file(data_dir / "CV_train.xlsx"),
-        "it": check_it_dir(it_dir),
-    }
-    report["ok_static"] = all(x["ok"] for x in report["iv"]) and bool(report["cv"]["ok"])
-    report["ok_with_it"] = bool(report["ok_static"]) and bool(report["it"]["ok"])
-    text = json.dumps(report, indent=2, ensure_ascii=False)
-    print(text)
-    if json_out:
-        json_out.parent.mkdir(parents=True, exist_ok=True)
-        json_out.write_text(text, encoding="utf-8")
-    return report
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate DG-TFT compact-model training dataset layout.")
     ap.add_argument("--data-dir", type=Path, required=True, help="Folder containing IDVBG/IDVTG/IDVD/CV training workbooks.")
     ap.add_argument("--it-dir", type=Path, default=None, help="Optional folder containing raw I-t hysteresis workbooks.")
     ap.add_argument("--json-out", type=Path, default=None)
     args = ap.parse_args()
-    run_validate(data_dir=args.data_dir, it_dir=args.it_dir, json_out=args.json_out)
+
+    report = {
+        "data_dir": str(args.data_dir),
+        "iv": [
+            check_iv_family(args.data_dir, family, patterns)
+            for family, patterns in IV_FAMILIES.items()
+        ],
+        "cv": check_cv_file(args.data_dir / "CV_train.xlsx"),
+        "it": check_it_dir(args.it_dir),
+    }
+    report["ok_static"] = all(x["ok"] for x in report["iv"]) and bool(report["cv"]["ok"])
+    report["ok_with_it"] = bool(report["ok_static"]) and bool(report["it"]["ok"])
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    print(text)
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(text, encoding="utf-8")
 
 
 if __name__ == "__main__":

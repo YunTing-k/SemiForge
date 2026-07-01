@@ -8,6 +8,14 @@ import re
 
 
 ROOT = Path(__file__).resolve().parent
+RELEASE_ROOT = ROOT.parents[1]
+STATIC_VA = Path(
+    os.environ.get(
+        "DG_TFT_STATIC_VA",
+        RELEASE_ROOT / "verilog_a" / "dg_tft_static_core.va",
+    )
+).resolve()
+GLUE_VA = (RELEASE_ROOT / "verilog_a" / "dg_tft_portable_glue.va").resolve()
 BASE = (
     Path(os.environ.get("DG_TFT_DYNAMIC_WORK_DIR", ROOT / "results_long_timescale"))
     / "srh_top2_regime_banks"
@@ -91,7 +99,7 @@ def formula_function(
     return "\n".join(lines)
 
 
-def load_models(student_source: str = "") -> tuple[dict, dict]:
+def load_models(student_source: str = "slow_only") -> tuple[dict, dict]:
     slow = json.loads(
         (BASE / student_source / "srh_top2_regime_bank_summary.json").read_text(
             encoding="utf-8"
@@ -243,18 +251,29 @@ def write_va(formulas: dict, norm: dict) -> Path:
                 tau_lines.append(
                     f"    te_{side}{prefix}{short} = sp_clip(exp(2.302585092994046*({fn_name(bank, family, 'emission', branch)})),tau_min,tau_max);"
                 )
-            amp_lines.append(
-                f"    af_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'capture', 'amp_fast')})/5.0);"
-            )
-            amp_lines.append(
-                f"    as_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'capture', 'amp_slow')})/5.0);"
-            )
-            amp_lines.append(
-                f"    ef_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'emission', 'amp_fast')})/5.0);"
-            )
-            amp_lines.append(
-                f"    es_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'emission', 'amp_slow')})/5.0);"
-            )
+            capture_group = formulas[f"{bank}|{family}|capture"]
+            if "total_amp" in capture_group:
+                ctotal = fn_name(bank, family, "capture", "total_amp")
+                cexchange = fn_name(bank, family, "capture", "exchange_amp")
+                etotal = fn_name(bank, family, "emission", "total_amp")
+                eexchange = fn_name(bank, family, "emission", "exchange_amp")
+                amp_lines.extend(
+                    [
+                        f"    af_{side}{prefix} = 0.5*5.0*tanh(({ctotal})/5.0)+2.5*tanh(({cexchange})/2.5);",
+                        f"    as_{side}{prefix} = 0.5*5.0*tanh(({ctotal})/5.0)-2.5*tanh(({cexchange})/2.5);",
+                        f"    ef_{side}{prefix} = 0.5*5.0*tanh(({etotal})/5.0)+2.5*tanh(({eexchange})/2.5);",
+                        f"    es_{side}{prefix} = 0.5*5.0*tanh(({etotal})/5.0)-2.5*tanh(({eexchange})/2.5);",
+                    ]
+                )
+            else:
+                amp_lines.extend(
+                    [
+                        f"    af_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'capture', 'amp_fast')})/5.0);",
+                        f"    as_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'capture', 'amp_slow')})/5.0);",
+                        f"    ef_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'emission', 'amp_fast')})/5.0);",
+                        f"    es_{side}{prefix} = 5.0*tanh(({fn_name(bank, family, 'emission', 'amp_slow')})/5.0);",
+                    ]
+                )
 
     text = f"""`include "disciplines.vams"
 `include "constants.vams"
@@ -443,7 +462,8 @@ module dg_tft_srh_state_continuous(n,ltc,lte,k,dlog,s);
     te=sp_clip(exp(2.302585092994046*V(lte,s)),tau_min,tau_max);
     neq=te/(tc+te);
     tx=tc*te/(tc+te);
-    I(n,s)<+ddt(V(n,s))-(neq-V(n,s))/tx;
+    // Unit state capacitance and explicit IC are stamped by the wrapper.
+    I(n,s)<+-(neq-V(n,s))/tx;
     V(dlog,s)<+V(k,s)*(V(n,s)-n0);
   end
 endmodule
@@ -455,16 +475,21 @@ endmodule
 .subckt dg_tft_dynamic_srh tg bg d s ntf nts nbf nbs dlog
 + vfrom_t=0 vfrom_b=0 cycle_index=0 hold_s=1
 + prev_log_id=-9 seg_log_id0=-9 temperature_dataset=0
++ ntf0=0 nts0=0 nbf0=0 nbs0=0
 Xeval tg bg d s ltc_tf lte_tf ltc_ts lte_ts ltc_bf lte_bf ltc_bs lte_bs
 + k_tf k_ts k_bf k_bs
 + dbg_temp dbg_inv_temp dbg_to_t dbg_from_t dbg_delta_t
 + dbg_cycle dbg_hold dbg_prev dbg_seg dbg_vds dg_tft_slow_kan_eval
 + vfrom_t=vfrom_t vfrom_b=vfrom_b cycle_index=cycle_index hold_s=hold_s
 + prev_log_id=prev_log_id seg_log_id0=seg_log_id0 temperature_dataset=temperature_dataset
-Xtf ntf ltc_tf lte_tf k_tf dl_tf s dg_tft_srh_state_continuous
-Xts nts ltc_ts lte_ts k_ts dl_ts s dg_tft_srh_state_continuous
-Xbf nbf ltc_bf lte_bf k_bf dl_bf s dg_tft_srh_state_continuous
-Xbs nbs ltc_bs lte_bs k_bs dl_bs s dg_tft_srh_state_continuous
+Ctf ntf s 1 IC='ntf0'
+Cts nts s 1 IC='nts0'
+Cbf nbf s 1 IC='nbf0'
+Cbs nbs s 1 IC='nbs0'
+Xtf ntf ltc_tf lte_tf k_tf dl_tf s dg_tft_srh_state_continuous n0=ntf0
+Xts nts ltc_ts lte_ts k_ts dl_ts s dg_tft_srh_state_continuous n0=nts0
+Xbf nbf ltc_bf lte_bf k_bf dl_bf s dg_tft_srh_state_continuous n0=nbf0
+Xbs nbs ltc_bs lte_bs k_bs dl_bs s dg_tft_srh_state_continuous n0=nbs0
 Elog dlog s vol='V(dl_tf,s)+V(dl_ts,s)+V(dl_bf,s)+V(dl_bs,s)'
 Rlog dlog s 1g
 .ends dg_tft_dynamic_srh
@@ -507,8 +532,8 @@ def write_split_modular_continuous_assets(formulas: dict, norm: dict) -> None:
     PrimeSim HSPICE 2021 can fail while compiling one very large symbolic KAN
     evaluator even though the individual formulas are valid. Commercial
     compact models likewise separate parameter evaluation from dynamic state
-    equations. Four small evaluators preserve the high-capacity symbolic
-    student without changing the two-state SRH dynamics.
+    equations. Small regime/interface/process evaluators preserve the
+    high-capacity symbolic student without changing either two-state SRH bank.
     """
 
     common_functions = """
@@ -538,42 +563,56 @@ def write_split_modular_continuous_assets(formulas: dict, norm: dict) -> None:
   endfunction
 """
 
-    modules = ['`include "disciplines.vams"', '`include "constants.vams"', ""]
-    instance_lines = []
-    required_keys = [f"slow|{f}|{p}" for f in ("VTG", "VBG") for p in ("capture", "emission")]
-    missing_keys = [k for k in required_keys if k not in formulas]
-    if missing_keys:
-        available = sorted(formulas.keys())
-        raise KeyError(
-            f"Missing required formula groups: {missing_keys}. "
-            f"Available keys: {available}. "
-            f"The training run may have produced only fast-regime data; "
-            f"try re-running with the full dataset or adjust export to use: {available}"
-        )
-    for family, side in (("VTG", "t"), ("VBG", "b")):
+    modules = [
+        "// DG-TFT dynamic hysteresis model",
+        "// KAN deployment mode: Top-2 two-layer analytic symbolic SRH banks.",
+        "// This file contains no exact B-spline lookup tables.",
+        '`include "disciplines.vams"',
+        '`include "constants.vams"',
+        "",
+    ]
+    instance_lines_by_regime: dict[str, list[str]] = {"fast": [], "slow": []}
+    active_regimes = [
+        regime
+        for regime in ("fast", "slow")
+        if any(key.startswith(f"{regime}|") for key in formulas)
+    ]
+    for regime in active_regimes:
+      for family, side in (("VTG", "t"), ("VBG", "b")):
         for process, process_code in (("capture", "c"), ("emission", "e")):
-            group = formulas[f"slow|{family}|{process}"]
+            group = formulas[f"{regime}|{family}|{process}"]
             declarations: list[str] = []
             statements: list[str] = []
             output_names = {}
-            for output in ("tau_fast", "tau_slow", "amp_fast", "amp_slow"):
-                name = fn_name("slow", family, process, output)
+            amp_outputs = (
+                ("total_amp", "exchange_amp")
+                if "total_amp" in group
+                else ("amp_fast", "amp_slow")
+            )
+            for output in ("tau_fast", "tau_slow", *amp_outputs):
+                name = fn_name(regime, family, process, output)
                 output_names[output] = name
-                if output == "amp_fast" and "amp_fast" not in group and "total_amp" in group:
-                    formula_key = "total_amp"
-                elif output == "amp_slow" and "amp_slow" not in group and "exchange_amp" in group:
-                    formula_key = "exchange_amp"
-                else:
-                    formula_key = output
                 decl, stmt = formula_inline(
                     name,
-                    group[formula_key],
+                    group[output],
                     feature_values(norm, family, process, output),
                 )
                 declarations.extend(decl)
                 statements.extend(stmt)
+            if "total_amp" in output_names:
+                amp_fast_expr = (
+                    f"0.5*5.0*tanh({output_names['total_amp']}/5.0)"
+                    f"+2.5*tanh({output_names['exchange_amp']}/2.5)"
+                )
+                amp_slow_expr = (
+                    f"0.5*5.0*tanh({output_names['total_amp']}/5.0)"
+                    f"-2.5*tanh({output_names['exchange_amp']}/2.5)"
+                )
+            else:
+                amp_fast_expr = f"5.0*tanh({output_names['amp_fast']}/5.0)"
+                amp_slow_expr = f"5.0*tanh({output_names['amp_slow']}/5.0)"
 
-            module_name = f"dg_tft_slow_kan_{family.lower()}_{process}"
+            module_name = f"dg_tft_{regime}_kan_{family.lower()}_{process}"
             modules.append(
                 f"""module {module_name}(tg,bg,d,s,tau_fast,tau_slow,amp_fast,amp_slow);
   inout tg,bg,d,s,tau_fast,tau_slow,amp_fast,amp_slow;
@@ -591,13 +630,13 @@ def write_split_modular_continuous_assets(formulas: dict, norm: dict) -> None:
 {chr(10).join(statements)}
     V(tau_fast,s)<+{output_names["tau_fast"]};
     V(tau_slow,s)<+{output_names["tau_slow"]};
-    V(amp_fast,s)<+{output_names["amp_fast"]};
-    V(amp_slow,s)<+{output_names["amp_slow"]};
+    V(amp_fast,s)<+{amp_fast_expr};
+    V(amp_slow,s)<+{amp_slow_expr};
   end
 endmodule
 """
             )
-            instance_lines.append(
+            instance_lines_by_regime[regime].append(
                 f"X{side}{process_code} tg bg d s l{process_code}_{side}f "
                 f"l{process_code}_{side}s a{process_code}_{side}f "
                 f"a{process_code}_{side}s {module_name}\n"
@@ -626,7 +665,8 @@ endmodule
     te=sp_clip(exp(2.302585092994046*V(lte,s)),tau_min,tau_max);
     neq=te/(tc+te);
     tau_eff=tc*te/(tc+te);
-    I(n,s)<+ddt(V(n,s))-(neq-V(n,s))/tau_eff;
+    // Unit state capacitance and explicit IC are stamped by the wrapper.
+    I(n,s)<+-(neq-V(n,s))/tau_eff;
     V(dlog,s)<+V(k,s)*(V(n,s)-n0);
   end
 endmodule
@@ -635,25 +675,52 @@ endmodule
     va_path = OUT / "dg_tft_dynamic_srh.va"
     va_path.write_text("\n".join(modules), encoding="utf-8")
 
-    wrapper = f"""* Split-evaluator full-SRH slow-bank wrapper
-.subckt dg_tft_dynamic_srh tg bg d s ntf nts nbf nbs dlog
+    modules.append(
+        """module dg_tft_amp_difference(ac,ae,k,s);
+  inout ac,ae,k,s;
+  electrical ac,ae,k,s;
+  analog begin
+    // Evaluators already emit the bounded physical amplitudes.
+    V(k,s)<+0.5*(V(ae,s)-V(ac,s));
+  end
+endmodule
+"""
+    )
+    # Re-write after appending the amplitude-combination module.
+    va_path.write_text("\n".join(modules), encoding="utf-8")
+
+    def regime_wrapper(regime: str, subckt_name: str) -> str:
+        instances = chr(10).join(instance_lines_by_regime[regime])
+        return f"""* Split-evaluator full-SRH {regime} bank
+.subckt {subckt_name} tg bg d s ntf nts nbf nbs dlog
 + vfrom_t=0 vfrom_b=0 cycle_index=0 hold_s=1
 + prev_log_id=-9 seg_log_id0=-9 temperature_dataset=0
-{chr(10).join(instance_lines)}
-Ek_tf k_tf s vol='0.5*(-5*tanh(V(ac_tf,s)/5)+5*tanh(V(ae_tf,s)/5))'
-Ek_ts k_ts s vol='0.5*(-5*tanh(V(ac_ts,s)/5)+5*tanh(V(ae_ts,s)/5))'
-Ek_bf k_bf s vol='0.5*(-5*tanh(V(ac_bf,s)/5)+5*tanh(V(ae_bf,s)/5))'
-Ek_bs k_bs s vol='0.5*(-5*tanh(V(ac_bs,s)/5)+5*tanh(V(ae_bs,s)/5))'
-Xtf ntf lc_tf le_tf k_tf dl_tf s dg_tft_srh_state_continuous
-Xts nts lc_ts le_ts k_ts dl_ts s dg_tft_srh_state_continuous
-Xbf nbf lc_bf le_bf k_bf dl_bf s dg_tft_srh_state_continuous
-Xbs nbs lc_bs le_bs k_bs dl_bs s dg_tft_srh_state_continuous
-Elog dlog s vol='V(dl_tf,s)+V(dl_ts,s)+V(dl_bf,s)+V(dl_bs,s)'
++ ntf0=0 nts0=0 nbf0=0 nbs0=0
+{instances}
+Xk_tf ac_tf ae_tf k_tf s dg_tft_amp_difference
+Xk_ts ac_ts ae_ts k_ts s dg_tft_amp_difference
+Xk_bf ac_bf ae_bf k_bf s dg_tft_amp_difference
+Xk_bs ac_bs ae_bs k_bs s dg_tft_amp_difference
+Ctf ntf s 1 IC='ntf0'
+Cts nts s 1 IC='nts0'
+Cbf nbf s 1 IC='nbf0'
+Cbs nbs s 1 IC='nbs0'
+Xtf ntf lc_tf le_tf k_tf dl_tf s dg_tft_srh_state_continuous n0=ntf0
+Xts nts lc_ts le_ts k_ts dl_ts s dg_tft_srh_state_continuous n0=nts0
+Xbf nbf lc_bf le_bf k_bf dl_bf s dg_tft_srh_state_continuous n0=nbf0
+Xbs nbs lc_bs le_bs k_bs dl_bs s dg_tft_srh_state_continuous n0=nbs0
+Xlog dl_tf dl_ts dl_bf dl_bs dlog s dg_tft_sum4
 Rlog dlog s 1g
-.ends dg_tft_dynamic_srh
+.ends {subckt_name}
 """
+
+    wrappers = []
+    if "fast" in active_regimes:
+        wrappers.append(regime_wrapper("fast", "dg_tft_dynamic_srh_fast"))
+    if "slow" in active_regimes:
+        wrappers.append(regime_wrapper("slow", "dg_tft_dynamic_srh"))
     (OUT / "dg_tft_dynamic_srh.inc").write_text(
-        wrapper,
+        "\n".join(wrappers),
         encoding="utf-8",
     )
 
@@ -676,45 +743,68 @@ Xslow tg bg d 0 ntf nts nbf nbs dlog dg_tft_dynamic_srh
         deck,
         encoding="utf-8",
     )
-    complete_wrapper = """* Complete static + slow-SRH DG-TFT wrapper
+    complete_wrapper = """* Complete static + fast/slow SRH DG-TFT wrapper
 * Requires dg_tft_static_core.va, dg_tft_dynamic_srh.va,
 * and dg_tft_dynamic_srh.inc.
-.subckt dg_tft_complete_model tg bg d s ntf nts nbf nbs
+.subckt dg_tft_complete_model_state_access tg bg d s ntff ntfs ntsf ntss nbff nbfs nbsf nbss
 + vfrom_t=0 vfrom_b=0 cycle_index=0 hold_s=1
 + prev_log_id=-9 seg_log_id0=-9 temperature_dataset=0
++ ntff0=0 ntfs0=0 ntsf0=0 ntss0=0 nbff0=0 nbfs0=0 nbsf0=0 nbss0=0
 * A 1-kohm sense resistor avoids simulator-dependent branch-current references
 * inside behavioral sources. The drop stays below 1 mV for this TFT range.
 Rsense d dcore 1k
 Xstatic tg bg dcore s dg_tft_static_core
-Xslow tg bg dcore s ntf nts nbf nbs dlog dg_tft_dynamic_srh
+Xfast tg bg dcore s ntff ntfs nbff nbfs dlog_fast dg_tft_dynamic_srh_fast
 + vfrom_t=vfrom_t vfrom_b=vfrom_b cycle_index=cycle_index hold_s=hold_s
 + prev_log_id=prev_log_id seg_log_id0=seg_log_id0 temperature_dataset=temperature_dataset
++ ntf0=ntff0 nts0=ntfs0 nbf0=nbff0 nbs0=nbfs0
+Xslow tg bg dcore s ntsf ntss nbsf nbss dlog_slow dg_tft_dynamic_srh
++ vfrom_t=vfrom_t vfrom_b=vfrom_b cycle_index=cycle_index hold_s=hold_s
++ prev_log_id=prev_log_id seg_log_id0=seg_log_id0 temperature_dataset=temperature_dataset
++ ntf0=ntsf0 nts0=ntss0 nbf0=nbsf0 nbs0=nbss0
+Xsum_dyn dlog_fast dlog_slow s s dlog s dg_tft_sum4
 * Static current flows through Rsense. Gdyn contributes only the multiplicative
 * transient correction, so the total terminal current is Istatic*10^dlog.
 * HSPICE pow(x,y) truncates y to an integer. Use exp(ln(10)*dlog) for 10^dlog.
 Gdyn d s CUR='(exp(2.302585092994046*V(dlog,s))-1)*V(d,dcore)/1k'
 Rdlog dlog s 1g
+.ends dg_tft_complete_model_state_access
+
+* Four-terminal production entry with eight internal SRH state nodes.
+.subckt dg_tft_complete_model tg bg d s
++ vfrom_t=0 vfrom_b=0 cycle_index=0 hold_s=1
++ prev_log_id=-9 seg_log_id0=-9 temperature_dataset=0
++ ntff0=0 ntfs0=0 ntsf0=0 ntss0=0 nbff0=0 nbfs0=0 nbsf0=0 nbss0=0
+Xcore tg bg d s _ntff _ntfs _ntsf _ntss _nbff _nbfs _nbsf _nbss dg_tft_complete_model_state_access
++ vfrom_t=vfrom_t vfrom_b=vfrom_b cycle_index=cycle_index hold_s=hold_s
++ prev_log_id=prev_log_id seg_log_id0=seg_log_id0 temperature_dataset=temperature_dataset
++ ntff0=ntff0 ntfs0=ntfs0 ntsf0=ntsf0 ntss0=ntss0
++ nbff0=nbff0 nbfs0=nbfs0 nbsf0=nbsf0 nbss0=nbss0
 .ends dg_tft_complete_model
 """
     (OUT / "dg_tft_complete_model.inc").write_text(
         complete_wrapper,
         encoding="utf-8",
     )
-    complete_deck = """* Complete static + slow-SRH DG-TFT transient smoke test
+    complete_deck = f"""* Complete static + fast/slow SRH DG-TFT transient smoke test
 .option post=2 accurate runlvl=5 reltol=1e-6 abstol=1e-14 vntol=1e-10 delmax=1m
 .temp 20
-.hdl "../../../../static_signoff_outputs/dg_tft_static_core.va"
+.hdl "{STATIC_VA.as_posix()}"
 .hdl "dg_tft_dynamic_srh.va"
+.hdl "{GLUE_VA.as_posix()}"
 .include "dg_tft_dynamic_srh.inc"
 .include "dg_tft_complete_model.inc"
 Vtg tg 0 PWL(0 0.87 1m 0.87 1.001m 2.50 5 2.50 5.001 0.42 10 0.42)
 Vbg bg 0 0
 Vd d 0 0.5
-Xdut tg bg d 0 ntf nts nbf nbs dg_tft_complete_model
+Xdut tg bg d 0 ntff ntfs ntsf ntss nbff nbfs nbsf nbss dg_tft_complete_model_state_access
 + vfrom_t=0.87 vfrom_b=0 cycle_index=1 hold_s=10
-.ic V(ntf)=0 V(nts)=0 V(nbf)=0 V(nbs)=0
++ ntff0=0 ntfs0=0 ntsf0=0 ntss0=0 nbff0=0 nbfs0=0 nbsf0=0 nbss0=0
+.ic V(ntff)=0 V(ntfs)=0 V(ntsf)=0 V(ntss)=0
+.ic V(nbff)=0 V(nbfs)=0 V(nbsf)=0 V(nbss)=0
 .tran 1m 10 UIC
-.print tran V(tg) I(Vd) V(Xdut.dlog) V(ntf) V(nts) V(nbf) V(nbs)
+.print tran V(tg) I(Vd) V(Xdut.dlog) V(ntff) V(ntfs) V(ntsf) V(ntss)
+.print tran V(nbff) V(nbfs) V(nbsf) V(nbss)
 .end
 """
     (OUT / "dg_tft_complete_model_smoke.sp").write_text(
@@ -724,16 +814,22 @@ Xdut tg bg d 0 ntf nts nbf nbs dg_tft_complete_model
     (OUT / "modular_deployment_metadata.json").write_text(
         json.dumps(
             {
-                "student_source": "",
-                "student_teacher_rmse_dec_mean": 0.000532962494298772,
-                "student_teacher_rmse_dec_p90": 0.001257803139742464,
-                "student_teacher_rmse_dec_max": 0.0015708078863099217,
+                "student_source": "all_regime_top2_symbolic",
+                "active_regimes": active_regimes,
+                "amplitude_parameterization": (
+                    "conservative_total_plus_exchange"
+                    if any(
+                        "total_amp" in outputs
+                        for outputs in formulas.values()
+                    )
+                    else "independent_fast_slow"
+                ),
                 "dynamic_state": "full SRH capture/emission equilibrium",
                 "evaluator_partition": [
-                    "VTG capture",
-                    "VTG emission",
-                    "VBG capture",
-                    "VBG emission",
+                    f"{regime} {family} {process}"
+                    for regime in active_regimes
+                    for family in ("VTG", "VBG")
+                    for process in ("capture", "emission")
                 ],
                 "complete_device_wrapper": "dg_tft_complete_model.inc",
             },
@@ -768,36 +864,17 @@ Xdyn tg bg d 0 ntff ntfs ntsf ntss nbff nbfs nbsf nbss dlog
     return deck
 
 
-def run_export_va(
-    student_source: str = "",
-    include_legacy_banked: bool = False,
-) -> Path:
-    """Importable entry point — export deployable split-module Verilog-A.
-
-    Returns the combined output directory path.
-    """
-    OUT.mkdir(parents=True, exist_ok=True)
-    formulas, norm = load_models(student_source)
-    write_split_modular_continuous_assets(formulas, norm)
-    print(OUT / "dg_tft_dynamic_srh.va")
-    print(OUT / "dg_tft_dynamic_srh.inc")
-    print(OUT / "dg_tft_dynamic_srh_smoke.sp")
-    if include_legacy_banked:
-        va = write_va(formulas, norm)
-        deck = write_smoke_deck(va)
-        print(va)
-        print(deck)
-    return OUT
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export the deployable split-module Top-2 SRH-KAN model."
     )
     parser.add_argument(
         "--student-source",
-        default="",
-        help="Trained student subdirectory below srh_top2_regime_banks.",
+        default=".",
+        help=(
+            "Trained student subdirectory below srh_top2_regime_banks. "
+            "Use '.' after the default all-regime training."
+        ),
     )
     parser.add_argument(
         "--include-legacy-banked",
@@ -809,10 +886,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    run_export_va(
-        student_source=args.student_source,
-        include_legacy_banked=args.include_legacy_banked,
-    )
+    OUT.mkdir(parents=True, exist_ok=True)
+    formulas, norm = load_models(args.student_source)
+    write_split_modular_continuous_assets(formulas, norm)
+    print(OUT / "dg_tft_dynamic_srh.va")
+    print(OUT / "dg_tft_dynamic_srh.inc")
+    print(OUT / "dg_tft_dynamic_srh_smoke.sp")
+    if args.include_legacy_banked:
+        va = write_va(formulas, norm)
+        deck = write_smoke_deck(va)
+        print(va)
+        print(deck)
 
 
 if __name__ == "__main__":

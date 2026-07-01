@@ -73,6 +73,10 @@ _ADJUSTMENT_STRATEGIES: dict[str, list[dict[str, dict[str, object]]]] = {
 # ── Safety boundaries per section.key ───────────────────────────────
 
 _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
+    "preprocessing": {
+        "iv_stage_max_shift_V": (0.1, 2.0),
+        "iv_stage_min_matches": (1, 10),
+    },
     "physical_fit": {
         "max_nfev_scale": (0.5, 5.0),
         "max_iv_points": (5000, 200000),
@@ -98,6 +102,25 @@ _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "batch_cv": (64, 4096),
         "symbolic_training_weight": (0.0, 0.1),
         "print_every": (1, 200),
+        "base_iv_epochs": (100, 5000),
+        "base_iv_restarts": (1, 10),
+        "base_iv_learning_rate": (0.0001, 0.01),
+        "base_iv_eval_every": (5, 100),
+        "base_iv_top1_symbolic_weight": (0.0, 1.0),
+        "base_iv_top1_sparsity_weight": (0.0, 0.1),
+        "base_iv_top1_selection_weight": (0.0, 0.5),
+        "base_iv_max_top1_compatibility": (0.0, 0.1),
+        "iv_residual_stage_epochs": (100, 5000),
+        "iv_residual_stage_learning_rate": (0.0001, 0.01),
+        "iv_residual_stage_linear_weight": (0.0, 1.0),
+        "iv_residual_stage_deriv_curves": (1, 100),
+        "iv_residual_stage_shape_period": (1, 20),
+        "base_pkan_lr_mult": (0.01, 10.0),
+        "warm_start_base_pkan_lr_mult": (0.001, 1.0),
+        "eval_every": (5, 200),
+        "shape_eval_period": (1, 20),
+        "shape_early_period": (1, 50),
+        "shape_middle_period": (1, 50),
     },
     "temperature": {
         "minimum_span_K": (1.0, 100.0),
@@ -108,11 +131,15 @@ _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "hidden_capture": (4, 32),
         "hidden_emission": (4, 32),
         "print_every": (1, 200),
+        "fast_restarts": (1, 10),
+        "slow_restarts": (1, 10),
     },
 }
 
 # Whitelist: only these section.keys may be auto-adjusted.
 _PARAMETER_WHITELIST: frozenset[str] = frozenset({
+    "preprocessing.iv_stage_max_shift_V",
+    "preprocessing.iv_stage_min_matches",
     "physical_fit.max_nfev_scale",
     "physical_fit.max_iv_points",
     "physical_fit.max_cv_points",
@@ -133,6 +160,26 @@ _PARAMETER_WHITELIST: frozenset[str] = frozenset({
     "full_model.early_stop_min_epochs",
     "full_model.symbolic_training_weight",
     "full_model.print_every",
+    "full_model.base_iv_epochs",
+    "full_model.base_iv_restarts",
+    "full_model.base_iv_learning_rate",
+    "full_model.base_iv_eval_every",
+    "full_model.base_iv_top1_symbolic_weight",
+    "full_model.base_iv_top1_sparsity_weight",
+    "full_model.base_iv_top1_selection_weight",
+    "full_model.base_iv_max_top1_compatibility",
+    "full_model.iv_residual_stage_epochs",
+    "full_model.iv_residual_stage_learning_rate",
+    "full_model.iv_residual_stage_linear_weight",
+    "full_model.iv_residual_stage_deriv_curves",
+    "full_model.iv_residual_stage_shape_period",
+    "full_model.base_pkan_lr_mult",
+    "full_model.warm_start_base_pkan_lr_mult",
+    "full_model.eval_every",
+    "full_model.shape_eval_period",
+    "full_model.shape_early_period",
+    "full_model.shape_middle_period",
+    "full_model.cv_train_subset",
     "temperature.minimum_span_K",
     "temperature.kan_scale",
     "hysteresis.epochs",
@@ -140,6 +187,12 @@ _PARAMETER_WHITELIST: frozenset[str] = frozenset({
     "hysteresis.hidden_emission",
     "hysteresis.amp_parameterization",
     "hysteresis.print_every",
+    "hysteresis.fast_restarts",
+    "hysteresis.slow_restarts",
+    "hysteresis.fast_amp_parameterization",
+    "hysteresis.slow_amp_parameterization",
+    "hysteresis.fast_optimizer_policy",
+    "hysteresis.slow_optimizer_policy",
 })
 
 # ── Stage-specific console labels ───────────────────────────────────

@@ -81,6 +81,46 @@ PHYSICAL_FIT_PARAMS: dict[str, ParamDef] = {
             "Increase if fitting returns poor IV curve match; decrease to speed up."
         ),
     },
+
+    # ── [preprocessing] — shared measurement-stage alignment ──
+    "iv_stage_alignment": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "auto",
+        "enum": ["off", "auto"],
+        "section": "preprocessing",
+        "desc": (
+            "IV measurement-stage alignment mode. "
+            "'auto' — automatically detect and correct per-source transfer-voltage shifts. "
+            "'off' — no alignment. "
+            "Set 'off' if data is known to be pre-aligned."
+        ),
+    },
+    "iv_stage_max_shift_V": {
+        "type": "float",
+        "lo": 0.1,
+        "hi": 2.0,
+        "default": 0.75,
+        "section": "preprocessing",
+        "desc": (
+            "Maximum allowed transfer-voltage shift per source (V) for IV stage alignment. "
+            "Lower values are more conservative. "
+            "Increase only if measurement has documented large offsets."
+        ),
+    },
+    "iv_stage_min_matches": {
+        "type": "int",
+        "lo": 1,
+        "hi": 10,
+        "default": 2,
+        "section": "preprocessing",
+        "desc": (
+            "Minimum number of matched bias pairs required before applying a stage shift. "
+            "Higher values require more evidence before alignment. "
+            "Reduce if alignment is not triggering when expected."
+        ),
+    },
 }
 
 
@@ -215,6 +255,267 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "desc": (
             "Print training loss/metrics every N epochs. "
             "Larger values reduce log noise; set to 1 for full visibility."
+        ),
+    },
+
+    # ── [full_model] v95 — base IV PKAN training ──
+    "base_iv_epochs": {
+        "type": "int",
+        "lo": 100,
+        "hi": 5000,
+        "default": 540,
+        "section": "full_model",
+        "desc": (
+            "Epochs for the base IV PKAN training phase (runs before residual/CV training). "
+            "More epochs improve the current-device base KAN quality. "
+            "Increase if the base IV PKAN is undertrained."
+        ),
+    },
+    "base_iv_restarts": {
+        "type": "int",
+        "lo": 1,
+        "hi": 10,
+        "default": 2,
+        "section": "full_model",
+        "desc": (
+            "Number of restarts for base IV PKAN training. "
+            "Each restart uses a different random seed. "
+            "Increase if base IV training converges to poor local minima."
+        ),
+    },
+    "base_iv_learning_rate": {
+        "type": "float",
+        "lo": 0.0001,
+        "hi": 0.01,
+        "default": 0.002,
+        "section": "full_model",
+        "desc": (
+            "Learning rate for the base IV PKAN training phase. "
+            "Lower values improve stability; higher values speed up convergence. "
+            "Adjust if base IV loss oscillates or plateaus early."
+        ),
+    },
+    "base_iv_eval_every": {
+        "type": "int",
+        "lo": 5,
+        "hi": 100,
+        "default": 20,
+        "section": "full_model",
+        "desc": (
+            "Evaluate base IV PKAN metrics every N epochs. "
+            "Smaller values provide finer progress tracking. "
+            "Increase to reduce eval overhead."
+        ),
+    },
+    "base_iv_top1_symbolic_weight": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 1.0,
+        "default": 0.35,
+        "section": "full_model",
+        "desc": (
+            "Top-1 symbolic weight for the base IV PKAN. "
+            "Controls how strongly the symbolic edge replacement is weighted. "
+            "Higher values favor symbolic edges over numeric KAN outputs."
+        ),
+    },
+    "base_iv_top1_sparsity_weight": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 0.1,
+        "default": 0.001,
+        "section": "full_model",
+        "desc": (
+            "Sparsity penalty weight for base IV Top-1 symbolic selection. "
+            "Higher values push towards fewer active symbolic edges. "
+            "Increase if exported equations are too complex."
+        ),
+    },
+    "base_iv_top1_selection_weight": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 0.5,
+        "default": 0.08,
+        "section": "full_model",
+        "desc": (
+            "Selection weight for base IV Top-1 symbolic edge replacement. "
+            "Controls the trade-off between symbolic accuracy and expression simplicity. "
+            "Increase to prefer simpler expressions."
+        ),
+    },
+    "base_iv_max_top1_compatibility": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 0.1,
+        "default": 0.015,
+        "section": "full_model",
+        "desc": (
+            "Hard precision gate for base IV Top-1 symbolic replacement. "
+            "Only edges with MSE below this threshold pass the gate. "
+            "Relax (increase) if current device requires more flexible symbols; "
+            "tighten (decrease) for stricter acceptance."
+        ),
+    },
+
+    # ── [full_model] v95 — IV residual stage ──
+    "iv_residual_stage_epochs": {
+        "type": "int",
+        "lo": 100,
+        "hi": 5000,
+        "default": 700,
+        "section": "full_model",
+        "desc": (
+            "Epochs for the held-out IV residual training stage. "
+            "This stage trains the residual KAN on held-out IV data. "
+            "Increase if residual IV fit is poor."
+        ),
+    },
+    "iv_residual_stage_learning_rate": {
+        "type": "float",
+        "lo": 0.0001,
+        "hi": 0.01,
+        "default": 0.002,
+        "section": "full_model",
+        "desc": (
+            "Learning rate for the IV residual stage. "
+            "Controls the optimization step size for held-out residual fitting. "
+            "Adjust if residual training oscillates or converges too slowly."
+        ),
+    },
+    "iv_residual_stage_linear_weight": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 1.0,
+        "default": 0.25,
+        "section": "full_model",
+        "desc": (
+            "Linear term weight in the IV residual stage loss. "
+            "Higher values emphasize matching the absolute curve values. "
+            "Increase if the residual model misses the baseline level."
+        ),
+    },
+    "iv_residual_stage_deriv_curves": {
+        "type": "int",
+        "lo": 1,
+        "hi": 100,
+        "default": 36,
+        "section": "full_model",
+        "desc": (
+            "Number of derivative curves to supervise in IV residual training. "
+            "More curves enforce tighter shape consistency. "
+            "Increase if residual predictions have unrealistic curvature."
+        ),
+    },
+    "iv_residual_stage_shape_period": {
+        "type": "int",
+        "lo": 1,
+        "hi": 20,
+        "default": 3,
+        "section": "full_model",
+        "desc": (
+            "Shape evaluation period during IV residual training. "
+            "Smaller values trigger shape-loss more frequently. "
+            "Increase to reduce shape-matching overhead."
+        ),
+    },
+
+    # ── [full_model] v95 — LR multipliers & training schedule ──
+    "base_pkan_lr_mult": {
+        "type": "float",
+        "lo": 0.01,
+        "hi": 10.0,
+        "default": 1.0,
+        "section": "full_model",
+        "desc": (
+            "Base PKAN learning-rate multiplier applied during full model training. "
+            ">1.0 makes the base KAN learn faster; <1.0 freezes it more. "
+            "Reduce if base KAN overfits to the current device data."
+        ),
+    },
+    "warm_start_base_pkan_lr_mult": {
+        "type": "float",
+        "lo": 0.001,
+        "hi": 1.0,
+        "default": 0.035,
+        "section": "full_model",
+        "desc": (
+            "Initial learning-rate multiplier for base PKAN during warm-start. "
+            "Small values protect the pretrained KAN from early destruction. "
+            "Increase if the base PKAN needs more initial adaptation."
+        ),
+    },
+    "eval_every": {
+        "type": "int",
+        "lo": 5,
+        "hi": 200,
+        "default": 40,
+        "section": "full_model",
+        "desc": (
+            "Evaluate full model metrics every N epochs. "
+            "Smaller values give finer progress tracking but increase overhead. "
+            "Set higher if training time is dominated by evaluation."
+        ),
+    },
+    "shape_eval_period": {
+        "type": "int",
+        "lo": 1,
+        "hi": 20,
+        "default": 5,
+        "section": "full_model",
+        "desc": (
+            "Period (in epochs) for shape evaluation during full model training. "
+            "Smaller values check shape quality more frequently. "
+            "Increase to reduce shape-eval overhead."
+        ),
+    },
+    "shape_early_period": {
+        "type": "int",
+        "lo": 1,
+        "hi": 50,
+        "default": 12,
+        "section": "full_model",
+        "desc": (
+            "Shape evaluation period during the early training phase. "
+            "Larger values reduce early-epoch shape-checking overhead. "
+            "Decrease if shape quality needs early monitoring."
+        ),
+    },
+    "shape_middle_period": {
+        "type": "int",
+        "lo": 1,
+        "hi": 50,
+        "default": 5,
+        "section": "full_model",
+        "desc": (
+            "Shape evaluation period during the middle training phase. "
+            "Intermediate shape-checking frequency between early and late phases. "
+            "Adjust to balance shape quality monitoring with training speed."
+        ),
+    },
+    "staged_loss_schedule": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": True,
+        "section": "full_model",
+        "desc": (
+            "Enable staged loss-weight schedule during full model training. "
+            "When True, loss weights evolve across training phases. "
+            "Disable only for debugging or if loss weights should remain static."
+        ),
+    },
+    "cv_train_subset": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "primary_gate_cv",
+        "enum": ["primary_gate_cv", "all_gate_cv"],
+        "section": "full_model",
+        "desc": (
+            "CV training data subset selection. "
+            "'primary_gate_cv' — use only the primary gate CV sheets. "
+            "'all_gate_cv' — include all gate capacitance sheets. "
+            "Use 'all_gate_cv' if secondary gates contain useful information."
         ),
     },
 
@@ -439,6 +740,88 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
             "Larger values reduce log noise; set to 1 for full visibility."
         ),
     },
+
+    # ── [hysteresis] v95 — fast/slow regime split ──
+    "fast_restarts": {
+        "type": "int",
+        "lo": 1,
+        "hi": 10,
+        "default": 1,
+        "section": "hysteresis",
+        "desc": (
+            "Number of random restarts for fast-transient SRH bank training. "
+            "More restarts improve robustness at the cost of training time. "
+            "Increase if fast-regime fitting quality is inconsistent across runs."
+        ),
+    },
+    "slow_restarts": {
+        "type": "int",
+        "lo": 1,
+        "hi": 10,
+        "default": 2,
+        "section": "hysteresis",
+        "desc": (
+            "Number of random restarts for slow-transient SRH bank training. "
+            "Slow transients typically benefit from more restarts than fast. "
+            "Increase if slow-regime amplitude/decay is poorly captured."
+        ),
+    },
+    "fast_amp_parameterization": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "conservative",
+        "enum": ["conservative", "independent", "aggressive"],
+        "section": "hysteresis",
+        "desc": (
+            "Amplitude parameterization for the fast-transient SRH bank. "
+            "'conservative' — bounded total/exchange form, less prone to oscillation. "
+            "'independent' — legacy v90 per-amplitude head. "
+            "Switch to 'independent' only if conservative fitting underfits amplitudes."
+        ),
+    },
+    "slow_amp_parameterization": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "independent",
+        "enum": ["conservative", "independent", "aggressive"],
+        "section": "hysteresis",
+        "desc": (
+            "Amplitude parameterization for the slow-transient SRH bank. "
+            "'independent' — legacy v90 per-amplitude head (protected baseline). "
+            "'conservative' — bounded total/exchange form. "
+            "Reduce to 'conservative' if slow-bank amplitudes oscillate."
+        ),
+    },
+    "fast_optimizer_policy": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "optimized",
+        "enum": ["optimized", "v90"],
+        "section": "hysteresis",
+        "desc": (
+            "Optimizer policy for fast-transient SRH bank training. "
+            "'optimized' — bounded schedule with faster convergence. "
+            "'v90' — legacy fixed-AdamW full-budget policy. "
+            "Fall back to 'v90' if optimized policy shows instability."
+        ),
+    },
+    "slow_optimizer_policy": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "v90",
+        "enum": ["optimized", "v90"],
+        "section": "hysteresis",
+        "desc": (
+            "Optimizer policy for slow-transient SRH bank training. "
+            "'v90' — legacy fixed-AdamW (protected baseline). "
+            "'optimized' — faster convergence schedule. "
+            "Use 'optimized' only if slow-bank training time is a bottleneck."
+        ),
+    },
 }
 
 
@@ -447,7 +830,7 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
 from .schema import StageName
 
 _STAGE_PARAM_MAP: dict[str, tuple[list[str], dict[str, ParamDef]]] = {
-    StageName.FIT_PHYSICAL: (["physical_fit"], PHYSICAL_FIT_PARAMS),
+    StageName.FIT_PHYSICAL: (["physical_fit", "preprocessing"], PHYSICAL_FIT_PARAMS),
     StageName.TRAIN_STATIC: (["full_model", "base_pkan", "temperature"], FULL_MODEL_PARAMS),
     StageName.TRAIN_HYSTERESIS: (["hysteresis"], HYSTERESIS_PARAMS),
 }

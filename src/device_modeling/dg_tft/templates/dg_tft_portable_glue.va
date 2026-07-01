@@ -1,0 +1,30 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Portable helper modules required by the dynamic SRH subcircuits.
+module dg_tft_amp_blend(ac, ae, k, s);
+    inout ac, ae, k, s;
+    electrical ac, ae, k, s;
+    analog begin
+        V(k, s) <+ 2.5*(tanh(V(ae, s)/5.0) - tanh(V(ac, s)/5.0));
+    end
+endmodule
+
+module dg_tft_sum4(x1, x2, x3, x4, y, s);
+    inout x1, x2, x3, x4, y, s;
+    electrical x1, x2, x3, x4, y, s;
+    analog begin
+        V(y, s) <+ V(x1, s) + V(x2, s) + V(x3, s) + V(x4, s);
+    end
+endmodule
+
+module dg_tft_dynamic_current_multiplier(d, dcore, dlog, s);
+    inout d, dcore, dlog, s;
+    electrical d, dcore, dlog, s;
+    parameter real rsense = 1.0e3 from (0.0:inf);
+    real gain_delta;
+    analog begin
+        gain_delta = exp(2.302585092994046*V(dlog, s)) - 1.0;
+        I(d, s) <+ gain_delta*V(d, dcore)/rsense;
+    end
+endmodule

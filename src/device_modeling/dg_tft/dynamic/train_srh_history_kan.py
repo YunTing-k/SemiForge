@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -21,9 +22,23 @@ from scipy.optimize import least_squares
 
 
 ROOT = Path(__file__).resolve().parent
-RESULTS = Path(os.environ.get("DG_TFT_DYNAMIC_WORK_DIR", ROOT / "results_long_timescale"))
+RESULTS = Path(
+    os.environ.get("DG_TFT_DYNAMIC_WORK_DIR", ROOT / "results_long_timescale")
+).resolve()
 OUT = RESULTS / "srh_history_kan"
-HSPICE = Path("hspice.com")
+
+
+def resolve_hspice() -> Path | None:
+    env = os.environ.get("DG_TFT_HSPICE_EXE") or os.environ.get("HSPICE_EXE")
+    candidates = [Path(env) if env else None]
+    for cand in candidates:
+        if cand and cand.exists():
+            return cand
+    found = shutil.which("hspice") or shutil.which("hspice.com") or shutil.which("hspice.exe")
+    return Path(found) if found else None
+
+
+HSPICE = resolve_hspice()
 
 FEATURE_NAMES = [
     "interface_top",

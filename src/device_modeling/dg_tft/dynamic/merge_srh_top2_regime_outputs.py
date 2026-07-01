@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 
 import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parent
-BASE = ROOT / "results_long_timescale" / "srh_top2_regime_banks"
+DYNAMIC_WORK = Path(
+    os.environ.get("DG_TFT_DYNAMIC_WORK_DIR", ROOT / "results_long_timescale")
+).resolve()
+BASE = DYNAMIC_WORK / "srh_top2_regime_banks"
 OUT = BASE / "combined"
 
 
@@ -27,7 +31,7 @@ def main() -> None:
         ]
     ].copy()
 
-    legacy_path = ROOT / "results_long_timescale" / "srh_waveform_refined" / "srh_waveform_refinement_metrics.csv"
+    legacy_path = DYNAMIC_WORK / "srh_waveform_refined" / "srh_waveform_refinement_metrics.csv"
     if legacy_path.exists():
         legacy = pd.read_csv(legacy_path)
         existing_cols = set(fast_metrics.columns) | set(slow_metrics.columns)

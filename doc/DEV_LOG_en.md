@@ -355,7 +355,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 - No Chinese in code output; `sys_log` and `console.print()` complementary
 
 ### Test strategy
-909 tests pass (12 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
+911 tests pass (11 skipped). Run: `python -m unittest discover -s test -p "*_test.py"`.
 
 ### Agent intervention boundaries
 LLM/subagent only at 3 points: data preparation, format verification, failure diagnosis. Training execution, config generation, quality gating, and report building are pure rule-based code.
@@ -393,3 +393,58 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 - `src/workflow/dg_tft/quality_guard.py` — added `validate_agent_adjustments()` + coerce helpers
 - `test/dg_tft_param_defs_test.py` — new: 45 tests
 - TODO.md — 3.2.1–3.2.7 all complete
+
+---
+
+## 2026-07-01 | DG-TFT Engine v90→v95 Merge
+
+### Engine Upgrade
+- `dg_tft_full_model.py`: 13.6K → 19K lines. New: base IV PKAN training pipeline (formerly standalone `train_base_pkan.py`), 6 hard precision gates, ~25 new CLI args, CV charge PKAN split, `CompactKAN` rename, symbolic engine expansion, safe scale search
+- `fit_physical_kernel.py`: new IV measurement-stage alignment, CV gate auto-orientation, CV quality selection
+- `validate_dataset.py`: new CV layout detection (`looks_like_shared_bias_wide_table`)
+
+### New Engine Modules
+- `cv_preprocessing.py` — CV preprocessing utilities (transition metadata, centered coordinates, layout detection)
+- `measurement_preprocessing.py` — IV measurement-stage drift alignment
+- `tensor_utils.py` — shared tensor/data utilities extracted from old `train_base_pkan.py`
+
+### Removed
+- `train_base_pkan.py` (merged into `dg_tft_full_model.py`)
+- `dg_tft_ekv_level2.va` (replaced by `templates/physical_kernel_template.va`)
+
+### New Directories
+- `templates/` (2 VA templates: physical_kernel, portable_glue)
+- `tools/` (7 scripts: acceptance bundle, hysteresis banks, ablation, delivery validation)
+
+### New Actions
+- `doctor`: environment diagnostic
+- `smoke-static`: lightweight static model validation
+- `quick-static`: quick IV/CV training + architecture validation
+- `package-release`: full release assembly
+- `package-portable`: portable archive
+- `verify-package`: package verification
+
+### run_model.py Refactor
+- Architecture switched from **direct import** to **subprocess call** (matches v95 canonical architecture — all entries are CLI-only)
+- Retained migration adaptations: `_normalize_cv_format()`, `_prepare_fallback_model_dir()`, `minimal_run`, example data guard, `train-base-pkan` action
+- v95 helpers: `run()`/`run_gate()`/`run_artifact_stage()`, `resolve_hspice()`, `dynamic_env()`, `doctor()`, release assembly
+
+### Parameter Table Expansion (3.2 Maintenance — per Section 3.2.7)
+- `PHYSICAL_FIT_PARAMS`: 3 → 6 (+3 `[preprocessing]` params)
+- `FULL_MODEL_PARAMS`: 23 → 44 (+21: base IV training, IV residual, symbolic, LR multipliers, training schedule, cv_train_subset, etc.)
+- `HYSTERESIS_PARAMS`: 7 → 13 (+6: fast/slow regime split)
+- Total: 32 → 73 params
+- `quality_guard.py` `_PARAMETER_BOUNDS`: new `[preprocessing]` section, `full_model` +24 keys, `hysteresis` +2 keys
+- `_PARAMETER_WHITELIST`: 30 → 56 entries
+
+### Tests
+- `dg_tft_functionized_api_test.py`: rewritten for v95 CLI-only architecture
+- `dg_tft_param_defs_test.py`: expected param count 22 → 44; `preprocessing` section added
+- `dg_tft_quality_guard_test.py`: string/bool param skip list expanded to 7
+- 911 tests pass (11 skipped)
+
+### Files
+- `src/device_modeling/dg_tft/engine/` — 4 replaced, 3 added, 2 removed
+- `src/device_modeling/dg_tft/{templates,tools}/` — new
+- `src/device_modeling/dg_tft/{dynamic,reporting}/` — fully replaced
+- `src/device_modeling/dg_tft/{config,run_model.py}` — fully replaced

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import matplotlib.pyplot as plt
@@ -11,8 +13,56 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "results_long_timescale" / "srh_top2_regime_banks" / "combined"
-HSPICE = Path("hspice.com")
+RELEASE_ROOT = ROOT.parents[1]
+DYNAMIC_WORK = Path(
+    os.environ.get(
+        "DG_TFT_DYNAMIC_WORK_DIR",
+        RELEASE_ROOT / "trained_model" / "dynamic_srh",
+    )
+).resolve()
+OUT = DYNAMIC_WORK / "srh_top2_regime_banks" / "combined"
+VA_DIR = RELEASE_ROOT / "verilog_a"
+
+
+def resolve_hspice() -> Path | None:
+    env = os.environ.get("DG_TFT_HSPICE_EXE") or os.environ.get("HSPICE_EXE")
+    candidates = [Path(env) if env else None]
+    for cand in candidates:
+        if cand and cand.exists():
+            return cand
+    found = shutil.which("hspice") or shutil.which("hspice.com") or shutil.which("hspice.exe")
+    return Path(found) if found else None
+
+
+HSPICE = resolve_hspice()
+
+
+def state_access_contract() -> tuple[str, str, str]:
+    """Return the state-access interface published by this release."""
+
+    wrapper = (VA_DIR / "dg_tft_complete_model.inc").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    if ".subckt dg_tft_complete_model_state_access_slow " in wrapper:
+        return (
+            "dg_tft_complete_model_state_access_slow",
+            "ntf nts nbf nbs",
+            ".ic V(ntf)=0 V(nts)=0 V(nbf)=0 V(nbs)=0",
+        )
+    if ".subckt dg_tft_complete_model_state_access " in wrapper:
+        return (
+            "dg_tft_complete_model_state_access",
+            "ntff ntfs ntsf ntss nbff nbfs nbsf nbss",
+            (
+                ".ic V(ntff)=0 V(ntfs)=0 V(ntsf)=0 V(ntss)=0 "
+                "V(nbff)=0 V(nbfs)=0 V(nbsf)=0 V(nbss)=0"
+            ),
+        )
+    return (
+        "dg_tft_complete_model_state_access",
+        "ntf nts nbf nbs",
+        ".ic V(ntf)=0 V(nts)=0 V(nbf)=0 V(nbs)=0",
+    )
 
 
 def parse_hspice_float(token: str) -> float:
@@ -34,22 +84,34 @@ def parse_hspice_float(token: str) -> float:
     return float(text)
 
 
+def require_hspice() -> Path:
+    if HSPICE is None:
+        raise SystemExit(
+            "HSPICE executable not found. Set DG_TFT_HSPICE_EXE to hspice.com/hspice.exe "
+            "or add HSPICE to PATH."
+        )
+    return HSPICE
+
+
 def write_equivalence_deck() -> Path:
+    OUT.mkdir(parents=True, exist_ok=True)
     deck = OUT / "dg_tft_complete_model_current_equivalence_v3.sp"
+    state_subckt, state_ports, state_initialization = state_access_contract()
     deck.write_text(
-        """* Complete DG-TFT static + slow-SRH current equivalence
+        f"""* Complete DG-TFT static + slow-SRH current equivalence
 .option post=2 accurate runlvl=5 reltol=1e-7 abstol=1e-16 vntol=1e-11 delmax=1m
 .temp 20
-.hdl "../../../../static_signoff_outputs/dg_tft_static_core.va"
-.hdl "dg_tft_dynamic_srh.va"
-.include "dg_tft_dynamic_srh.inc"
-.include "dg_tft_complete_model.inc"
+.hdl "{(VA_DIR / 'dg_tft_static_core.va').as_posix()}"
+.hdl "{(VA_DIR / 'dg_tft_dynamic_srh.va').as_posix()}"
+.hdl "{(VA_DIR / 'dg_tft_portable_glue.va').as_posix()}"
+.include "{(VA_DIR / 'dg_tft_dynamic_srh.inc').as_posix()}"
+.include "{(VA_DIR / 'dg_tft_complete_model.inc').as_posix()}"
 Vtg tg 0 PWL(0 0.87 1m 0.87 1.001m 2.50 5 2.50 5.001 0.42 10 0.42)
 Vbg bg 0 0
 Vd d 0 0.5
-Xdut tg bg d 0 ntf nts nbf nbs dg_tft_complete_model
+Xdut tg bg d 0 {state_ports} {state_subckt}
 + vfrom_t=0.87 vfrom_b=0 cycle_index=1 hold_s=10
-.ic V(ntf)=0 V(nts)=0 V(nbf)=0 V(nbs)=0
+{state_initialization}
 .tran 1m 10 UIC
 .print tran I(Vd) I(Xdut.Rsense) V(Xdut.dlog)
 .end
@@ -57,6 +119,57 @@ Xdut tg bg d 0 ntf nts nbf nbs dg_tft_complete_model
         encoding="ascii",
     )
     return deck
+
+
+def run_four_terminal_production_smoke() -> dict:
+    """Compile and run the public four-terminal model with internal SRH states."""
+
+    deck = OUT / "dg_tft_complete_model_four_terminal_smoke.sp"
+    listing = OUT / "dg_tft_complete_model_four_terminal_smoke.lis"
+    deck.write_text(
+        f"""* Public four-terminal complete-model smoke test
+.option post=2 accurate runlvl=5 reltol=1e-6 abstol=1e-15 vntol=1e-10 delmax=1m
+.temp 20
+.hdl "{(VA_DIR / 'dg_tft_static_core.va').as_posix()}"
+.hdl "{(VA_DIR / 'dg_tft_dynamic_srh.va').as_posix()}"
+.hdl "{(VA_DIR / 'dg_tft_portable_glue.va').as_posix()}"
+.include "{(VA_DIR / 'dg_tft_dynamic_srh.inc').as_posix()}"
+.include "{(VA_DIR / 'dg_tft_complete_model.inc').as_posix()}"
+Vtg tg 0 PWL(0 0.87 1m 0.87 1.001m 2.50 20m 2.50)
+Vbg bg 0 0
+Vd d 0 0.5
+Xdut tg bg d 0 dg_tft_complete_model
++ vfrom_t=0.87 vfrom_b=0 cycle_index=1 hold_s=0.02
+.tran 10u 20m UIC
+.print tran I(Vd)
+.end
+""",
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        [str(require_hspice()), "-i", deck.name, "-o", listing.name],
+        cwd=OUT,
+        text=True,
+        capture_output=True,
+        timeout=600,
+    )
+    text = listing.read_text(errors="ignore") if listing.exists() else ""
+    tr0 = OUT / "dg_tft_complete_model_four_terminal_smoke.tr0"
+    report = {
+        "return_code": result.returncode,
+        "job_concluded": "job concluded" in text.lower(),
+        "hspice_error_present": "**error**" in text.lower()
+        or "job aborted" in text.lower(),
+        "transient_file_present": tr0.exists(),
+        "transient_file_bytes": tr0.stat().st_size if tr0.exists() else 0,
+    }
+    report["pass"] = bool(
+        report["return_code"] == 0
+        and report["job_concluded"]
+        and not report["hspice_error_present"]
+        and report["transient_file_bytes"] > 1000
+    )
+    return report
 
 
 def parse_equivalence_listing(path: Path) -> pd.DataFrame:
@@ -185,7 +298,7 @@ def main() -> int:
     deck = write_equivalence_deck()
     listing = OUT / "dg_tft_complete_model_current_equivalence_v3.lis"
     result = subprocess.run(
-        [str(HSPICE), "-i", deck.name, "-o", listing.name],
+        [str(require_hspice()), "-i", deck.name, "-o", listing.name],
         cwd=OUT,
         text=True,
         capture_output=True,
@@ -194,8 +307,10 @@ def main() -> int:
     text = listing.read_text(errors="ignore") if listing.exists() else ""
     tr0 = OUT / "dg_tft_complete_model_current_equivalence_v3.tr0"
     current_relation = {}
+    four_terminal_smoke = {}
     if result.returncode == 0 and listing.exists():
         current_relation = validate_current_relation(listing)
+        four_terminal_smoke = run_four_terminal_production_smoke()
     summary = {
         "return_code": result.returncode,
         "job_concluded": "job concluded" in text.lower(),
@@ -204,6 +319,7 @@ def main() -> int:
         "transient_file_present": tr0.exists(),
         "transient_file_bytes": tr0.stat().st_size if tr0.exists() else 0,
         "complete_current_relation": current_relation,
+        "four_terminal_production_smoke": four_terminal_smoke,
         "pass": False,
     }
     summary["pass"] = bool(
@@ -212,6 +328,7 @@ def main() -> int:
         and not summary["hspice_error_present"]
         and summary["transient_file_bytes"] > 1000
         and current_relation.get("pass", False)
+        and four_terminal_smoke.get("pass", False)
     )
     (OUT / "complete_device_hspice_equivalence_summary.json").write_text(
         json.dumps(summary, indent=2),

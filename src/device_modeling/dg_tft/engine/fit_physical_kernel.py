@@ -17,10 +17,23 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import least_squares
 
+from cv_preprocessing import (
+    centered_coordinate,
+    looks_like_shared_bias_wide_table,
+    transition_metadata,
+)
+from measurement_preprocessing import (
+    IVAlignmentSettings,
+    align_iv_measurement_stages,
+    write_iv_alignment_report,
+)
+
 
 ROOT = Path(__file__).resolve().parent
-VA_TEMPLATE = ROOT / "dg_tft_ekv_level2.va"
-DEFAULT_DATA_DIR = Path(".")
+RELEASE_ROOT = ROOT.parents[1]
+VA_TEMPLATE = ROOT.parent / "templates" / "physical_kernel_template.va"
+DEFAULT_DATA_DIR = RELEASE_ROOT / "data" / "user_dataset"
+DEFAULT_OUT_DIR = RELEASE_ROOT / "outputs" / "physical_kernel"
 
 EPS0 = 8.8541878128e-12
 K_B = 1.380649e-23
@@ -77,6 +90,16 @@ class CVSeries:
     fixed_vds: float = 0.0
     freq_hz: float | None = None
     temp_K: float | None = None
+    x_centered: np.ndarray | None = None
+    vhalf_V: float | None = None
+    transition_centroid_V: float | None = None
+    low_F: float | None = None
+    high_F: float | None = None
+    span_F: float | None = None
+    max_abs_step_frac_span: float | None = None
+    negative_steps_gt_5pct_span: int = 0
+    complete_fraction: float = 1.0
+    source_layout: str = "paired_columns"
 
 
 @dataclass
@@ -302,18 +325,28 @@ def load_cv_data(data_dir: Path) -> list[CVSeries]:
         return []
     series: list[CVSeries] = []
     xl = pd.ExcelFile(path)
-    for sheet in xl.sheet_names:
-        raw = pd.read_excel(path, sheet_name=sheet, header=None)
+    for sheet_name in xl.sheet_names:
+        sheet = str(sheet_name).strip().lower()
+        raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
         if raw.shape[0] < 3:
             continue
         headers = list(raw.iloc[1])
-        for col in range(0, raw.shape[1] - 1, 2):
-            label = str(headers[col])
-            x = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
-            cap = pd.to_numeric(raw.iloc[2:, col + 1], errors="coerce")
+        if looks_like_shared_bias_wide_table(raw):
+            columns = [(0, col, str(headers[col]), "shared_bias_wide") for col in range(1, raw.shape[1])]
+        else:
+            columns = [
+                (col, col + 1, str(headers[col + 1]), "paired_columns")
+                for col in range(0, raw.shape[1] - 1, 2)
+            ]
+        for x_col, cap_col, label, source_layout in columns:
+            x = pd.to_numeric(raw.iloc[2:, x_col], errors="coerce")
+            cap = pd.to_numeric(raw.iloc[2:, cap_col], errors="coerce")
             mask = x.notna() & cap.notna() & (cap > 0)
             if not mask.any():
                 continue
+            x_values = x[mask].to_numpy(dtype=float)
+            cap_values = cap[mask].to_numpy(dtype=float)
+            meta = transition_metadata(x_values, cap_values)
             fixed_vtg = parse_voltage(label, "VTG")
             fixed_vbg = parse_voltage(label, "VBG")
             fixed_vds = parse_voltage(label, "VDS")
@@ -323,15 +356,29 @@ def load_cv_data(data_dir: Path) -> list[CVSeries]:
                 CVSeries(
                     sheet=sheet,
                     label=label,
-                    x=x[mask].to_numpy(dtype=float),
-                    cap=cap[mask].to_numpy(dtype=float),
+                    x=x_values,
+                    cap=cap_values,
                     fixed_vtg=fixed_vtg,
                     fixed_vbg=fixed_vbg,
                     fixed_vds=0.0 if fixed_vds is None else fixed_vds,
                     freq_hz=freq_hz,
                     temp_K=temp_k,
+                    x_centered=centered_coordinate(x_values, meta),
+                    vhalf_V=meta.vhalf_V,
+                    transition_centroid_V=meta.transition_centroid_V,
+                    low_F=meta.low_F,
+                    high_F=meta.high_F,
+                    span_F=meta.span_F,
+                    max_abs_step_frac_span=meta.max_abs_step_frac_span,
+                    negative_steps_gt_5pct_span=meta.negative_steps_gt_5pct_span,
+                    source_layout=source_layout,
                 )
             )
+    for sheet in sorted(set(s.sheet for s in series)):
+        group = [s for s in series if s.sheet == sheet]
+        reference_n = max(int(np.median([len(s.x) for s in group])), 1)
+        for s in group:
+            s.complete_fraction = min(float(len(s.x)) / float(reference_n), 1.0)
     return series
 
 
@@ -366,8 +413,89 @@ def sample_cv(series: list[CVSeries], max_points: int) -> list[CVSeries]:
         n = max(25, int(round(max_points * len(s.x) / total)))
         n = min(n, len(s.x))
         idx = np.unique(np.linspace(0, len(s.x) - 1, n).astype(int))
-        sampled.append(replace(s, x=s.x[idx], cap=s.cap[idx]))
+        x_centered = s.x_centered[idx] if s.x_centered is not None else None
+        sampled.append(replace(s, x=s.x[idx], cap=s.cap[idx], x_centered=x_centered))
     return sampled
+
+
+def auto_orient_cv_series(
+    series: list[CVSeries],
+    p: Params,
+    span_ratio_min: float = 1.55,
+    cox_ratio_min: float = 1.40,
+) -> tuple[list[CVSeries], dict]:
+    """Correct an evident CBG/CTG worksheet-label interchange for phase 1."""
+
+    def median_span(sheet: str) -> float:
+        values = [
+            float(s.span_F)
+            for s in series
+            if s.sheet == sheet and s.span_F is not None and np.isfinite(s.span_F)
+        ]
+        return float(np.median(values)) if values else 0.0
+
+    cbg_span = median_span("cbg")
+    ctg_span = median_span("ctg")
+    cox_ratio = float(p.Cox_t / max(p.Cox_b, 1.0e-30))
+    span_ratio = cbg_span / max(ctg_span, 1.0e-30)
+    swap = bool(cox_ratio >= cox_ratio_min and span_ratio >= span_ratio_min)
+    report = {
+        "applied_swap": swap,
+        "Cox_t_over_Cox_b": cox_ratio,
+        "cbg_span_F": cbg_span,
+        "ctg_span_F": ctg_span,
+        "cbg_span_over_ctg_span": span_ratio,
+    }
+    if not swap:
+        return series, report
+    oriented = []
+    for s in series:
+        if s.sheet == "cbg":
+            label = re.sub(r"VTG", "VBG", s.label, flags=re.I)
+            oriented.append(
+                replace(
+                    s,
+                    sheet="ctg",
+                    label="auto_oriented_" + label,
+                    fixed_vbg=s.fixed_vtg,
+                    fixed_vtg=None,
+                )
+            )
+        elif s.sheet == "ctg":
+            label = re.sub(r"VBG", "VTG", s.label, flags=re.I)
+            oriented.append(
+                replace(
+                    s,
+                    sheet="cbg",
+                    label="auto_oriented_" + label,
+                    fixed_vtg=s.fixed_vbg,
+                    fixed_vbg=None,
+                )
+            )
+        else:
+            oriented.append(s)
+    return oriented, report
+
+
+def select_primary_cv_series(series: list[CVSeries]) -> tuple[list[CVSeries], list[dict]]:
+    """Select clean quasi-static gate CV for the shared physical-kernel fit."""
+
+    selected, decisions = [], []
+    for s in series:
+        action = "keep"
+        reason = "primary_gate_cv"
+        if s.sheet == "vds":
+            action, reason = "reserve", "drain-terminal/NQS validation"
+        elif s.sheet == "cgg" and (s.freq_hz is None or not np.isclose(s.freq_hz, 1.0e4)):
+            action, reason = "reserve", "higher-frequency NQS validation"
+        elif s.complete_fraction < 0.75:
+            action, reason = "drop", f"incomplete_fraction={s.complete_fraction:.3f}"
+        elif s.max_abs_step_frac_span is not None and s.max_abs_step_frac_span > 0.20:
+            action, reason = "drop", f"single_step_fraction={s.max_abs_step_frac_span:.3f}"
+        if action == "keep":
+            selected.append(s)
+        decisions.append({"sheet": s.sheet, "label": s.label, "action": action, "reason": reason})
+    return selected, decisions
 
 
 PARAM_BOUNDS = {
@@ -864,7 +992,7 @@ def fit_model(
             nfev,
             verbose,
         )
-        history.append(info | {"params_after": asdict(p)})
+        history.append({**info, "params_after": asdict(p)})
     return p, history
 
 
@@ -1210,64 +1338,60 @@ def write_outputs(
     plot_cv(cv_series, p, out_dir / "fit_CV.png", cv_trap)
 
 
-def run_fit_physical(
-    *,
-    data_dir: Path = DEFAULT_DATA_DIR,
-    out_dir: Path = Path("./fit_training_ready_outputs"),
-    template_va: Path = VA_TEMPLATE,
-    max_iv_points: int = 10000,
-    max_cv_points: int = 1200,
-    max_nfev_scale: float = 1.0,
-    seed: int = 20260522,
-    verbose: bool = False,
-) -> Path:
-    """Importable entry point — fit physical kernel to IV/CV data.
-
-    Returns the output directory path.
-    """
-    if not data_dir.exists():
-        raise FileNotFoundError(data_dir)
-    if not template_va.exists():
-        raise FileNotFoundError(template_va)
-
-    iv_all = load_iv_data(data_dir)
-    cv_all = load_cv_data(data_dir)
-    iv_fit = sample_iv(iv_all, max_iv_points, seed)
-    cv_fit = sample_cv(cv_all, max_cv_points)
-
-    print(f"Loaded IV points: {len(iv_all)} total, {len(iv_fit)} used for fitting")
-    print(f"Loaded CV series: {len(cv_all)}, CV points used for fitting: {sum(len(s.x) for s in cv_fit)}")
-    params, history = fit_model(iv_fit, cv_fit, max_nfev_scale, verbose)
-    params, cv_trap, cv_info = fit_cv_shared_trap(cv_all, params)
-    history.append(cv_info)
-    summary, metrics, iv_pred = compute_metrics(iv_all, cv_all, params, cv_trap)
-    write_outputs(out_dir, params, history, summary, metrics, iv_pred, cv_all, cv_trap, template_va)
-    print(f"Done. Outputs written to: {out_dir}")
-    print(json.dumps(summary, indent=2))
-    return out_dir
-
-
 def main():
     ap = argparse.ArgumentParser(description="Fit corrected training-ready DG-TFT IV/CV xlsx data.")
     ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    ap.add_argument("--out-dir", type=Path, default=Path("./fit_training_ready_outputs"))
+    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     ap.add_argument("--template-va", type=Path, default=VA_TEMPLATE)
     ap.add_argument("--max-iv-points", type=int, default=10000)
     ap.add_argument("--max-cv-points", type=int, default=1200)
     ap.add_argument("--max-nfev-scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=20260522)
+    ap.add_argument("--iv-stage-alignment", choices=["off", "auto"], default="auto")
+    ap.add_argument("--iv-stage-max-shift-V", type=float, default=0.75)
+    ap.add_argument("--iv-stage-min-matches", type=int, default=2)
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
-    run_fit_physical(
-        data_dir=args.data_dir,
-        out_dir=args.out_dir,
-        template_va=args.template_va,
-        max_iv_points=args.max_iv_points,
-        max_cv_points=args.max_cv_points,
-        max_nfev_scale=args.max_nfev_scale,
-        seed=args.seed,
-        verbose=args.verbose,
+
+    if not args.data_dir.exists():
+        raise FileNotFoundError(args.data_dir)
+    if not args.template_va.exists():
+        raise FileNotFoundError(args.template_va)
+
+    iv_all = load_iv_data(args.data_dir)
+    iv_all, iv_alignment_rows, iv_alignment_report = align_iv_measurement_stages(
+        iv_all,
+        IVAlignmentSettings(
+            mode=args.iv_stage_alignment,
+            max_shift_V=args.iv_stage_max_shift_V,
+            min_matched_curves=args.iv_stage_min_matches,
+        ),
     )
+    cv_all = load_cv_data(args.data_dir)
+    cv_all, cv_orientation = auto_orient_cv_series(cv_all, Params())
+    cv_all, cv_decisions = select_primary_cv_series(cv_all)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    write_iv_alignment_report(args.out_dir, iv_alignment_rows, iv_alignment_report)
+    (args.out_dir / "v92_phase1_cv_gate_orientation.json").write_text(
+        json.dumps(cv_orientation, indent=2),
+        encoding="utf-8",
+    )
+    pd.DataFrame(cv_decisions).to_csv(
+        args.out_dir / "v92_phase1_cv_data_decisions.csv",
+        index=False,
+    )
+    iv_fit = sample_iv(iv_all, args.max_iv_points, args.seed)
+    cv_fit = sample_cv(cv_all, args.max_cv_points)
+
+    print(f"Loaded IV points: {len(iv_all)} total, {len(iv_fit)} used for fitting")
+    print(f"Loaded CV series: {len(cv_all)}, CV points used for fitting: {sum(len(s.x) for s in cv_fit)}")
+    params, history = fit_model(iv_fit, cv_fit, args.max_nfev_scale, args.verbose)
+    params, cv_trap, cv_info = fit_cv_shared_trap(cv_all, params)
+    history.append(cv_info)
+    summary, metrics, iv_pred = compute_metrics(iv_all, cv_all, params, cv_trap)
+    write_outputs(args.out_dir, params, history, summary, metrics, iv_pred, cv_all, cv_trap, args.template_va)
+    print(f"Done. Outputs written to: {args.out_dir}")
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

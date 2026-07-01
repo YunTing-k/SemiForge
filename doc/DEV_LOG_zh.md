@@ -366,10 +366,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - 代码输出中不出现中文；`sys_log` 与 `console.print()` 互补
 
 ### 测试策略
-当前 909 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
-
-### 测试策略
-当前 909 tests 全部通过（12 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
+当前 911 tests 全部通过（11 skipped）。运行命令：`python -m unittest discover -s test -p "*_test.py"`。
 
 ### Agent 介入边界
 LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训练执行、配置生成、质量判定、报告生成为纯规则代码。
@@ -408,3 +405,58 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 - `src/workflow/dg_tft/quality_guard.py` — 新增 `validate_agent_adjustments()` + 类型转换助手
 - `test/dg_tft_param_defs_test.py` — 新建：45 tests
 - TODO.md — 3.2.1–3.2.7 全部完成
+
+---
+
+## 2026-07-01 | DG-TFT 引擎 v90→v95 合并
+
+### 引擎升级
+- `dg_tft_full_model.py`：13.6K→19K 行。核心新增：基础 IV PKAN 训练管线（原独立 `train_base_pkan.py`）、6 个硬精度 gate、~25 新 CLI 参数、CV charge PKAN 拆分、`CompactKAN` 重命名、符号引擎扩展、safe scale search
+- `fit_physical_kernel.py`：新增 IV 测量阶段对齐、CV gate 自动定向、CV quality 筛选
+- `validate_dataset.py`：新增 CV 布局检测（`looks_like_shared_bias_wide_table`）
+
+### 新增引擎模块
+- `cv_preprocessing.py` — CV 预处理工具（过渡元数据、居中坐标、布局检测）
+- `measurement_preprocessing.py` — IV 测量阶段漂移对齐
+- `tensor_utils.py` — 从旧 `train_base_pkan.py` 提取的共享张量/数据工具
+
+### 移除
+- `train_base_pkan.py`（功能迁入 `dg_tft_full_model.py`）
+- `dg_tft_ekv_level2.va`（替换为 `templates/physical_kernel_template.va`）
+
+### 新增目录
+- `templates/`（2 VA 模板：physical_kernel、portable_glue）
+- `tools/`（7 脚本：acceptance bundle、hysteresis banks、ablation、delivery validation）
+
+### 新增 actions
+- `doctor`：环境诊断
+- `smoke-static`：轻量静态模型验证
+- `quick-static`：快速 IV/CV 训练 + 架构验证
+- `package-release`：完整发布组装
+- `package-portable`：可移植归档
+- `verify-package`：包验证
+
+### run_model.py 重构
+- 架构从**直接 import** 切换为 **subprocess 调用**（匹配 v95 原始架构，所有入口改为 CLI-only）
+- 保留迁移适配：`_normalize_cv_format()`、`_prepare_fallback_model_dir()`、`minimal_run`、example data guard、`train-base-pkan` action
+- v95 helper：`run()`/`run_gate()`/`run_artifact_stage()`、`resolve_hspice()`、`dynamic_env()`、`doctor()`、release 组装
+
+### 参数表扩展（3.2 维护 — 设计见 3.2.7）
+- `PHYSICAL_FIT_PARAMS`：3→6（+3 `[preprocessing]` params）
+- `FULL_MODEL_PARAMS`：23→44（+21：base IV 训练、IV residual、symbolic、LR multipliers、训练调度、cv_train_subset 等）
+- `HYSTERESIS_PARAMS`：7→13（+6：fast/slow regime 拆分）
+- 总计 32→73 参数
+- `quality_guard.py` `_PARAMETER_BOUNDS` 新增 `[preprocessing]` section，`full_model` +24 key，`hysteresis` +2 key
+- `_PARAMETER_WHITELIST`：30→56 entries
+
+### 测试
+- `dg_tft_functionized_api_test.py`：重写，匹配 v95 CLI-only 架构
+- `dg_tft_param_defs_test.py`：预期参数计数 22→44；新增 `preprocessing` section
+- `dg_tft_quality_guard_test.py`：string/bool 参数跳过列表扩展到 7 项
+- 911 tests pass（11 skipped）
+
+### 文件
+- `src/device_modeling/dg_tft/engine/` — 替换 4 个、新增 3 个、删除 2 个
+- `src/device_modeling/dg_tft/{templates,tools}/` — 新建
+- `src/device_modeling/dg_tft/{dynamic,reporting}/` — 全覆盖更新
+- `src/device_modeling/dg_tft/{config,run_model.py}` — 全覆盖更新

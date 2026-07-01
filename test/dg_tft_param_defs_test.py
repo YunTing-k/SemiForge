@@ -73,7 +73,7 @@ class TestParamTables(unittest.TestCase):
 
     def test_full_model_table_structure(self):
         self._check_table(self.FULL_MODEL_PARAMS, "FULL_MODEL")
-        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 22)
+        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 44)
 
     def test_hysteresis_table_structure(self):
         self._check_table(self.HYSTERESIS_PARAMS, "HYSTERESIS")
@@ -538,7 +538,7 @@ class TestStageParamMap(unittest.TestCase):
         all_sections = set()
         for sections in (v[0] for v in _STAGE_PARAM_MAP.values()):
             all_sections.update(sections)
-        self.assertEqual(all_sections, {"physical_fit", "full_model", "base_pkan", "temperature", "hysteresis"})
+        self.assertEqual(all_sections, {"physical_fit", "preprocessing", "full_model", "base_pkan", "temperature", "hysteresis"})
 
 
 if __name__ == "__main__":

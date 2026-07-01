@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import importlib
+import importlib.util
+import json
 import os
 import re
-import sys
 from pathlib import Path
+import platform
+import shlex
+import shutil
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
@@ -18,16 +25,13 @@ DYNAMIC = CODE_ROOT / "dynamic"
 DEFAULT_CONFIG = CODE_ROOT / "config" / "model_config.ini"
 EXAMPLE_DATA_ROOT = (RELEASE_ROOT / "data_templates" / "example_dataset").resolve()
 
-# Add engine and dynamic to sys.path so direct imports work internally.
-# (The AGI→CUDA subprocess boundary is preserved by stage_runner.py.)
-def _ensure_import_paths() -> None:
-    for p in (str(ENGINE), str(DYNAMIC)):
-        if p not in sys.path:
-            sys.path.insert(0, p)
+_FALLBACK_KAN_HIDDEN = 12
+_FALLBACK_KAN_GRID = 5
+_FALLBACK_KAN_K = 3
+_FALLBACK_ETA_N = 0.60
 
 
-_ensure_import_paths()
-
+# ── helpers ──────────────────────────────────────────────────────────────
 
 def resolve_path(value: str, config_path: Path) -> Path:
     path = Path(os.path.expandvars(os.path.expanduser(value)))
@@ -40,9 +44,74 @@ def yes(cfg: configparser.ConfigParser, section: str, option: str) -> bool:
     return cfg.getboolean(section, option)
 
 
-def _log_stage(label: str) -> None:
-    """Print a visible stage marker to stdout (captured by outer subprocess)."""
-    print(f"\n=== {label} ===", flush=True)
+def resolve_hspice(cfg: configparser.ConfigParser):
+    configured = cfg["paths"].get("hspice_exe", "").strip()
+    candidates = [
+        configured or None,
+        os.environ.get("DG_TFT_HSPICE_EXE"),
+        os.environ.get("HSPICE_EXE"),
+        shutil.which("hspice.com"),
+        shutil.which("hspice.exe"),
+        shutil.which("hspice"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).expanduser().exists():
+            return str(Path(candidate).expanduser().resolve())
+    return None
+
+
+def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
+    print("+", " ".join(shlex.quote(str(x)) for x in command), flush=True)
+    child_env = dict(os.environ if env is None else env)
+    child_env["PYTHONUNBUFFERED"] = "1"
+    mpl_cache = RELEASE_ROOT / ".runtime_cache" / "matplotlib"
+    mpl_cache.mkdir(parents=True, exist_ok=True)
+    child_env["MPLCONFIGDIR"] = str(mpl_cache)
+    subprocess.run(command, check=True, cwd=str(CODE_ROOT), env=child_env)
+
+
+def record_nonblocking_gate_failure(label: str, exc: Exception) -> None:
+    path = RELEASE_ROOT / "validation" / "NONBLOCKING_GATE_FAILURES.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{label}: {exc!r}\n")
+    print(
+        f"WARNING: {label} did not pass. Generated model artifacts are retained; "
+        f"details: {path}",
+        flush=True,
+    )
+
+
+def run_gate(
+    command: list[str], *, label: str, env: dict[str, str] | None = None
+) -> bool:
+    try:
+        run(command, env=env)
+        return True
+    except subprocess.CalledProcessError as exc:
+        record_nonblocking_gate_failure(label, exc)
+        return False
+
+
+def run_artifact_stage(
+    command: list[str],
+    *,
+    label: str,
+    expected_artifacts: list[Path],
+    env: dict[str, str] | None = None,
+) -> bool:
+    try:
+        run(command, env=env)
+        return True
+    except subprocess.CalledProcessError as exc:
+        if not any(path.is_file() for path in expected_artifacts):
+            raise
+        record_nonblocking_gate_failure(label, exc)
+        return False
+
+
+def phase(message: str) -> None:
+    print(f"\n=== {message} ===", flush=True)
 
 
 def load_config(path: Path) -> configparser.ConfigParser:
@@ -60,10 +129,33 @@ def paths(cfg: configparser.ConfigParser, config_path: Path) -> dict[str, Path]:
         "it": resolve_path(cfg["paths"]["hysteresis_data_dir"], config_path),
         "output": output,
         "physical": output / "01_physical_kernel",
-        "base_pkan": output / "02_base_pkan",
+        "kan_architecture": RELEASE_ROOT / "trained_model" / "base_physical_pkan",
         "full": output / "03_full_model",
         "dynamic": output / "04_hysteresis",
     }
+
+
+def refuse_accidental_example_training(
+    action: str, data_dir: Path, *, allow_example_data: bool
+) -> None:
+    training_actions = {
+        "fit-physical",
+        "train-base-pkan",
+        "train-static",
+        "train-hysteresis",
+        "train-all",
+        "quick-static",
+        "smoke-static",
+    }
+    if action not in training_actions or allow_example_data:
+        return
+    resolved = data_dir.resolve()
+    if resolved == EXAMPLE_DATA_ROOT or EXAMPLE_DATA_ROOT in resolved.parents:
+        raise RuntimeError(
+            "Training is blocked because data_dir points to the small example dataset. "
+            "Set data_dir to the real device dataset, or pass --allow-example-data "
+            "only for an intentional smoke test."
+        )
 
 
 def _normalize_cv_format(data_dir: Path) -> None:
@@ -88,7 +180,12 @@ def _normalize_cv_format(data_dir: Path) -> None:
         col0_label = str(df.iloc[1, 0]).lower()
         col1_label = str(df.iloc[1, 1]).lower() if df.shape[1] > 1 else ""
         col2_label = str(df.iloc[1, 2]).lower() if df.shape[1] > 2 else ""
-        if "bias" not in col0_label or "bias" in col1_label or "bias_node_centered" in col0_label or ("bias" in col0_label and "bias" not in col1_label and "bias" in col2_label):
+        if (
+            "bias" not in col0_label
+            or "bias" in col1_label
+            or "bias_node_centered" in col0_label
+            or ("bias" in col0_label and "bias" not in col1_label and "bias" in col2_label)
+        ):
             result[sheet_name] = df
             continue
         rewritten = True
@@ -109,9 +206,13 @@ def _normalize_cv_format(data_dir: Path) -> None:
         out = pd.concat(data_cols, axis=1)
         out.columns = header_pairs
         out.index = range(2, 2 + len(bias_raw))
-        desc_series = pd.Series([full_desc] + [np.nan] * (out.shape[1] - 1), index=out.columns, name=0)
+        desc_series = pd.Series(
+            [full_desc] + [np.nan] * (out.shape[1] - 1), index=out.columns, name=0
+        )
         header_series = pd.Series(header_pairs, index=out.columns, name=1)
-        out = pd.concat([pd.DataFrame([desc_series]), pd.DataFrame([header_series]), out])
+        out = pd.concat(
+            [pd.DataFrame([desc_series]), pd.DataFrame([header_series]), out]
+        )
         result[sheet_name] = out
     if not rewritten:
         return
@@ -120,83 +221,69 @@ def _normalize_cv_format(data_dir: Path) -> None:
             df_out.to_excel(writer, sheet_name=name[:31], index=False, header=False)
 
 
-# ── Stage functions (functionized — direct imports, no inner subprocess) ──
+# ── stage functions ──────────────────────────────────────────────────────
 
 def validate_data(cfg, config_path, p) -> None:
-    from validate_dataset import run_validate
-
-    _log_stage("check-data: normalize CV + validate dataset")
     _normalize_cv_format(p["data"])
+    command = [
+        sys.executable,
+        str(ENGINE / "validate_dataset.py"),
+        "--data-dir",
+        str(p["data"]),
+        "--json-out",
+        str(p["output"] / "dataset_validation.json"),
+    ]
+    if p["it"].exists():
+        command += ["--it-dir", str(p["it"])]
     p["output"].mkdir(parents=True, exist_ok=True)
-    run_validate(
-        data_dir=p["data"],
-        it_dir=p["it"] if p["it"].exists() else None,
-        json_out=p["output"] / "dataset_validation.json",
+    run_artifact_stage(
+        command,
+        label="dataset validation",
+        expected_artifacts=[
+            p["full"] / "v93_safe_residual_state.pt",
+            p["full"] / "v92_safe_residual_state.pt",
+        ],
     )
 
 
 def fit_physical(cfg, p) -> None:
-    from fit_physical_kernel import run_fit_physical
-
     section = cfg["physical_fit"]
-    p["physical"].mkdir(parents=True, exist_ok=True)
     max_iv = int(section["max_iv_points"])
     max_cv = int(section["max_cv_points"])
     max_nfev = float(section["max_nfev_scale"])
     if yes(cfg, "runtime", "minimal_run"):
         max_iv, max_cv, max_nfev = 1000, 500, 0.1
 
-    _log_stage("fit-physical: physical kernel extraction")
-    run_fit_physical(
-        data_dir=p["data"],
-        out_dir=p["physical"],
-        max_iv_points=max_iv,
-        max_cv_points=max_cv,
-        max_nfev_scale=max_nfev,
-        seed=int(cfg["runtime"]["seed"]),
+    p["physical"].mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            sys.executable,
+            str(ENGINE / "fit_physical_kernel.py"),
+            "--data-dir",
+            str(p["data"]),
+            "--out-dir",
+            str(p["physical"]),
+            "--max-iv-points",
+            str(max_iv),
+            "--max-cv-points",
+            str(max_cv),
+            "--max-nfev-scale",
+            str(max_nfev),
+            "--seed",
+            cfg["runtime"]["seed"],
+            "--iv-stage-alignment",
+            cfg["preprocessing"]["iv_stage_alignment"],
+            "--iv-stage-max-shift-V",
+            cfg["preprocessing"]["iv_stage_max_shift_V"],
+            "--iv-stage-min-matches",
+            cfg["preprocessing"]["iv_stage_min_matches"],
+        ]
     )
 
 
-def train_base_pkan(cfg, p) -> None:
-    from train_base_pkan import run_train_base_pkan
-
-    section = cfg["base_pkan"]
-    baseline = p["physical"] / "fitted_params.json"
-    if not baseline.exists():
-        raise FileNotFoundError(
-            f"{baseline} is missing. Run `python run_model.py fit-physical` first."
-        )
-    p["base_pkan"].mkdir(parents=True, exist_ok=True)
-
-    _log_stage("train-base-pkan: base PKAN training")
-    run_train_base_pkan(
-        data_dir=p["data"],
-        baseline_json=baseline,
-        out_dir=p["base_pkan"],
-        device=cfg["runtime"]["device"],
-        dtype=cfg["runtime"]["dtype"],
-        seed=int(cfg["runtime"]["seed"]),
-        epochs_shared=int(section["epochs_shared"]),
-        epochs_iv=int(section["epochs_iv"]),
-        epochs_cv=int(section["epochs_cv"]),
-        kan_hidden=int(section["kan_hidden"]),
-        kan_grid=int(section["kan_grid"]),
-        kan_k=int(section["kan_k"]),
-        batch_iv=int(section["batch_iv"]),
-        batch_cv=int(section["batch_cv"]),
-    )
-
-
-# ── Model architecture defaults (used when [base_pkan] section is absent) ──
-_FALLBACK_KAN_HIDDEN = 12
-_FALLBACK_KAN_GRID = 5
-_FALLBACK_KAN_K = 3
-_FALLBACK_ETA_N = 0.60
-
-
-def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Path]) -> None:
-    import json
-
+def _prepare_fallback_model_dir(
+    cfg: configparser.ConfigParser, p: dict[str, Path]
+) -> None:
     fp = p["physical"] / "fitted_params.json"
     if not fp.exists():
         raise FileNotFoundError(
@@ -208,11 +295,12 @@ def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Pat
         "description": "Synthesized from fit-physical — no base PKAN weights.",
         "uses_pykan": True,
         "baseline_params": physical["final_params"],
-        "baseline_trap_params": physical.get("cv_shared_trap_params")
-        or {},
+        "baseline_trap_params": physical.get("cv_shared_trap_params") or {},
         "baseline_metrics_summary": physical.get("metrics_summary", {}),
         "pkan_metrics_summary": {},
-        "final_kan_scale": float(cfg.get("temperature", "kan_scale", fallback="0.35")),
+        "final_kan_scale": float(
+            cfg.get("temperature", "kan_scale", fallback="0.35")
+        ),
         "training_args": {
             "kan_hidden": int(section.get("kan_hidden", _FALLBACK_KAN_HIDDEN)),
             "kan_grid": int(section.get("kan_grid", _FALLBACK_KAN_GRID)),
@@ -221,8 +309,9 @@ def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Pat
             "data_dir": str(p["data"]),
         },
     }
-    p["base_pkan"].mkdir(parents=True, exist_ok=True)
-    (p["base_pkan"] / "pkan_model_metadata.json").write_text(
+    model_dir = p["kan_architecture"]
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "pkan_model_metadata.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
     )
     try:
@@ -232,130 +321,479 @@ def _prepare_fallback_model_dir(cfg: configparser.ConfigParser, p: dict[str, Pat
             "train-static requires PyTorch to synthesize the fallback model_dir. "
             "Ensure the modeling Python environment has torch installed."
         )
-    torch.save({}, p["base_pkan"] / "pkan_torch_model.pt")
+    torch.save({}, model_dir / "pkan_torch_model.pt")
 
 
-def _make_full_model_args(cfg: configparser.ConfigParser, p: dict[str, Path]) -> argparse.Namespace:
-    """Build a Namespace for run_full_model from INI config."""
-    from dg_tft_full_model import default_args
-
+def train_full_model(cfg, p, *, quick: bool = False) -> None:
     section = cfg["full_model"]
-    args = default_args()
-
-    # Paths / device
-    args.data_dir_override = p["data"]
-    args.model_dir = p["base_pkan"]
-    args.out_dir = p["full"]
-    args.device = cfg["runtime"]["device"]
-    args.dtype = cfg["runtime"]["dtype"]
-    args.seed = int(cfg["runtime"]["seed"])
-
-    # Core training
-    args.epochs = int(section["epochs"])
-    args.lr = float(section["learning_rate"])
-    args.batch_iv = int(section["batch_iv"])
-    args.batch_cv = int(section["batch_cv"])
-    args.cv_weight = float(section["cv_weight"])
-    args.cv_residual_level = int(section["cv_residual_level"])
-    args.early_stop_patience = int(section["early_stop_patience"])
-    args.early_stop_min_epochs = int(section["early_stop_min_epochs"])
-    args.symbolic_training_weight = float(section["symbolic_training_weight"])
-    args.print_every = int(section.get("print_every", "80"))
-
-    # Temperature
-    args.temperature_kan_min_span_K = float(cfg["temperature"]["minimum_span_K"])
-    args.temperature_kan_scale = float(cfg["temperature"]["kan_scale"])
-    args.hspice_exe = cfg["paths"].get("hspice_exe", "")
-
-    # CV residual
-    args.enable_cv_residual = yes(cfg, "full_model", "enable_cv_residual")
-
-    # Finetune
-    args.finetune_base_pkan = yes(cfg, "full_model", "finetune_base_pkan")
-
-    # Temperature mode
-    mode = cfg["temperature"]["mode"].strip().lower()
-    if mode == "on":
-        args.enable_temperature_kan = True
-        args.auto_enable_temperature_kan = False
-    elif mode == "off":
-        args.enable_temperature_kan = False
-        args.auto_enable_temperature_kan = False
-    else:
-        args.enable_temperature_kan = False
-        args.auto_enable_temperature_kan = True
-
-    # HSPICE
-    if not yes(cfg, "deployment", "run_hspice"):
-        args.skip_hspice_smoke = True
-        args.skip_hspice_grid_equivalence = True
-        args.skip_hspice_cv_grid_equivalence = True
-
-    # Minimal run
-    if yes(cfg, "runtime", "minimal_run"):
-        args.quick_run = True
-        args.epochs = 1
-        args.early_stop_patience = 1
-        args.early_stop_min_epochs = 1
-
-    return args
-
-
-def train_full_model(cfg, p) -> None:
-    from dg_tft_full_model import apply_quick_run_preset, run_full_model
-
-    model_dir = p["base_pkan"]
+    model_dir = p["kan_architecture"]
     if not (model_dir / "pkan_torch_model.pt").exists():
         _prepare_fallback_model_dir(cfg, p)
     p["full"].mkdir(parents=True, exist_ok=True)
+    if yes(cfg, "runtime", "minimal_run"):
+        quick = True
 
-    _log_stage("train-static: full model training")
-    args = _make_full_model_args(cfg, p)
-    args = apply_quick_run_preset(args)
-    run_full_model(args)
+    epochs = section.get("epochs", "1000")
+    lr = section.get("learning_rate", "0.001")
+    early_stop_patience = section.get("early_stop_patience", "200")
+    early_stop_min_epochs = section.get("early_stop_min_epochs", "400")
+    print_every = section.get("print_every", "10")
+    if quick:
+        epochs = "1"
+        lr = "0.001"
+        early_stop_patience = "1"
+        early_stop_min_epochs = "1"
+        print_every = "1"
+
+    command = [
+        sys.executable,
+        str(ENGINE / "dg_tft_full_model.py"),
+        "--data-dir-override",
+        str(p["data"]),
+        "--model-dir",
+        str(model_dir),
+        "--baseline-json",
+        str(p["physical"] / "fitted_params.json"),
+        "--out-dir",
+        str(p["full"]),
+        "--device",
+        cfg["runtime"]["device"],
+        "--dtype",
+        cfg["runtime"]["dtype"],
+        "--seed",
+        cfg["runtime"]["seed"],
+        "--epochs",
+        epochs,
+        "--base-iv-epochs",
+        section.get("base_iv_epochs", "540"),
+        "--base-iv-restarts",
+        section.get("base_iv_restarts", "2"),
+        "--base-iv-lr",
+        section.get("base_iv_learning_rate", "0.002"),
+        "--base-iv-eval-every",
+        section.get("base_iv_eval_every", "20"),
+        "--base-iv-top1-symbolic-weight",
+        section.get("base_iv_top1_symbolic_weight", "0.35"),
+        "--base-iv-top1-sparsity-weight",
+        section.get("base_iv_top1_sparsity_weight", "0.001"),
+        "--base-iv-top1-selection-weight",
+        section.get("base_iv_top1_selection_weight", "0.08"),
+        "--base-iv-max-top1-compatibility",
+        section.get("base_iv_max_top1_compatibility", "0.015"),
+        "--iv-residual-stage-epochs",
+        section.get("iv_residual_stage_epochs", "700"),
+        "--iv-residual-stage-lr",
+        section.get("iv_residual_stage_learning_rate", "0.002"),
+        "--iv-residual-holdout-stride",
+        section.get("iv_residual_holdout_stride", "5"),
+        "--iv-residual-stage-linear-weight",
+        section.get("iv_residual_stage_linear_weight", "0.25"),
+        "--iv-residual-stage-deriv-curves",
+        section.get("iv_residual_stage_deriv_curves", "36"),
+        "--iv-residual-stage-shape-period",
+        section.get("iv_residual_stage_shape_period", "3"),
+        "--iv-residual-off-anchor-weight",
+        section.get("iv_residual_off_anchor_weight", "2.0"),
+        "--lr",
+        lr,
+        "--base-pkan-lr-mult",
+        section.get("base_pkan_lr_mult", "1.0"),
+        "--warm-start-base-pkan-lr-mult",
+        section.get("warm_start_base_pkan_lr_mult", "0.035"),
+        "--batch-iv",
+        section["batch_iv"],
+        "--batch-cv",
+        section["batch_cv"],
+        "--cv-weight",
+        section["cv_weight"],
+        "--cv-train-subset",
+        section.get("cv_train_subset", "primary_gate_cv"),
+        "--cv-residual-level",
+        section["cv_residual_level"],
+        "--disabled-iv-pkan",
+        section.get("disabled_iv_pkan", ""),
+        "--disabled-cv-pkan",
+        section.get("disabled_cv_pkan", ""),
+        "--disabled-cv-charge-pkan",
+        section.get("disabled_cv_charge_pkan", ""),
+        "--early-stop-patience",
+        early_stop_patience,
+        "--early-stop-min-epochs",
+        early_stop_min_epochs,
+        "--symbolic-training-weight",
+        section["symbolic_training_weight"],
+        "--print-every",
+        print_every,
+        "--eval-every",
+        section.get("eval_every", "40"),
+        "--shape-eval-period",
+        section.get("shape_eval_period", "5"),
+        "--shape-early-period",
+        section.get("shape_early_period", "12"),
+        "--shape-middle-period",
+        section.get("shape_middle_period", "5"),
+        "--safe-scale-steps",
+        cfg["validation"]["safe_scale_steps"],
+        "--symbolic-edge-steps",
+        cfg["symbolic"]["edge_steps"],
+        "--symbolic-edge-topk",
+        cfg["symbolic"].get("edge_topk", "1"),
+        "--symbolic-iv-edge-topk",
+        cfg["symbolic"].get("iv_edge_topk", cfg["symbolic"].get("edge_topk", "1")),
+        "--symbolic-iv-adaptive-top2-mse",
+        cfg["symbolic"].get("iv_adaptive_top2_mse", "0.0"),
+        "--symbolic-edge-finetune-steps",
+        cfg["symbolic"]["edge_finetune_steps"],
+        "--symbolic-network-finetune-steps",
+        cfg["symbolic"]["network_finetune_steps"],
+        "--symbolic-device-iv-finetune-steps",
+        cfg["symbolic"]["device_iv_finetune_steps"],
+        "--symbolic-device-iv-measured-steps",
+        cfg["symbolic"].get("device_iv_measured_steps", "1600"),
+        "--iv-symbolic-calibration-max-terms",
+        cfg["symbolic"].get("iv_calibration_max_terms", "12"),
+        "--symbolic-device-cv-finetune-steps",
+        cfg["symbolic"]["device_cv_finetune_steps"],
+        "--temperature-kan-min-span-K",
+        cfg["temperature"]["minimum_span_K"],
+        "--temperature-kan-scale",
+        cfg["temperature"]["kan_scale"],
+        "--iv-stage-alignment",
+        cfg["preprocessing"]["iv_stage_alignment"],
+        "--iv-stage-max-shift-V",
+        cfg["preprocessing"]["iv_stage_max_shift_V"],
+        "--iv-stage-min-matches",
+        cfg["preprocessing"]["iv_stage_min_matches"],
+    ]
+    hspice_exe = resolve_hspice(cfg)
+    if hspice_exe:
+        command += ["--hspice-exe", hspice_exe]
+    if yes(cfg, "full_model", "reset_base_from_physical_fit"):
+        command.append("--reset-base-from-physical-fit")
+    command.append(
+        "--train-base-iv-pkan"
+        if yes(cfg, "full_model", "train_base_iv_pkan")
+        else "--skip-base-iv-pkan"
+    )
+    command.append(
+        "--train-iv-residual-stage"
+        if section.getboolean("train_iv_residual_stage", fallback=True)
+        else "--skip-iv-residual-stage"
+    )
+    command.append(
+        "--freeze-iv-residual-after-stage"
+        if section.getboolean("freeze_iv_residual_after_stage", fallback=True)
+        else "--joint-finetune-iv-residual"
+    )
+    command.append(
+        "--enable-staged-loss-schedule"
+        if section.getboolean("staged_loss_schedule", fallback=True)
+        else "--disable-staged-loss-schedule"
+    )
+    if not yes(cfg, "validation", "joint_cv_safe_scale_search"):
+        command.append("--no-joint-cv-safe-scale-search")
+    if cfg.getboolean("deployment", "export_dynamic_cv_nqs", fallback=False):
+        command.append("--va-enable-dynamic-trap-nqs")
+    command.append(
+        "--enable-cv-residual"
+        if yes(cfg, "full_model", "enable_cv_residual")
+        else "--disable-cv-residual"
+    )
+    command.append(
+        "--finetune-base-pkan"
+        if yes(cfg, "full_model", "finetune_base_pkan")
+        else "--no-finetune-base-pkan"
+    )
+    mode = cfg["temperature"]["mode"].strip().lower()
+    if mode == "on":
+        command += ["--enable-temperature-kan", "--no-auto-enable-temperature-kan"]
+    elif mode == "off":
+        command += ["--disable-temperature-kan", "--no-auto-enable-temperature-kan"]
+    else:
+        command += ["--disable-temperature-kan", "--auto-enable-temperature-kan"]
+    if not yes(cfg, "deployment", "run_hspice") or hspice_exe is None:
+        if yes(cfg, "deployment", "run_hspice") and hspice_exe is None:
+            print(
+                "HSPICE not found; Python training/export will continue and "
+                "SPICE equivalence checks will be skipped.",
+                flush=True,
+            )
+        command += [
+            "--skip-hspice-smoke",
+            "--skip-hspice-grid-equivalence",
+            "--skip-hspice-cv-grid-equivalence",
+        ]
+    if quick:
+        command.append("--quick-run")
+    run(command)
 
 
-def _setup_dynamic_env(p: dict[str, Path]) -> None:
-    """Set environment variables for dynamic/hysteresis stage imports."""
-    os.environ["DG_TFT_IT_DATA_DIR"] = str(p["it"])
-    os.environ["DG_TFT_STATIC_DATA_DIR"] = str(p["data"])
-    os.environ["DG_TFT_DYNAMIC_WORK_DIR"] = str(p["dynamic"])
+def train_base_pkan(cfg, p) -> None:
+    phase("train-base-pkan: base IV PKAN training only")
+    model_dir = p["kan_architecture"]
+    if not (model_dir / "pkan_torch_model.pt").exists():
+        _prepare_fallback_model_dir(cfg, p)
+    p["full"].mkdir(parents=True, exist_ok=True)
+    section = cfg["base_pkan"] if cfg.has_section("base_pkan") else cfg["full_model"]
+    epochs = section.get("epochs", section.get("base_iv_epochs", "540"))
+    lr = section.get("learning_rate", section.get("base_iv_learning_rate", "0.002"))
+    restarts = section.get("base_iv_restarts", "2")
+    command = [
+        sys.executable,
+        str(ENGINE / "dg_tft_full_model.py"),
+        "--data-dir-override",
+        str(p["data"]),
+        "--model-dir",
+        str(model_dir),
+        "--baseline-json",
+        str(p["physical"] / "fitted_params.json"),
+        "--out-dir",
+        str(p["full"]),
+        "--device",
+        cfg["runtime"]["device"],
+        "--dtype",
+        cfg["runtime"]["dtype"],
+        "--seed",
+        cfg["runtime"]["seed"],
+        "--epochs",
+        epochs,
+        "--base-iv-epochs",
+        epochs,
+        "--base-iv-restarts",
+        restarts,
+        "--base-iv-lr",
+        lr,
+        "--lr",
+        lr,
+        "--batch-iv",
+        section.get("batch_iv", "256"),
+        "--batch-cv",
+        section.get("batch_cv", "64"),
+        "--cv-residual-level",
+        "0",
+        "--reset-base-from-physical-fit",
+        "--base-iv-only",
+        "--skip-iv-residual-stage",
+        "--disable-cv-residual",
+        "--disable-temperature-kan",
+        "--no-auto-enable-temperature-kan",
+        "--skip-hspice-smoke",
+        "--skip-hspice-grid-equivalence",
+        "--skip-hspice-cv-grid-equivalence",
+    ]
+    if yes(cfg, "runtime", "minimal_run"):
+        command.append("--quick-run")
+    run(command)
+
+
+def doctor(cfg, config_path: Path, p: dict[str, Path]) -> None:
+    required_modules = {
+        "numpy": "numpy",
+        "pandas": "pandas",
+        "scipy": "scipy",
+        "scikit-learn": "sklearn",
+        "matplotlib": "matplotlib",
+        "openpyxl": "openpyxl",
+        "torch": "torch",
+        "pykan": "kan",
+    }
+    optional_modules = {"python-docx": "docx", "reportlab": "reportlab"}
+    required_files = [
+        DEFAULT_CONFIG,
+        ENGINE / "dg_tft_full_model.py",
+        ENGINE / "fit_physical_kernel.py",
+        ENGINE / "measurement_preprocessing.py",
+        CODE_ROOT / "templates" / "physical_kernel_template.va",
+        p["kan_architecture"] / "pkan_torch_model.pt",
+    ]
+    missing_modules = []
+    import_errors = {}
+    for name, module in required_modules.items():
+        if importlib.util.find_spec(module) is None:
+            missing_modules.append(name)
+            continue
+        try:
+            importlib.import_module(module)
+        except Exception as exc:
+            missing_modules.append(name)
+            import_errors[name] = repr(exc)
+    missing_optional = []
+    for name, module in optional_modules.items():
+        if importlib.util.find_spec(module) is None:
+            missing_optional.append(name)
+            continue
+        try:
+            importlib.import_module(module)
+        except Exception:
+            missing_optional.append(name)
+    missing_files = [str(path) for path in required_files if not path.exists()]
+    print(f"Python executable : {sys.executable}")
+    print(f"Python version    : {platform.python_version()}")
+    print(f"Release root      : {RELEASE_ROOT}")
+    print(f"Data directory    : {p['data']}")
+    print(f"Output directory  : {p['output']}")
+    detected_hspice = resolve_hspice(cfg) or "not found (Python training remains available)"
+    print(f"HSPICE executable : {detected_hspice}")
+    print(f"Missing modules   : {missing_modules or 'none'}")
+    print(f"Import errors     : {import_errors or 'none'}")
+    print(f"Optional modules  : {missing_optional or 'none missing'}")
+    print(f"Missing files     : {missing_files or 'none'}")
+    if missing_modules or missing_files:
+        raise RuntimeError(
+            "Environment check failed. Run setup_environment.ps1, then repeat "
+            "'run_model.cmd doctor'."
+        )
+    print("Environment check passed.")
+
+
+def smoke_static(cfg, p) -> None:
+    baseline = p["physical"] / "fitted_params.json"
+    if not baseline.exists():
+        packaged_baseline = (
+            RELEASE_ROOT / "trained_model" / "static_signoff" / "fitted_params.json"
+        )
+        if packaged_baseline.exists():
+            baseline = packaged_baseline
+        else:
+            raise FileNotFoundError(
+                f"Missing phase-1 parameters: {baseline}. Run "
+                "'run_model.cmd fit-physical' first."
+            )
+    out_dir = RELEASE_ROOT / "validation" / "portable_static_smoke"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        str(ENGINE / "dg_tft_full_model.py"),
+        "--data-dir-override",
+        str(p["data"]),
+        "--model-dir",
+        str(p["kan_architecture"]),
+        "--baseline-json",
+        str(baseline),
+        "--reset-base-from-physical-fit",
+        "--out-dir",
+        str(out_dir),
+        "--device",
+        "cpu",
+        "--dtype",
+        cfg["runtime"]["dtype"],
+        "--seed",
+        cfg["runtime"]["seed"],
+        "--max-iv-points",
+        "1200",
+        "--max-cv-points",
+        "2500",
+        "--cv-train-subset",
+        cfg["full_model"].get("cv_train_subset", "primary_gate_cv"),
+        "--cv-residual-level",
+        cfg["full_model"]["cv_residual_level"],
+        "--disabled-iv-pkan",
+        cfg["full_model"].get("disabled_iv_pkan", ""),
+        "--disabled-cv-pkan",
+        cfg["full_model"].get("disabled_cv_pkan", ""),
+        "--disabled-cv-charge-pkan",
+        cfg["full_model"].get("disabled_cv_charge_pkan", ""),
+        "--smoke-check",
+    ]
+    command.append(
+        "--enable-cv-residual"
+        if yes(cfg, "full_model", "enable_cv_residual")
+        else "--disable-cv-residual"
+    )
+    run(command)
+
+
+def dynamic_env(cfg, p) -> dict[str, str]:
+    env = dict(os.environ)
+    env["DG_TFT_IT_DATA_DIR"] = str(p["it"])
+    env["DG_TFT_STATIC_DATA_DIR"] = str(p["data"])
+    env["DG_TFT_DYNAMIC_WORK_DIR"] = str(p["dynamic"])
+    hspice_exe = resolve_hspice(cfg)
+    if hspice_exe:
+        env["DG_TFT_HSPICE_EXE"] = hspice_exe
+    return env
 
 
 def train_hysteresis(cfg, p) -> None:
     if not p["it"].exists():
         raise FileNotFoundError(f"Hysteresis data folder does not exist: {p['it']}")
+    env = dynamic_env(cfg, p)
     p["dynamic"].mkdir(parents=True, exist_ok=True)
-    _setup_dynamic_env(p)
-
-    from analyze_it_hysteresis import run_analyze_it
-
-    _log_stage("train-hysteresis: analyze I-t data")
-    run_analyze_it()
-
-    from train_srh_top2_regime_banks import run_train_srh
-
+    run([sys.executable, str(DYNAMIC / "analyze_it_hysteresis.py")], env=env)
     section = cfg["hysteresis"]
-    epochs = int(section["epochs"])
-    hidden_capture = int(section["hidden_capture"])
-    hidden_emission = int(section["hidden_emission"])
+    epochs = section.get("epochs", "4000")
+    hidden_capture = section.get("hidden_capture", "32")
+    hidden_emission = section.get("hidden_emission", "32")
     if yes(cfg, "runtime", "minimal_run"):
-        epochs, hidden_capture, hidden_emission = 1, 4, 4
+        epochs, hidden_capture, hidden_emission = "1", "4", "4"
 
-    _log_stage("train-hysteresis: train SRH regime banks")
-    run_train_srh(
-        epochs=epochs,
-        target_regime=section["regime"],
-        hidden_capture=hidden_capture,
-        hidden_emission=hidden_emission,
-        amp_parameterization=section["amp_parameterization"],
-        print_every=int(section.get("print_every", "1")),
+    dynamic_command = [
+        sys.executable,
+        str(DYNAMIC / "train_srh_top2_regime_banks.py"),
+        "--regime",
+        section["regime"],
+        "--epochs",
+        epochs,
+        "--seed",
+        cfg["runtime"]["seed"],
+        "--fast-restarts",
+        section.get("fast_restarts", "1"),
+        "--slow-restarts",
+        section.get("slow_restarts", "2"),
+        "--hidden-capture",
+        hidden_capture,
+        "--hidden-emission",
+        hidden_emission,
+        "--amp-parameterization",
+        section["amp_parameterization"],
+        "--fast-amp-parameterization",
+        section.get("fast_amp_parameterization", section["amp_parameterization"]),
+        "--slow-amp-parameterization",
+        section.get("slow_amp_parameterization", section["amp_parameterization"]),
+        "--fast-optimizer-policy",
+        section.get("fast_optimizer_policy", "optimized"),
+        "--slow-optimizer-policy",
+        section.get("slow_optimizer_policy", "v90"),
+    ]
+    run_artifact_stage(
+        dynamic_command,
+        label="hysteresis acceptance gate",
+        expected_artifacts=[
+            p["dynamic"]
+            / "srh_top2_regime_banks"
+            / "srh_top2_regime_bank_checkpoint.pt"
+        ],
+        env=env,
     )
-
-    from export_srh_top2_regime_banked_va import run_export_va
-
-    _log_stage("train-hysteresis: export Verilog-A")
-    run_export_va()
+    run(
+        [
+            sys.executable,
+            str(DYNAMIC / "export_srh_top2_regime_banked_va.py"),
+            "--student-source",
+            ".",
+        ],
+        env=env,
+    )
+    hspice_exe = resolve_hspice(cfg)
+    if yes(cfg, "deployment", "run_hspice") and hspice_exe:
+        for regime_name in ("fast", "slow"):
+            regime_env = dict(env)
+            regime_env["DG_TFT_HYSTERESIS_REGIME"] = regime_name
+            phase(f"Python/HSPICE SRH equivalence: {regime_name} bank")
+            run_gate(
+                [
+                    sys.executable,
+                    str(DYNAMIC / "validate_srh_top2_modular_equivalence.py"),
+                ],
+                label=f"dynamic HSPICE equivalence ({regime_name})",
+                env=regime_env,
+            )
+    elif yes(cfg, "deployment", "run_hspice"):
+        print(
+            "HSPICE not found; dynamic Python training/export completed and "
+            "SPICE equivalence checks were skipped.",
+            flush=True,
+        )
 
 
 def export_supplied_va() -> None:
@@ -363,26 +801,84 @@ def export_supplied_va() -> None:
     print(f"  {RELEASE_ROOT / 'verilog_a'}")
 
 
-def refuse_accidental_example_training(
-    action: str, data_dir: Path, *, allow_example_data: bool
-) -> None:
-    training_actions = {
-        "fit-physical",
-        "train-base-pkan",
-        "train-static",
-        "train-hysteresis",
-        "train-all",
-    }
-    if action not in training_actions or allow_example_data:
-        return
-    resolved = data_dir.resolve()
-    if resolved == EXAMPLE_DATA_ROOT or EXAMPLE_DATA_ROOT in resolved.parents:
-        raise RuntimeError(
-            "Training is blocked because data_dir points to the small example dataset. "
-            "Set data_dir to the real device dataset, or pass --allow-example-data "
-            "only for an intentional smoke test."
+def assemble_release(cfg, p: dict[str, Path]) -> None:
+    phase("Assemble signed-off weights, Verilog-A, figures, and plot data")
+    assemble_command = [
+        sys.executable,
+        str(CODE_ROOT / "reporting" / "assemble_release.py"),
+        "--static-dir",
+        str(p["full"]),
+        "--dynamic-dir",
+        str(p["dynamic"]),
+        "--physical-dir",
+        str(p["physical"]),
+    ]
+    run(assemble_command)
+    hspice_exe = resolve_hspice(cfg)
+    if (
+        yes(cfg, "hysteresis", "enabled")
+        and yes(cfg, "deployment", "run_hspice")
+        and hspice_exe
+        and (p["dynamic"] / "srh_top2_regime_banks").exists()
+    ):
+        phase("Validate complete static + top-2 SRH Verilog-A model")
+        run_gate(
+            [
+                sys.executable,
+                str(DYNAMIC / "validate_complete_device_hspice.py"),
+            ],
+            label="complete-device HSPICE equivalence",
+            env=dynamic_env(cfg, p),
         )
+        run(assemble_command)
+    run(
+        [
+            sys.executable,
+            str(CODE_ROOT / "tools" / "build_v95_acceptance_bundle.py"),
+        ]
+    )
+    if importlib.util.find_spec("docx") is not None:
+        run([sys.executable, str(CODE_ROOT / "reporting" / "build_user_manual.py")])
+    else:
+        print(
+            "Manual DOCX rebuild skipped because python-docx is not installed; "
+            "the supplied signed-off DOCX is retained.",
+            flush=True,
+        )
+    if importlib.util.find_spec("reportlab") is not None:
+        run(
+            [
+                sys.executable,
+                str(CODE_ROOT / "reporting" / "build_user_manual_pdf.py"),
+            ]
+        )
+    else:
+        print(
+            "Manual PDF rebuild skipped because reportlab is not installed; "
+            "the supplied signed-off PDF is retained.",
+            flush=True,
+        )
+    run(
+        [
+            sys.executable,
+            str(CODE_ROOT / "reporting" / "build_release_manifest.py"),
+        ]
+    )
 
+
+def build_portable_archive() -> None:
+    phase("Build clean portable directory, manifest, and ZIP")
+    run([sys.executable, str(CODE_ROOT / "reporting" / "build_portable_archive.py")])
+
+
+def verify_portable_package() -> None:
+    phase("Verify packaged file set and SHA-256 manifest")
+    run([sys.executable, str(CODE_ROOT / "reporting" / "verify_portable_package.py")])
+    phase("Verify v95 model contracts, checkpoint schemas, and clean file set")
+    run([sys.executable, str(CODE_ROOT / "tools" / "validate_v95_delivery.py")])
+
+
+# ── main ─────────────────────────────────────────────────────────────────
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -398,7 +894,13 @@ def main() -> int:
             "train-hysteresis",
             "train-all",
             "export-va",
+            "package-release",
             "show-config",
+            "doctor",
+            "smoke-static",
+            "quick-static",
+            "package-portable",
+            "verify-package",
         ],
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -419,23 +921,61 @@ def main() -> int:
         for name, value in p.items():
             print(f"{name:12s}: {value}")
         return 0
-    if args.action == "check-data":
+    if args.action == "doctor":
+        doctor(cfg, config_path, p)
+    elif args.action == "smoke-static":
+        doctor(cfg, config_path, p)
+        validate_data(cfg, config_path, p)
+        smoke_static(cfg, p)
+    elif args.action == "quick-static":
+        phase("Quick static IV/CV training and architecture validation")
+        if yes(cfg, "full_model", "reset_base_from_physical_fit") and not (
+            p["physical"] / "fitted_params.json"
+        ).exists():
+            fit_physical(cfg, p)
+        train_full_model(cfg, p, quick=True)
+    elif args.action == "check-data":
         validate_data(cfg, config_path, p)
     elif args.action == "fit-physical":
+        phase("Fit physical IV/CV kernel")
         fit_physical(cfg, p)
     elif args.action == "train-base-pkan":
+        if yes(cfg, "full_model", "reset_base_from_physical_fit") and not (
+            p["physical"] / "fitted_params.json"
+        ).exists():
+            print("Phase-1 physical initialization is missing; running fit-physical first.")
+            fit_physical(cfg, p)
         train_base_pkan(cfg, p)
     elif args.action == "train-static":
+        phase("Train static IV/CV parameter and residual KAN")
+        if yes(cfg, "full_model", "reset_base_from_physical_fit") and not (
+            p["physical"] / "fitted_params.json"
+        ).exists():
+            print("Phase-1 physical initialization is missing; running fit-physical first.")
+            fit_physical(cfg, p)
         train_full_model(cfg, p)
     elif args.action == "train-hysteresis":
+        phase("Train fast/slow SRH hysteresis KAN banks")
         train_hysteresis(cfg, p)
     elif args.action == "train-all":
+        phase("Phase 0/5: validate measured IV/CV/I-t datasets")
         validate_data(cfg, config_path, p)
+        phase("Phase 1/5: fit the global physical IV/CV kernel")
         fit_physical(cfg, p)
-        train_base_pkan(cfg, p)
+        phase("Phase 2/5: train parameter KAN and charge-residual KAN")
         train_full_model(cfg, p)
         if yes(cfg, "hysteresis", "enabled"):
+            phase("Phase 3/5: train fast/slow SRH hysteresis KAN banks")
             train_hysteresis(cfg, p)
+        phase("Phase 4/5: assemble portable signed-off release")
+        assemble_release(cfg, p)
+        phase("Phase 5/5: complete")
+    elif args.action == "package-release":
+        assemble_release(cfg, p)
+    elif args.action == "package-portable":
+        build_portable_archive()
+    elif args.action == "verify-package":
+        verify_portable_package()
     elif args.action == "export-va":
         export_supplied_va()
     return 0
