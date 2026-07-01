@@ -341,10 +341,7 @@ class TestToolHandler(unittest.TestCase):
         progress = MagicMock()
         arguments = {"dataset_dir": "/some/raw/path"}
 
-        with patch("src.workflow.dg_tft.data_preparer.run_data_preparation_with_retry",
-                   return_value={"ok": True, "prep_id": 1, "output_dir": "/fake/out", "issues": []}), \
-             patch("src.tool.tool_def.SESSION_PATH", self.tmpdir.name), \
-             patch("src.workflow.dg_tft.orchestrator.run_workflow",
+        with patch("src.workflow.dg_tft.orchestrator.run_workflow",
                    return_value=(True, "all done")), \
              patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset",
                    return_value=(MagicMock(static_ok=True), {})), \
@@ -354,7 +351,7 @@ class TestToolHandler(unittest.TestCase):
             result = dg_tft_run(arguments, ctx, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIsNotNone(result.get("run_id"))
-        self.assertIn("prep", result)
+        self.assertEqual(result.get("workflow_ok"), True)
 
     def test_tool_handler_permission_denied(self):
         from src.tool.tool_def import dg_tft_run

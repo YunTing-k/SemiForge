@@ -745,3 +745,85 @@ def _write_file_manifest(output_dir: str, prep_id: int) -> None:
         sys_log.info("File manifest written: %d files, %d duplicates", len(file_mapping), len(manifest["duplicates"]))
     except Exception as e:
         sys_log.error("Failed to write %s: %s", _PREP_FILE_MANIFEST_NAME, e)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator stage functions — called by while+pointer loop (Step 7)
+# ---------------------------------------------------------------------------
+
+def run_preparer_stage(
+    ctx: AgentContext,
+    raw_dataset_dir: str,
+    output_dir: str,
+    handoff_history: str = "",
+) -> dict[str, Any]:
+    """Run the Preparer (worker) stage as a standalone pipeline step.
+
+    Spawns a worker SubAgent to process raw measurement data into
+    standardized format.  Produces a handoff dict for the Verifier.
+
+    Returns:
+        {"ok": bool, "handoff": dict | None, "error": str}
+    """
+    from .schema import PrepHandoff
+
+    try:
+        _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+    except Exception as e:
+        sys_log.error("Preparer stage failed: %s", e)
+        return {"ok": False, "handoff": None, "error": str(e)}
+
+    worker_report_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
+    worker_report = {}
+    if os.path.exists(worker_report_path):
+        try:
+            with open(worker_report_path, "r", encoding="utf-8") as f:
+                worker_report = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    handoff = PrepHandoff.from_worker_report(worker_report).to_dict()
+    return {"ok": True, "handoff": handoff, "error": ""}
+
+
+def run_verifier_stage(
+    ctx: AgentContext,
+    output_dir: str,
+    report_verification_tool_name: str = "report_verification",
+) -> dict[str, Any]:
+    """Run the Verifier stage as a standalone pipeline step.
+
+    Spawns a Verifier SubAgent to inspect the prepared data and produce
+    structured feedback.
+
+    Returns:
+        {"ok": bool, "feedback": dict | None, "issues": list[str]}
+    """
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name)
+    _write_verifier_result(output_dir, verifier_feedback)
+
+    programmatic_ok, issues = _check_output(output_dir)
+    vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
+    all_ok = programmatic_ok and vf_ok
+
+    return {
+        "ok": all_ok,
+        "feedback": verifier_feedback,
+        "issues": issues if issues else [],
+    }
+
+
+def copy_dataset_to_data_prep(
+    dataset_dir: str,
+    attempt_dir: str,
+) -> None:
+    """Copy an existing standard dataset into a data-prep attempt directory."""
+    import shutil
+    os.makedirs(attempt_dir, exist_ok=True)
+    for item in Path(dataset_dir).iterdir():
+        src = str(item)
+        dst = os.path.join(attempt_dir, item.name)
+        if item.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        elif item.is_file():
+            shutil.copy2(src, dst)

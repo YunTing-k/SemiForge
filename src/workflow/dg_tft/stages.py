@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 class StageDef:
     name: str
     action: str
-    required: bool
+    kind: str = "script"
+    required: bool = True
     depends_on: list[str] = field(default_factory=list)
     expected_output_subdir: str = ""
     key_artifacts: list[str] = field(default_factory=list)
@@ -37,9 +38,23 @@ class StageDef:
 
 _CORE_STAGES: list[StageDef] = [
     StageDef(
+        name=StageName.DATA_PREP,
+        action="data-prep",
+        kind="agent",
+        required=False,
+    ),
+    StageDef(
+        name=StageName.VERIFIER,
+        action="verifier",
+        kind="agent",
+        required=True,
+        depends_on=[StageName.DATA_PREP],
+    ),
+    StageDef(
         name=StageName.CHECK_DATA,
         action="check-data",
         required=True,
+        depends_on=[StageName.VERIFIER],
         expected_output_subdir="",
         key_artifacts=["dataset_validation.json"],
         timeout=600,
@@ -84,22 +99,32 @@ _CORE_STAGES: list[StageDef] = [
 ]
 
 
-def get_stages(profile: DatasetProfile | None = None) -> list[StageDef]:
+def get_stages(profile: DatasetProfile | None = None, entry: str = "full") -> list[StageDef]:
     """Return the ordered pipeline stage list with skip conditions evaluated.
 
     Args:
         profile: Optional DatasetProfile; when provided, skip_if_profile_false
                  is checked against profile fields and disabled stages are
                  filtered from the returned list.
+        entry: Entry mode — "full" (Preparer+Verifier+check-data+...),
+               "verifier" (Verifier+check-data+...), or "check-data"
+               (check-data directly, no prep).
 
     Returns:
         Ordered list of active StageDef objects.
     """
+    all_stages = list(_CORE_STAGES)
+
+    if entry == "check-data":
+        all_stages = [sd for sd in all_stages if sd.name not in (StageName.DATA_PREP, StageName.VERIFIER)]
+    elif entry == "verifier":
+        all_stages = [sd for sd in all_stages if sd.name != StageName.DATA_PREP]
+
     if profile is None:
-        return list(_CORE_STAGES)
+        return all_stages
 
     result: list[StageDef] = []
-    for sd in _CORE_STAGES:
+    for sd in all_stages:
         if sd.skip_if_profile_false:
             attr = getattr(profile, sd.skip_if_profile_false, None)
             if attr is not None and not attr:

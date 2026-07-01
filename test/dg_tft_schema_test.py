@@ -174,10 +174,12 @@ class TestWorkflowStatus(unittest.TestCase):
 
 class TestStageName(unittest.TestCase):
     def test_stage_order_length(self):
-        self.assertEqual(len(StageName.STAGE_ORDER), 5)
+        self.assertEqual(len(StageName.STAGE_ORDER), 7)
 
     def test_stage_order_contains_all(self):
         expected = [
+            "data-prep",
+            "verifier",
             "check-data",
             "fit-physical",
             "train-static",

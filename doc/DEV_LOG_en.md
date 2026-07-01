@@ -509,4 +509,24 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 **Session rules**: only delete non-UUID mock dirs. `.gitkeep` must be preserved.
 
+### 2026-07-01 | Step 7 while+pointer + Agent A + Pipeline Integration (3.7 + 3.4.1)
+
+**Structural refactor**: for-loop → while+pointer state machine in `orchestrator.py`.
+
+**StageDef.kind**: `"agent"` (Preparer, Verifier) vs `"script"` (check-data through final-report). Agent stages spawn SubAgents; script stages call `run_stage()`.
+
+**Pipeline integration**: Preparer + Verifier are now StageDef entries in `_CORE_STAGES` (uses `get_stages(entry=)` for filtering). Data preparation moved from `tool_def.py:dg_tft_run` into the orchestrator's while+pointer loop.
+
+**Agent A (check-data)**: hard failure → `_spawn_agent_a()` SubAgent with `stop_mode="schema"` → `fallback_to_previous` tool. Agent decides whether the failure warrants a fallback to Verifier or is final.
+
+**Fallback chain**: A → Verifier → Preparer. `_revert_tasks()` re-marks TUI task board entries at fallback pointer. `_find_stage_pointer()` maps stage names to list indices.
+
+**Lazy config build**: `config_path` built before first script stage (after Verifier passes), not in `tool_def.py`.
+
+**Subagent tools**: removed `SUBAGENT_TOOL_FALLBACK_TO_VERIFIER` — all fallback now uses `fallback_to_previous`.
+
+**Orchestrator helpers added**: `run_preparer_stage()`, `run_verifier_stage()`, `copy_dataset_to_data_prep()` in `data_preparer.py`.
+
+**Tests**: 911 pass (0 failures, 0 errors, 11 skipped), zero session residue.
+
 **Tests**: 911 pass (0 failures, 0 errors, 11 skipped).

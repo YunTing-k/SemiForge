@@ -75,6 +75,8 @@ _DIAGNOSIS_SUBAGENT_ID_PREFIX: str = "diag"
 _WF_TASK_PREFIX: str = "[DG-TFT]"
 
 _STAGE_TASK_SUBJECTS: dict[str, str] = {
+    StageName.DATA_PREP: "Prepare dataset",
+    StageName.VERIFIER: "Verify dataset",
     StageName.CHECK_DATA: "Audit dataset",
     StageName.FIT_PHYSICAL: "Fit physical kernel",
     StageName.TRAIN_STATIC: "Train static model",
@@ -82,6 +84,8 @@ _STAGE_TASK_SUBJECTS: dict[str, str] = {
 }
 
 _STAGE_TASK_DESCS: dict[str, str] = {
+    StageName.DATA_PREP: "Process raw measurement data into standardized *_train.xlsx format.",
+    StageName.VERIFIER: "Verify prepared dataset structure, sheet names, and column requirements.",
     StageName.CHECK_DATA: "Validate dataset structure and inspect IV/CV/I-t profiles.",
     StageName.FIT_PHYSICAL: "Fit physical equations to extract initial parameter kernels.",
     StageName.TRAIN_STATIC: "Train the full static model and export Verilog-A.",
@@ -98,26 +102,36 @@ class OrchestratorResult(str, Enum):
 def run_workflow(
     ctx: AgentContext,
     run_id: int,
-    config_path: str,
     *,
-    stage_timeout: int | None = None,
+    entry: str = "full",
+    dataset_dir: str = "",
+    raw_dataset_dir: str = "",
+    hysteresis_dir: str | None = None,
+    device_name: str = "",
+    overrides: dict | None = None,
+    preferences: str = "",
+    config_path: str = "",
     board=None,
 ) -> tuple[bool, str]:
-    """Execute the DG-TFT modeling pipeline for a single workflow run.
+    """Execute the DG-TFT modeling pipeline using a while+pointer state machine.
 
-    Stages are executed in order (check-data → fit-physical
-    → train-static → train-hysteresis), with fail-fast on required stages and
-    automatic skip of hysteresis when no I-t data is available.
-
-    Supports resume: stages that have already completed successfully are
-    skipped on re-entry.
+    Stages are executed in order.  Agent stages (Preparer, Verifier) spawn
+    SubAgents; script stages (check-data through final-report) run subprocess
+    scripts.  On hard failure at a script stage, Agent A (check-data) may
+    trigger a fallback chain back to the Verifier or Preparer.
 
     Args:
-        ctx: Agent context (for configs, manager, and interpreter resolution).
-        run_id: Workflow run ID to execute.
-        config_path: Path to the runtime model_config.ini.
-        stage_timeout: Override default per-stage timeout (seconds).
-        board: Optional Scoreboard for task board sync (P5-T3).
+        ctx: Agent context.
+        run_id: Workflow run ID.
+        entry: "full" (Preparer→Verifier→check-data→...), "verifier"
+               (Verifier→check-data→...), or "check-data" directly.
+        dataset_dir: Input dataset directory.
+        raw_dataset_dir: Raw data path (for "full" entry or fallback).
+        hysteresis_dir: Optional I-t hysteresis data path.
+        device_name: Optional device identifier.
+        overrides: Optional INI overrides dict.
+        preferences: User preferences string.
+        board: Optional Scoreboard for task board sync.
 
     Returns:
         (ok, summary) — ok is True if all required stages completed.
@@ -132,30 +146,40 @@ def run_workflow(
         sys_log.warning("Workflow run %d is cancelled, will not execute", run_id)
         return False, "Run was cancelled"
 
-    config_path_abs = str(Path(config_path).resolve())
-    output_dir = _read_output_dir(config_path_abs)
+    # ── Build stage list based on entry mode ──
+    stages = get_stages(profile=None, entry=entry)
 
+    # ── Determine output root ──
+    from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR
+    if config_path:
+        output_dir = _read_output_dir(config_path)
+    else:
+        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
+        output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Operation log ──
     op_log = OperationLog(output_dir)
     op_log.load()
     if not op_log.data:
-        pref = run.extra.get("preferences", "")
-        op_log.initialize(run_id, pref)
+        op_log.initialize(run_id, preferences)
 
-    profile = _load_profile(run)
-    stages = get_stages(profile)
-    task_map: dict[str, int] = {}
+    config_path: str = config_path  # keep param (or "" if not provided)
+    profile: DatasetProfile | None = _load_profile(run) if config_path else None
+    prep_output_dir: str = dataset_dir
+    fallback_ctx: dict[str, Any] | None = None
 
     sys_log.info(
-        "Orchestrator starting run %d with %d stages, output=%s",
-        run_id, len(stages), output_dir,
+        "Orchestrator starting run %d (entry=%s) with %d stages, output=%s",
+        run_id, entry, len(stages), output_dir,
     )
 
     run.status = WorkflowStatus.RUNNING
     run.current_stage = ""
     run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    _console(ctx, f"DG-TFT workflow run #{run_id} starting [bright_black]({len(stages)} stages)[/bright_black]")
-    _console(ctx, f"  data dir  : [bright_black]{run.dataset_dir}[/bright_black]")
+    _console(ctx, f"DG-TFT workflow run #{run_id} starting [bright_black](entry={entry}, {len(stages)} stages)[/bright_black]")
+    _console(ctx, f"  data dir  : [bright_black]{dataset_dir}[/bright_black]")
     _console(ctx, f"  output dir: [bright_black]{output_dir}[/bright_black]")
     t_start = time.monotonic()
 
@@ -165,11 +189,20 @@ def run_workflow(
     # ── Create task board entries ──
     task_map = _create_stage_tasks(board, ctx.agent_id, stages, run_id)
 
-    idx = 0
+    # ── While+pointer state machine ──
+    pointer = 0
+    idx_counter = 0
+    max_pointer = len(stages)
+    total_stages = len(stages)
     failed_stage: str = ""
     failed_error: str = ""
-    for sd in stages:
-        idx += 1
+    retry_counts: dict[str, int] = {}
+    prep_max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
+
+    while pointer < max_pointer:
+        sd = stages[pointer]
+        idx_counter += 1
+        display_idx = idx_counter
 
         # ── Overall run timeout check ──
         if _elapsed_exceeds(t_start, run_timeout):
@@ -182,27 +215,62 @@ def run_workflow(
                           failed=True, failed_stage=failed_stage, failed_error=failed_error)
             return False, failed_error
 
+        # ── No-op stage check ──
         if _noop_stage(sd):
             sys_log.info("Stage [%s] is a no-op placeholder, skipping", sd.name)
-            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](report generation handled by orchestrator)[/bright_black]")
+            _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](report generation handled by orchestrator)[/bright_black]")
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+            pointer += 1
             continue
 
+        # ── Resume check ──
         if _stage_done(run, sd.name):
             sys_log.info("Stage [%s] already completed, skipping (resume)", sd.name)
-            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
+            _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+            pointer += 1
             continue
 
+        # ── Announce stage ──
         run.current_stage = sd.name
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING)
         sys_log.info("--- Stage [%s] starting ---", sd.name)
-        _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]starting...[/bright_black]")
+        _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [bright_black]starting...[/bright_black]")
         _start_task(board, ctx.agent_id, task_map.get(sd.name))
+
+        # ── Execute stage ──
+        if sd.kind == "agent":
+            attempt_dir = _run_agent_stage(ctx, run_id, sd, output_dir, dataset_dir,
+                                           raw_dataset_dir, preferences,
+                                           op_log, fallback_ctx, retry_counts, prep_max_retries)
+            # Update prep output dir after Verifier passes
+            if sd.name == StageName.VERIFIER and attempt_dir:
+                prep_output_dir = attempt_dir
+            _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+            pointer += 1
+            fallback_ctx = None
+            run = wm.get_run(run_id)
+            continue
+
+        # ── Script stage ──
+        # ── Lazy config building: build runtime config before first script stage ──
+        if not config_path:
+            _console(ctx, f"  [bright_black]Building runtime config ...[/bright_black]")
+            if not profile:
+                from src.workflow.dg_tft.dataset_inspector import inspect_dataset
+                profile, _ = inspect_dataset(ctx, prep_output_dir, hysteresis_dir=hysteresis_dir)
+                wm.set_dataset_profile(run_id, profile)
+            from src.workflow.dg_tft.config_builder import build_runtime_config
+            build_result = build_runtime_config(ctx, profile, prep_output_dir,
+                                                 run_id=run_id,
+                                                 overrides=overrides)
+            config_path = build_result["config_path"]
+            _console(ctx, f"  [bright_black]Config: {config_path}[/bright_black]")
 
         timeout = _resolve_stage_timeout(ctx, sd)
 
-        if sd.skip_if_profile_false:
+        # Profile-based skip
+        if sd.skip_if_profile_false and profile:
             field_val = getattr(profile, sd.skip_if_profile_false, None)
             if field_val is not None and not field_val:
                 sr = StageResult(
@@ -212,59 +280,76 @@ def run_workflow(
                 )
                 wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
                 sys_log.info("Stage [%s] skipped: %s", sd.name, sr.skip_reason)
-                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped ({sr.skip_reason})[/bright_black]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped ({sr.skip_reason})[/bright_black]")
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
                 run = wm.get_run(run_id)
+                pointer += 1
                 continue
 
         sr = run_stage(
-            ctx, sd.action, config_path_abs,
-            cwd=str(Path(config_path_abs).parent),
+            ctx, sd.action, config_path,
+            cwd=str(Path(config_path).parent),
             timeout=timeout,
             extra_args=sd.extra_args,
             stream_console=True,
         )
 
+        # ── Hard failure ──
         if not sr.ok:
             wm.update_stage(run_id, sd.name, WorkflowStatus.FAILED, sr)
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=False)
+
             if sd.required:
-                wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
-                sys_log.error(
-                    "Run %d failed at required stage [%s]: %s",
-                    run_id, sd.name, sr.error,
-                )
-                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
-                failed_stage = sd.name
-                failed_error = sr.error or "unknown error"
-                _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path_abs)
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
+
+                # ── Agent A: check-data hard failure → fallback_to_previous ──
+                if sd.name == StageName.CHECK_DATA:
+                    agent_a_result = _spawn_agent_a(ctx, run_id, sd, sr, output_dir, op_log)
+                    if agent_a_result.get("fallback"):
+                        fb_target = agent_a_result["fallback"]
+                        fb_reason = agent_a_result.get("reason", "")
+                        _console(ctx, f"  [{WF_STATUS_WARN}]Agent A → fallback to {fb_target}[/{WF_STATUS_WARN}] [bright_black]({fb_reason[:100]})[/bright_black]")
+                        fallback_ctx = agent_a_result
+                        new_pointer = _find_stage_pointer(stages, fb_target)
+                        if new_pointer >= 0:
+                            pointer = new_pointer
+                            _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                            run = wm.get_run(run_id)
+                            continue
+                    # Agent A chose not to fallback — fail as usual
+                    wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
+                    sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
+                    failed_stage = sd.name
+                    failed_error = sr.error or "unknown error"
+                else:
+                    wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
+                    sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
+                    failed_stage = sd.name
+                    failed_error = sr.error or "unknown error"
+
+                _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path)
                 op_log.set_final_status("failed")
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
                               failed=True, failed_stage=failed_stage, failed_error=failed_error)
                 return False, f"Failed at {sd.name}: {sr.error}"
             else:
                 wm.add_warning(run_id, f"Optional stage {sd.name} failed: {sr.error}")
-                sys_log.warning(
-                    "Optional stage [%s] failed for run %d, continuing", sd.name, run_id,
-                )
-                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]failed (non-critical, continuing)[/{WF_STATUS_WARN}]")
+                sys_log.warning("Optional stage [%s] failed for run %d, continuing", sd.name, run_id)
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]failed (non-critical, continuing)[/{WF_STATUS_WARN}]")
+                pointer += 1
                 run = wm.get_run(run_id)
                 continue
 
+        # ── Success ──
         missing = _verify_artifacts(sd, output_dir)
         if missing:
-            wm.add_warning(
-                run_id,
-                f"Stage {sd.name} reported success but missing artifacts: {missing}",
-            )
+            wm.add_warning(run_id, f"Stage {sd.name} reported success but missing artifacts: {missing}")
             sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
-        # ── Log initial attempt (always, regardless of quality gate) ──
         _log_initial_attempt(op_log, sd.name, sr, output_dir)
 
-        # ── Quality gate (Phase 7) ──
         sr, quality_issues = _enforce_quality_gate(
-            ctx, run_id, sd, sr, config_path_abs, output_dir, timeout, op_log,
+            ctx, run_id, sd, sr, config_path, output_dir, timeout, op_log,
         )
 
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
@@ -274,29 +359,270 @@ def run_workflow(
                 wm.attach_artifact(run_id, p, str(full_path))
 
         if quality_issues:
-            wm.add_warning(
-                run_id,
-                f"Stage {sd.name} quality below threshold: {'; '.join(quality_issues)}",
-            )
+            wm.add_warning(run_id, f"Stage {sd.name} quality below threshold: {'; '.join(quality_issues)}")
             if sd.required:
-                sys_log.warning(
-                    "Run %d stage [%s] completed with quality warnings: %s",
-                    run_id, sd.name, quality_issues,
-                )
-                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]✓ (quality below threshold)[/{WF_STATUS_WARN}]")
+                sys_log.warning("Run %d stage [%s] completed with quality warnings: %s", run_id, sd.name, quality_issues)
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_WARN}]✓ (quality below threshold)[/{WF_STATUS_WARN}]")
             else:
-                _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](quality warn)[/bright_black]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](quality warn)[/bright_black]")
         else:
             sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
-            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
+            _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
 
         _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+        pointer += 1
+        fallback_ctx = None
         run = wm.get_run(run_id)
 
     # All stages completed
     op_log.set_final_status("done")
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
     return True, f"Run {run_id} completed: {len(stages)} stages"
+
+
+# ── Agent stage helpers ──────────────────────────────────────────────
+
+def _run_agent_stage(
+    ctx: AgentContext,
+    run_id: int,
+    sd: StageDef,
+    output_dir: str,
+    dataset_dir: str,
+    raw_dataset_dir: str,
+    preferences: str,
+    op_log: OperationLog | None,
+    fallback_ctx: dict[str, Any] | None,
+    retry_counts: dict[str, int],
+    max_retries: int,
+) -> str:
+    """Execute an agent-type stage (Preparer or Verifier).
+
+    Returns the attempt directory path.
+    """
+    from src.constants import PREP_SUBDIR_NAME
+    from src.workflow.dg_tft.data_preparer import (
+        run_preparer_stage,
+        run_verifier_stage,
+        copy_dataset_to_data_prep,
+    )
+
+    wm = ctx.workflow_man
+    stage_name = sd.name
+    retry_key = f"{stage_name}_retries"
+    current_retry = retry_counts.get(retry_key, 0) + 1
+    retry_counts[retry_key] = current_retry
+
+    attempt_n = current_retry
+    attempt_dir = os.path.join(output_dir, PREP_SUBDIR_NAME, f"attempt_{attempt_n}")
+    os.makedirs(attempt_dir, exist_ok=True)
+
+    trigger = AttemptTrigger.INITIAL if attempt_n == 1 else AttemptTrigger.VERIFIER_FAIL
+    if fallback_ctx and fallback_ctx.get("fallback"):
+        trigger = AttemptTrigger.FALLBACK_RECEIVED
+
+    t_stage_start = time.monotonic()
+
+    if stage_name == StageName.DATA_PREP:
+        # Build handoff history from prior attempts
+        handoff_history = _build_handoff_history(op_log)
+        prep_result = run_preparer_stage(
+            ctx, raw_dataset_dir, attempt_dir,
+            handoff_history=handoff_history,
+        )
+        prep_ok = prep_result.get("ok", False)
+        handoff = prep_result.get("handoff")
+        error = prep_result.get("error", "")
+
+        op_log.append_attempt("data-prep", StageAttemptLog(
+            n=attempt_n, trigger=trigger,
+            handoff=handoff,
+            ok=prep_ok,
+            error=error,
+            duration_s=time.monotonic() - t_stage_start,
+        ))
+
+        if not prep_ok:
+            if current_retry < max_retries:
+                sys_log.warning("Preparer attempt %d failed, will retry", attempt_n)
+            else:
+                sys_log.error("Preparer exhausted after %d attempts", max_retries)
+                wm.mark_failed(run_id, error or "Preparer exhausted")
+
+    elif stage_name == StageName.VERIFIER:
+        if not raw_dataset_dir and not fallback_ctx:
+            copy_dataset_to_data_prep(dataset_dir, attempt_dir)
+
+        verify_result = run_verifier_stage(ctx, attempt_dir)
+        verify_ok = verify_result.get("ok", False)
+        feedback = verify_result.get("feedback")
+        issues = verify_result.get("issues", [])
+
+        op_log.append_attempt("verifier", StageAttemptLog(
+            n=attempt_n, trigger=trigger,
+            agent_decision=feedback,
+            ok=verify_ok,
+            error="; ".join(issues) if issues else "",
+            duration_s=time.monotonic() - t_stage_start,
+        ))
+
+        if not verify_ok:
+            if current_retry < max_retries:
+                sys_log.warning("Verifier attempt %d failed, will retry", attempt_n)
+            else:
+                sys_log.error("Verifier exhausted after %d attempts", max_retries)
+                wm.mark_failed(run_id, "Verifier exhausted")
+
+    return attempt_dir
+
+
+def _build_handoff_history(op_log: OperationLog | None) -> str:
+    """Build handoff history text from prior data-prep attempts."""
+    if op_log is None:
+        return ""
+    import json as _json
+    attempts = op_log.get_stage_attempts("data-prep")
+    if not attempts:
+        return ""
+    lines: list[str] = []
+    for ad in attempts:
+        n = ad.get("n", 0)
+        h = ad.get("handoff")
+        fb = ad.get("agent_decision")
+        if h:
+            lines.append(f"Attempt {n} handoff: {_json.dumps(h, ensure_ascii=False)}")
+        if fb:
+            lines.append(f"Attempt {n} verifier feedback: {_json.dumps(fb, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
+def _spawn_agent_a(
+    ctx: AgentContext,
+    run_id: int,
+    sd: StageDef,
+    stage_result: StageResult,
+    output_dir: str,
+    op_log: OperationLog | None = None,
+) -> dict[str, Any]:
+    """Spawn Agent A (check-data) to decide whether to fall back to Verifier.
+
+    Agent A has only the ``fallback_to_previous`` tool.  When check-data
+    hard-fails, this agent is invoked to decide whether the failure warrants
+    a fallback to the Verifier stage.
+
+    Returns:
+        Dict with keys: fallback (str target or ""), reason, evidence, suggestion.
+        If fallback is empty, the orchestrator treats the failure as final.
+    """
+    from src.agent.subagent import SubAgent
+    from src.tool.subagent_tools import get_tools, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS
+    from src.agent.progress import EXPLORER_AGENT_LABEL
+
+    schemas, handlers = get_tools("check-data")
+
+    # Build a prompt for Agent A
+    prompt_lines = [
+        "You are Agent A (check-data diagnostics).",
+        "The check-data stage (dataset structural validation) has failed.",
+        f"Error: {stage_result.error}",
+        "",
+        "Your job: decide whether this failure can be fixed upstream by the Verifier.",
+        "If the errors suggest that the prepared dataset is malformed (missing columns,",
+        "wrong sheet names, corrupt files, etc.), call `fallback_to_previous` to notify",
+        "the Verifier stage to re-check the data and possibly fall back to the Preparer.",
+        "",
+        "If the error is purely environmental (missing executables, configuration issues,",
+        "permissions, etc.), do NOT fall back — the failure is final.",
+        "",
+        "You may use `read_file` and `glob_file` to inspect the output directory and",
+        "error logs if needed, but keep it brief — you only have a few steps.",
+    ]
+
+    if op_log:
+        verifier_attempts = op_log.get_stage_attempts("verifier")
+        if verifier_attempts:
+            prompt_lines.append("")
+            prompt_lines.append("Prior Verifier result:")
+            last_v = verifier_attempts[-1]
+            prompt_lines.append(str(last_v)[:500])
+
+    prompt = "\n".join(prompt_lines)
+
+    agent_id = f"agent_a_check_data_{run_id}_{os.urandom(4).hex()}"
+    agent = SubAgent(
+        parent_ctx=ctx,
+        subagent_type=EXPLORER_AGENT_LABEL,
+        prompt=prompt,
+        agent_id=agent_id,
+        subject="DG-TFT check-data diagnostic",
+        subagent_tools=schemas,
+        tool_handlers=handlers,
+        stop_mode="schema",
+        stop_schemas=[SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS],
+        console=None,
+    )
+    ctx.agent_list[agent_id] = agent.progress
+    agent.build_tools()
+    agent.build_messages()
+    try:
+        result = agent.run()
+    finally:
+        agent.progress.status = agent.status
+        agent.progress.if_archived = True
+
+    if agent.status.value != "done" or not result:
+        err = agent.error or "Agent A did not produce a result"
+        sys_log.warning("Agent A failed: %s", err)
+        return {"fallback": "", "reason": err, "evidence": "", "suggestion": ""}
+
+    import json as _json
+    try:
+        decision = _json.loads(result) if isinstance(result, str) else dict(result)
+    except (_json.JSONDecodeError, TypeError, ValueError):
+        sys_log.warning("Agent A returned non-JSON: %s", str(result)[:200])
+        return {"fallback": "", "reason": str(result)[:200], "evidence": "", "suggestion": ""}
+
+    # Log the decision
+    if op_log:
+        op_log.append_attempt(sd.name, StageAttemptLog(
+            n=op_log.get_last_attempt_n(sd.name) + 1,
+            trigger=AttemptTrigger.FALLBACK_SENT if decision.get("target") else AttemptTrigger.QUALITY_FAIL,
+            agent_decision=decision,
+            agent_reasoning=decision.get("reason", ""),
+            ok=False,
+            error=stage_result.error or "",
+        ))
+
+    return {
+        "fallback": decision.get("target", ""),
+        "reason": decision.get("reason", ""),
+        "evidence": decision.get("evidence", ""),
+        "suggestion": decision.get("suggestion", ""),
+    }
+
+
+def _find_stage_pointer(stages: list[StageDef], target_name: str) -> int:
+    """Find the index of a stage by name. Returns -1 if not found."""
+    for i, sd in enumerate(stages):
+        if sd.name == target_name:
+            return i
+    return -1
+
+
+def _revert_tasks(
+    board,
+    agent_id: str,
+    task_map: dict[str, int],
+    stages: list[StageDef],
+    fallback_pointer: int,
+) -> None:
+    """Revert task board entries: mark stages at and after fallback_pointer as in_progress."""
+    if board is None:
+        return
+    for i in range(fallback_pointer, len(stages)):
+        sd = stages[i]
+        tid = task_map.get(sd.name)
+        if tid is not None:
+            _start_task(board, agent_id, tid)
 
 
 # ── Finalization (report + console + persistence) ──────────────────

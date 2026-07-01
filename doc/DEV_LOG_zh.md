@@ -558,3 +558,23 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 ### 测试
 
 - 全量 911 tests pass (0 failures, 0 errors, 11 skipped)
+
+### 2026-07-01 | Step 7 while+pointer + Agent A + 数据纳入 Pipeline (3.7 + 3.4.1)
+
+**结构性重构**：`orchestrator.py` 中 for 循环 → while+pointer 状态机。
+
+**StageDef.kind**：`"agent"`（Preparer, Verifier）vs `"script"`（check-data 到 final-report）。Agent 阶段 spawn SubAgent；脚本阶段调 `run_stage()`。
+
+**Pipeline 整合**：Preparer + Verifier 现在是 `_CORE_STAGES` 中的 StageDef 条目（用 `get_stages(entry=)` 过滤）。数据准备从 `tool_def.py:dg_tft_run` 移入 orchestrator 的 while+pointer 循环。
+
+**Agent A（check-data）**：硬失败 → `_spawn_agent_a()` SubAgent（`stop_mode="schema"`）→ `fallback_to_previous` tool。Agent 判断失败是否需要回退到 Verifier 还是最终失败。
+
+**回退链**：A → Verifier → Preparer。`_revert_tasks()` 将回退指针处的 TUI task board 条目重新标为 in_progress。`_find_stage_pointer()` 按名称找阶段索引。
+
+**懒配置构建**：`config_path` 在第一个脚本阶段前才 build（Verifier 通过后），不在 `tool_def.py` 中。
+
+**Subagent tools**：移除 `SUBAGENT_TOOL_FALLBACK_TO_VERIFIER` — 所有回退统一用 `fallback_to_previous`。
+
+**data_preparer.py 新增**：`run_preparer_stage()`、`run_verifier_stage()`、`copy_dataset_to_data_prep()`。
+
+**测试**：911 pass (0 failures, 0 errors, 11 skipped)，session 目录零残留。

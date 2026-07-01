@@ -464,7 +464,7 @@ class TestTaskBoardHelpers(unittest.TestCase):
 
     def test_create_stage_tasks_calls_board(self):
         self.mock_board.create_task.return_value = (True, "Task with id 42 created")
-        stages = list(get_stages())[:2]
+        stages = list(get_stages())[2:4]  # check-data, fit-physical (skip data-prep, verifier)
         task_map = _create_stage_tasks(self.mock_board, self.agent_id, stages, 1)
         self.mock_board.create_task.assert_called()
         self.assertIn(StageName.CHECK_DATA, task_map)

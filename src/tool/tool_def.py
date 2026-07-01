@@ -2372,12 +2372,10 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         skip_prep = arguments.get("skip_prep", False)
         direct = arguments.get("direct", False)
         entry = arguments.get("entry", "full")
+        preferences = arguments.get("preferences", "")
 
         from src.workflow.dg_tft.manager import WorkflowManager
-        from src.workflow.dg_tft.dataset_inspector import inspect_dataset
-        from src.workflow.dg_tft.config_builder import build_runtime_config
         from src.workflow.dg_tft.orchestrator import run_workflow
-        from src.constants import PREP_SUBDIR_NAME, DG_TFT_RUNS_SUBDIR
         wm: WorkflowManager = ctx.workflow_man
 
         ok, run_id, now = wm.create_run(
@@ -2388,67 +2386,34 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         if not ok:
             return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
 
-        prep_info = None
-        if entry == "check-data":
-            pass  # no prep, no verifier — go straight to pipeline
-        elif entry == "verifier":
-            runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-            run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
-            from src.workflow.dg_tft.data_preparer import run_verification_only
-            verify_result = run_verification_only(
-                ctx, dataset_dir, run_output_dir, run_id,
-                preferences="",
-            )
-            prep_info = {
-                "prep_id": run_id,
-                "ok": verify_result["ok"],
-                "issues": verify_result.get("issues", []),
-                "output_dir": verify_result.get("output_dir", dataset_dir),
-                "verification_only": True,
-            }
-            if verify_result["ok"]:
-                dataset_dir = verify_result["output_dir"]
-        else:  # entry == "full" (default)
+        # Compute entry from legacy flags if not explicitly set
+        if entry == "full" and direct:
+            entry = "check-data"
+        elif entry == "full" and skip_prep:
+            entry = "verifier"
+
+        # Route preprocessing: avoid double prep when data already exists
+        if entry == "full":
+            from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR, PREP_SUBDIR_NAME
             runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
             run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
             attempt_1_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
-            existing = _check_prepared_output(attempt_1_dir)
-            if existing:
-                prep_id = wm.preparation_tracker.register_prep(dataset_dir, attempt_1_dir, run_id=run_id)
-                wm.preparation_tracker.update_prep(prep_id, True, ["[SKIP] previously prepared data found"])
-                prep_info = {"prep_id": prep_id, "skipped": True, "output_dir": attempt_1_dir}
-                dataset_dir = attempt_1_dir
-            else:
-                os.makedirs(attempt_1_dir, exist_ok=True)
-                max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
-                from src.workflow.dg_tft.data_preparer import run_data_preparation_with_retry
-                prep_result = run_data_preparation_with_retry(
-                    ctx, dataset_dir, str(run_output_dir),
-                    run_id,
-                    preferences="",
-                    max_retries=max_retries,
-                )
-                prep_ok = prep_result["ok"]
-                prep_issues = prep_result.get("issues", [])
-                final_output_dir = prep_result.get("output_dir", attempt_1_dir)
-                prep_id = wm.preparation_tracker.register_prep(dataset_dir, final_output_dir, run_id=run_id)
-                wm.preparation_tracker.update_prep(prep_id, prep_ok, prep_issues)
-                prep_info = {
-                    "prep_id": prep_id, "ok": prep_ok, "issues": prep_issues,
-                    "output_dir": final_output_dir,
-                }
-                if prep_ok:
-                    dataset_dir = final_output_dir
+            from src.workflow.dg_tft.data_preparer import _check_output as _prep_check
+            existing_ok, _ = _prep_check(attempt_1_dir)
+            if existing_ok:
+                entry = "verifier"
 
-        profile, _ = inspect_dataset(ctx, dataset_dir, hysteresis_dir=hysteresis_dir)
-        wm.set_dataset_profile(run_id, profile)
-
-        build_result = build_runtime_config(ctx, profile, dataset_dir,
-                                             run_id=run_id,
-                                             overrides=overrides)
-        config_path = build_result["config_path"]
-
-        workflow_ok, summary = run_workflow(ctx, run_id, config_path, board=board)
+        workflow_ok, summary = run_workflow(
+            ctx, run_id,
+            entry=entry,
+            dataset_dir=dataset_dir,
+            raw_dataset_dir=dataset_dir,
+            hysteresis_dir=hysteresis_dir,
+            device_name=device_name,
+            overrides=overrides,
+            preferences=preferences,
+            board=board,
+        )
 
         sys_log.info("%s: run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
         result = {
@@ -2459,8 +2424,6 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
             "workflow_ok": workflow_ok,
             "summary": summary,
         }
-        if prep_info is not None:
-            result["prep"] = prep_info
         return result
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")

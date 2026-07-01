@@ -27,6 +27,8 @@ class WorkflowStatus(str, Enum):
 
 
 class StageName:
+    DATA_PREP = "data-prep"
+    VERIFIER = "verifier"
     CHECK_DATA = "check-data"
     FIT_PHYSICAL = "fit-physical"
     TRAIN_STATIC = "train-static"
@@ -34,6 +36,8 @@ class StageName:
     FINAL_REPORT = "final-report"
 
     STAGE_ORDER: list[str] = [
+        DATA_PREP,
+        VERIFIER,
         CHECK_DATA,
         FIT_PHYSICAL,
         TRAIN_STATIC,
