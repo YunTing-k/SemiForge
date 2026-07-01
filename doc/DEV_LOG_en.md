@@ -448,3 +448,30 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 - `src/device_modeling/dg_tft/{templates,tools}/` — new
 - `src/device_modeling/dg_tft/{dynamic,reporting}/` — fully replaced
 - `src/device_modeling/dg_tft/{config,run_model.py}` — fully replaced
+
+---
+
+### 2026-07-01 | 3.2 Maintenance — KAN Arch Param Exposure + minimal_run Precision Gate Skip + Artifact Fixes
+
+**KAN Architecture Parameter Light Extension**:
+- Parameterized temperature KAN hidden/grid/order: `temperature_kan_hidden` (8), `temperature_kan_grid` (3), `temperature_kan_k` (3) → `[temperature]` section
+- Engine `dg_tft_full_model.py`: added `--temperature-kan-hidden/grid/k` argparse; `ResidualDiagnostic.__init__` accepts and passes to `CompactKAN` constructor
+
+**Training Regularization Trio**:
+- `weight_decay` (1e-6), `grad_clip` (5.0), `lr_eta_min_frac` (0.02) → `[full_model]` section
+- Engine already had argparse; only INI → CLI plumbing was missing
+
+**`--skip-precision-gates` for minimal_run Alignment**:
+- Engine: new `--skip-precision-gates` flag, gates 3 precision gates (Base IV-PKAN / IV residual held-out / Deployment HSPICE) → prints warning on failure instead of RuntimeError
+- `run_model.py`: passes both `--quick-run` and `--skip-precision-gates` when `quick=True`, ensuring minimal_run does not abort on training quality
+- `apply_quick_run_preset`: added `iv_residual_stage_epochs` clamp (≤140)
+
+**Artifact & Gitignore Fixes**:
+- `report_builder.py`: ARTIFACT_MANIFEST written last so JSON/MD exist on disk when manifest checks them
+- `.gitignore`: ignore `src/device_modeling/.runtime_cache/`, `trained_model/`, `validation/`
+
+**Parameter Count**: `FULL_MODEL_PARAMS` 44→50, total 79 params.
+
+**Files Affected**: `dg_tft_full_model.py`, `run_model.py`, `model_config_new_device_template.ini`, `param_defs.py`, `quality_guard.py`, `report_builder.py`, `.gitignore`, 2 test files.
+
+**Tests**: 911 pass (11 skipped).

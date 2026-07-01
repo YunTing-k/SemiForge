@@ -460,3 +460,30 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 - `src/device_modeling/dg_tft/{templates,tools}/` — 新建
 - `src/device_modeling/dg_tft/{dynamic,reporting}/` — 全覆盖更新
 - `src/device_modeling/dg_tft/{config,run_model.py}` — 全覆盖更新
+
+---
+
+### 2026-07-01 | 3.2 维护 — KAN 架构参数暴露 + minimal_run 精度门跳过 + 产物路径修正
+
+**KAN 架构参数轻量扩展**：
+- 温度 KAN 隐藏层/网格/阶数参数化：`temperature_kan_hidden`（8）、`temperature_kan_grid`（3）、`temperature_kan_k`（3）→ `[temperature]` section
+- 引擎 `dg_tft_full_model.py`：新增 `--temperature-kan-hidden/grid/k` argparse；`ResidualDiagnostic.__init__` 接受并用于 `CompactKAN` 构建
+
+**训练正则化三件套**：
+- `weight_decay`（1e-6）、`grad_clip`（5.0）、`lr_eta_min_frac`（0.02）→ `[full_model]` section
+- 引擎已有 argparse，仅补全 INI → CLI 传参管线
+
+**`--skip-precision-gates` 与 minimal_run 对齐**：
+- 引擎新增 `--skip-precision-gates` flag，门控 3 个精度门（Base IV-PKAN / IV residual held-out / Deployment HSPICE）→ 超标时打印 warning 而非 RuntimeError
+- `run_model.py` 中 `quick=True` 时同时传 `--quick-run` + `--skip-precision-gates`，保证 minimal_run 流程不因训练质量中断
+- `apply_quick_run_preset` 中补加 `iv_residual_stage_epochs` 压缩（≤140）
+
+**产物与 gitignore 修正**：
+- `report_builder.py`：ARTIFACT_MANIFEST 写入顺序移到最后，消除 JSON/MD 误报 missing
+- `.gitignore`：忽略 `src/device_modeling/.runtime_cache/`、`trained_model/`、`validation/`
+
+**参数统计**：`FULL_MODEL_PARAMS` 44→50，总参数 79。
+
+**受影响文件**：`dg_tft_full_model.py`、`run_model.py`、`model_config_new_device_template.ini`、`param_defs.py`、`quality_guard.py`、`report_builder.py`、`.gitignore`、测试 2 个。
+
+**测试**：911 pass（11 skipped）。
