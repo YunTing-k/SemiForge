@@ -136,8 +136,10 @@ def run_workflow(
     output_dir = _read_output_dir(config_path_abs)
 
     op_log = OperationLog(output_dir)
-    pref = run.extra.get("preferences", "")
-    op_log.initialize(run_id, pref)
+    op_log.load()
+    if not op_log.data:
+        pref = run.extra.get("preferences", "")
+        op_log.initialize(run_id, pref)
 
     profile = _load_profile(run)
     stages = get_stages(profile)

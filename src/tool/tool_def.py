@@ -2653,21 +2653,29 @@ def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progres
             }
 
         os.makedirs(attempt_1_dir, exist_ok=True)
-        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, attempt_1_dir, run_id=run_id)
 
-        from src.workflow.dg_tft.data_preparer import run_data_preparation
-        run_data_preparation(ctx, raw_dataset_dir, attempt_1_dir, prep_id)
+        max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
+        from src.workflow.dg_tft.data_preparer import run_data_preparation_with_retry
+        prep_result = run_data_preparation_with_retry(
+            ctx, raw_dataset_dir, str(run_output_dir),
+            run_id,
+            preferences="",
+            max_retries=max_retries,
+        )
 
-        prep = wm.preparation_tracker.get_prep(prep_id)
-        ok = prep["ok"] if prep else False
-        issues = prep["issues"] if prep else []
+        ok = prep_result["ok"]
+        issues = prep_result.get("issues", [])
+        final_output_dir = prep_result.get("output_dir", attempt_1_dir)
+        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, final_output_dir, run_id=run_id)
+        wm.preparation_tracker.update_prep(prep_id, ok, issues)
+
         sys_log.info("%s: data prep %d (run %d) done: ok=%s issues=%s", func_name, prep_id, run_id, ok, issues)
         return {
             "status": SUCCESS_LABEL,
             "info": f"Data preparation complete. Run ID / Prep ID: {run_id}. OK: {ok}.",
             "prep_id": prep_id,
             "run_id": run_id,
-            "output_dir": attempt_1_dir,
+            "output_dir": final_output_dir,
             "ok": ok,
             "issues": issues,
         }
