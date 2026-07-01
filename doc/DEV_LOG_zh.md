@@ -490,10 +490,12 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 
 ---
 
-### 2026-07-01 | 开发顺序调整 — Tool 统一提前
+### 2026-07-01 | 开发顺序调整 — Tool 统一 + while+pointer 提前
 
-**变更**：将 1.5 Tool 统一（`dg_tft_run` / `dg_tft_status` / `dg_tft_report`）从原 Step 13 提至 Step 6，置于 Agent 基础设施之前。
+**变更**：
+1. 将 1.5 Tool 统一从原 Step 13 提至 Step 6 — 确保后续 Agent 开发面向 3 个统一 tool
+2. 将 while+pointer (3.7) 与 Agent A (3.4.1) 合并为 Step 7 — Agent A 依赖 fallback，fallback 依赖 while+pointer，三者互相锁死，一次性解决
+3. 语义统一：移除 `fallback_to_verifier`，全链统一用 `fallback_to_previous` — 线性 pipeline 上每个 Agent 都向上一跳
 
-**原因**：后续 Agent 开发需面向统一接口构建；若在 4 个散 tool 上开发 Agent 到 Step 12 再统一，compact 后的 agent 会被旧接口误导。
-
-**新的开发顺序**：0-5（已完成）→ 6. Tool 统一 → 7. Agent 基础设施 → 8-12. Agent A-E → 13. Agent E 解读。
+**新的开发顺序**：
+0-5 ✅ → 6. Tool 统一 → 7. while+pointer + Agent A → 8. Agent 基础设施 → 9. Agent B → 10. Agent C → 11. Agent D → 12. Agent E

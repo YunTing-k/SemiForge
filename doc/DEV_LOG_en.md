@@ -478,10 +478,12 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 ---
 
-### 2026-07-01 | Development Order Adjustment — Tool Unification Promoted
+### 2026-07-01 | Development Order Adjustment — Tool Unification + while+pointer Promoted
 
-**Change**: Promoted 1.5 Tool Unification (`dg_tft_run` / `dg_tft_status` / `dg_tft_report`) from original Step 13 to Step 6, before Agent infrastructure.
+**Changes**:
+1. Promoted 1.5 Tool Unification from original Step 13 to Step 6 — ensures subsequent Agent development targets unified 3-tool interface
+2. Merged while+pointer (3.7) and Agent A (3.4.1) into Step 7 — Agent A depends on fallback, fallback depends on while+pointer, circular dependency resolved in one step
+3. Semantic unification: removed `fallback_to_verifier`, unified chain uses only `fallback_to_previous` — every agent in the linear pipeline falls back one hop, no need to distinguish "previous happens to be Verifier"
 
-**Rationale**: Subsequent Agent development must target a unified interface. Building agents on 4 scattered tools through Step 12 and then unifying would cause compacted agents to be misled by legacy tool schemas.
-
-**New Development Order**: 0-5 (done) → 6. Tool Unification → 7. Agent Infrastructure → 8-12. Agents A-E → 13. Agent E interpretation.
+**New Development Order**:
+0-5 ✅ → 6. Tool Unification → 7. while+pointer + Agent A → 8. Agent Infrastructure → 9. Agent B → 10. Agent C → 11. Agent D → 12. Agent E
