@@ -38,6 +38,7 @@ ParamDef = dict[str, Any]
         "hi": upper_bound  (None for bool / string),
         "default": default_value,
         "desc": "Human-readable description for Agent context",
+        "section": "ini_section_name",  # optional — defaults to the stage's primary section
     }
 """
 
@@ -205,6 +206,156 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
             "Higher values produce more interpretable equations at the cost of fitting accuracy."
         ),
     },
+    "print_every": {
+        "type": "int",
+        "lo": 1,
+        "hi": 200,
+        "default": 80,
+        "section": "full_model",
+        "desc": (
+            "Print training loss/metrics every N epochs. "
+            "Larger values reduce log noise; set to 1 for full visibility."
+        ),
+    },
+
+    # ── [base_pkan] — KAN hyper-parameters (read during full model training) ──
+    "epochs_shared": {
+        "type": "int",
+        "lo": 100,
+        "hi": 3000,
+        "default": 500,
+        "section": "base_pkan",
+        "desc": (
+            "Shared KAN training epochs for the base PKAN network. "
+            "More epochs improve the symbolic representation quality. "
+            "Increase if symbolic formulas look under-fitted."
+        ),
+    },
+    "epochs_iv": {
+        "type": "int",
+        "lo": 100,
+        "hi": 3000,
+        "default": 700,
+        "section": "base_pkan",
+        "desc": (
+            "IV-specific KAN training epochs. "
+            "Controls how many epochs the KAN trains specifically on IV data. "
+            "Increase if IV symbolic fit is poor."
+        ),
+    },
+    "epochs_cv": {
+        "type": "int",
+        "lo": 100,
+        "hi": 3000,
+        "default": 700,
+        "section": "base_pkan",
+        "desc": (
+            "CV-specific KAN training epochs. "
+            "Controls how many epochs the KAN trains specifically on CV data. "
+            "Increase if CV symbolic fit is poor."
+        ),
+    },
+    "kan_hidden": {
+        "type": "int",
+        "lo": 4,
+        "hi": 32,
+        "default": 12,
+        "section": "base_pkan",
+        "desc": (
+            "KAN hidden layer size. "
+            "Larger values increase model capacity for learning complex device physics. "
+            "Increase if symbolic formulas are too simple to capture device behavior."
+        ),
+    },
+    "kan_grid": {
+        "type": "int",
+        "lo": 2,
+        "hi": 20,
+        "default": 5,
+        "section": "base_pkan",
+        "desc": (
+            "KAN grid resolution. "
+            "Higher values provide finer spline granularity. "
+            "Increase for devices with sharp non-linear transitions."
+        ),
+    },
+    "kan_k": {
+        "type": "int",
+        "lo": 2,
+        "hi": 5,
+        "default": 3,
+        "section": "base_pkan",
+        "desc": (
+            "KAN spline degree/order (k). "
+            "Higher-order splines are smoother but may oscillate. "
+            "k=3 (cubic) is standard; increase only if fitting requires higher-order continuity."
+        ),
+    },
+    "batch_iv_kan": {
+        "type": "int",
+        "lo": 256,
+        "hi": 16384,
+        "default": 4096,
+        "section": "base_pkan",
+        "desc": (
+            "Batch size for IV KAN training ([base_pkan] section, separate from full_model.batch_iv). "
+            "Larger batches give more stable spline fitting. "
+            "Reduce if OOM during KAN training."
+        ),
+    },
+    "batch_cv_kan": {
+        "type": "int",
+        "lo": 64,
+        "hi": 4096,
+        "default": 512,
+        "section": "base_pkan",
+        "desc": (
+            "Batch size for CV KAN training ([base_pkan] section, separate from full_model.batch_cv). "
+            "Larger batches give more stable spline fitting. "
+            "Reduce if OOM during KAN training."
+        ),
+    },
+
+    # ── [temperature] — temperature KAN control ──
+    "temperature_mode": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "auto",
+        "enum": ["auto", "on", "off"],
+        "section": "temperature",
+        "desc": (
+            "Temperature KAN mode. "
+            "'auto' — enable when temperature span ≥ minimum_span_K. "
+            "'on' — force enable. "
+            "'off' — disable entirely. "
+            "Use 'on' if the dataset has temperature data but auto-detection fails."
+        ),
+    },
+    "minimum_span_K": {
+        "type": "float",
+        "lo": 1.0,
+        "hi": 100.0,
+        "default": 20.0,
+        "section": "temperature",
+        "desc": (
+            "Minimum temperature span (Kelvin) required for auto mode to enable temperature KAN. "
+            "Lower values allow temperature KAN with narrower temperature sweeps. "
+            "Decrease if you have a small temperature range but want temperature-aware modeling."
+        ),
+    },
+    "kan_scale": {
+        "type": "float",
+        "lo": 0.1,
+        "hi": 1.0,
+        "default": 0.35,
+        "section": "temperature",
+        "desc": (
+            "Temperature KAN scaling factor. "
+            "Controls the contribution weight of temperature-dependent terms. "
+            "Increase to make temperature effects more prominent."
+        ),
+    },
 }
 
 
@@ -277,17 +428,28 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
             "Switch to 'aggressive' only if conservative fitting yields poor amplitude match."
         ),
     },
+    "print_every": {
+        "type": "int",
+        "lo": 1,
+        "hi": 200,
+        "default": 1,
+        "section": "hysteresis",
+        "desc": (
+            "Print training loss/metrics every N epochs during hysteresis training. "
+            "Larger values reduce log noise; set to 1 for full visibility."
+        ),
+    },
 }
 
 
-# ── Master lookup: stage → (ini_section, param_table) ───────────────
+# ── Master lookup: stage → ([ini_sections], param_table) ────────────
 
 from .schema import StageName
 
-_STAGE_PARAM_MAP: dict[str, tuple[str, dict[str, ParamDef]]] = {
-    StageName.FIT_PHYSICAL: ("physical_fit", PHYSICAL_FIT_PARAMS),
-    StageName.TRAIN_STATIC: ("full_model", FULL_MODEL_PARAMS),
-    StageName.TRAIN_HYSTERESIS: ("hysteresis", HYSTERESIS_PARAMS),
+_STAGE_PARAM_MAP: dict[str, tuple[list[str], dict[str, ParamDef]]] = {
+    StageName.FIT_PHYSICAL: (["physical_fit"], PHYSICAL_FIT_PARAMS),
+    StageName.TRAIN_STATIC: (["full_model", "base_pkan", "temperature"], FULL_MODEL_PARAMS),
+    StageName.TRAIN_HYSTERESIS: (["hysteresis"], HYSTERESIS_PARAMS),
 }
 
 
@@ -368,7 +530,7 @@ def get_stage_param_schema(stage_name: str) -> dict[str, Any] | None:
     entry = _STAGE_PARAM_MAP.get(stage_name)
     if entry is None:
         return None
-    _ini_section, param_table = entry
+    _ini_sections, param_table = entry
     return params_to_tool_schema(
         param_table,
         tool_name="adjust_params",
@@ -376,11 +538,22 @@ def get_stage_param_schema(stage_name: str) -> dict[str, Any] | None:
     )
 
 
+def get_stage_sections(stage_name: str) -> list[str] | None:
+    """Return the list of INI section names a stage may write to.
+
+    Returns None if the stage has no adjustable parameters.
+    """
+    entry = _STAGE_PARAM_MAP.get(stage_name)
+    if entry is None:
+        return None
+    return entry[0]
+
+
 def get_stage_section(param_table: dict[str, ParamDef]) -> str | None:
-    """Reverse-lookup: find the INI section name for a param table."""
-    for _stage, (section, pt) in _STAGE_PARAM_MAP.items():
+    """Reverse-lookup: find the primary INI section name for a param table."""
+    for _stage, (sections, pt) in _STAGE_PARAM_MAP.items():
         if pt is param_table:
-            return section
+            return sections[0]
     return None
 
 

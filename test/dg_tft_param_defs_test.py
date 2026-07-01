@@ -42,9 +42,38 @@ class TestParamTables(unittest.TestCase):
         self.assertIn("max_cv_points", self.PHYSICAL_FIT_PARAMS)
         self.assertIn("max_nfev_scale", self.PHYSICAL_FIT_PARAMS)
 
+    def test_kan_params_present(self):
+        """TODO 3.2 says '含 KAN 超参' — [base_pkan] params must be in FULL_MODEL_PARAMS."""
+        for p in ("epochs_shared", "epochs_iv", "epochs_cv", "kan_hidden", "kan_grid", "kan_k",
+                  "batch_iv_kan", "batch_cv_kan"):
+            self.assertIn(p, self.FULL_MODEL_PARAMS, f"Missing KAN param: {p}")
+
+    def test_temperature_params_present(self):
+        for p in ("temperature_mode", "minimum_span_K", "kan_scale"):
+            self.assertIn(p, self.FULL_MODEL_PARAMS, f"Missing temperature param: {p}")
+
+    def test_print_every_present(self):
+        self.assertIn("print_every", self.FULL_MODEL_PARAMS)
+        self.assertIn("print_every", self.HYSTERESIS_PARAMS)
+
+    def test_cross_section_params_have_section_field(self):
+        """Params from non-primary sections must declare their 'section'."""
+        cross = {k: v for k, v in self.FULL_MODEL_PARAMS.items() if "section" in v}
+        self.assertIn("epochs_shared", cross)
+        self.assertEqual(cross["epochs_shared"]["section"], "base_pkan")
+        self.assertIn("temperature_mode", cross)
+        self.assertEqual(cross["temperature_mode"]["section"], "temperature")
+
+    def test_primary_section_params_have_no_section_field(self):
+        """Params in the primary [full_model] section should NOT have a section field."""
+        primary_params = ["epochs", "learning_rate", "cv_weight", "early_stop_patience"]
+        for p in primary_params:
+            self.assertNotIn("section", self.FULL_MODEL_PARAMS[p],
+                             f"Primary param '{p}' should not have explicit section")
+
     def test_full_model_table_structure(self):
         self._check_table(self.FULL_MODEL_PARAMS, "FULL_MODEL")
-        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 10)
+        self.assertGreaterEqual(len(self.FULL_MODEL_PARAMS), 22)
 
     def test_hysteresis_table_structure(self):
         self._check_table(self.HYSTERESIS_PARAMS, "HYSTERESIS")
@@ -218,6 +247,9 @@ class TestHardGuardValidation(unittest.TestCase):
         cls.PHYSICAL_FIT_PARAMS = PHYSICAL_FIT_PARAMS
         cls.FULL_MODEL_PARAMS = FULL_MODEL_PARAMS
         cls.HYSTERESIS_PARAMS = HYSTERESIS_PARAMS
+        cls.PF_SECTIONS = ["physical_fit"]
+        cls.FM_SECTIONS = ["full_model", "base_pkan", "temperature"]
+        cls.HY_SECTIONS = ["hysteresis"]
 
     # ── Normal valid params pass through ─────────────────────────
 
@@ -225,7 +257,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": 2.0},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
             "fit-physical",
         )
         self.assertEqual(warnings, [])
@@ -235,7 +267,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_iv_points": 100000},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["max_iv_points"], 100000)
@@ -244,7 +276,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"amp_parameterization": "aggressive"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["amp_parameterization"], "aggressive")
@@ -253,7 +285,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"enable_cv_residual": False},
             self.FULL_MODEL_PARAMS,
-            "full_model",
+            self.FM_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["enable_cv_residual"], False)
@@ -265,7 +297,7 @@ class TestHardGuardValidation(unittest.TestCase):
                 "max_iv_points": 75000,
             },
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(len(sanitized), 2)
@@ -276,7 +308,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"nonexistent_key": 42},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(len(warnings), 1)
@@ -286,7 +318,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": 1.5, "fake": 999},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized, {"max_nfev_scale": 1.5})
         self.assertEqual(len(warnings), 1)
@@ -297,7 +329,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_iv_points": "100000"},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertIsInstance(sanitized["max_iv_points"], int)
@@ -307,7 +339,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": "2.5"},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertIsInstance(sanitized["max_nfev_scale"], float)
@@ -317,7 +349,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"epochs": 500.0},
             self.FULL_MODEL_PARAMS,
-            "full_model",
+            self.FM_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertIsInstance(sanitized["epochs"], int)
@@ -327,7 +359,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"epochs": 500.5},
             self.FULL_MODEL_PARAMS,
-            "full_model",
+            self.FM_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(len(warnings), 1)
@@ -337,7 +369,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"enabled": "yes"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertTrue(sanitized["enabled"])
@@ -346,7 +378,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"enabled": "false"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(sanitized["enabled"], False)
 
@@ -354,7 +386,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_iv_points": "not_a_number"},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(len(warnings), 1)
@@ -366,7 +398,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"regime": "all"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["regime"], "all")
@@ -375,7 +407,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"regime": "super_saturation"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(len(warnings), 1)
@@ -385,7 +417,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"amp_parameterization": "CONSERVATIVE"},
             self.HYSTERESIS_PARAMS,
-            "hysteresis",
+            self.HY_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["amp_parameterization"], "CONSERVATIVE")
@@ -396,7 +428,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": 0.1},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(len(warnings), 1)
         self.assertIn("clamped", warnings[0])
@@ -406,7 +438,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": 100.0},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(len(warnings), 1)
         self.assertIn("clamped", warnings[0])
@@ -416,7 +448,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_nfev_scale": 5.0},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["max_nfev_scale"], 5.0)
@@ -425,7 +457,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_iv_points": 5000},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(warnings, [])
         self.assertEqual(sanitized["max_iv_points"], 5000)
@@ -434,7 +466,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"max_iv_points": 1},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized["max_iv_points"], 5000)
         self.assertIsInstance(sanitized["max_iv_points"], int)
@@ -445,7 +477,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(warnings, [])
@@ -454,7 +486,7 @@ class TestHardGuardValidation(unittest.TestCase):
         sanitized, warnings = self.validate(
             {"fake1": 1, "fake2": 2},
             self.PHYSICAL_FIT_PARAMS,
-            "physical_fit",
+            self.PF_SECTIONS,
         )
         self.assertEqual(sanitized, {})
         self.assertEqual(len(warnings), 2)
@@ -503,8 +535,10 @@ class TestStageParamMap(unittest.TestCase):
 
     def test_section_names_match_ini(self):
         from src.workflow.dg_tft.param_defs import _STAGE_PARAM_MAP
-        sections = {v[0] for v in _STAGE_PARAM_MAP.values()}
-        self.assertEqual(sections, {"physical_fit", "full_model", "hysteresis"})
+        all_sections = set()
+        for sections in (v[0] for v in _STAGE_PARAM_MAP.values()):
+            all_sections.update(sections)
+        self.assertEqual(all_sections, {"physical_fit", "full_model", "base_pkan", "temperature", "hysteresis"})
 
 
 if __name__ == "__main__":

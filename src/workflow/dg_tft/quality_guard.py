@@ -78,17 +78,36 @@ _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "max_iv_points": (5000, 200000),
         "max_cv_points": (10000, 500000),
     },
+    "base_pkan": {
+        "epochs_shared": (100, 3000),
+        "epochs_iv": (100, 3000),
+        "epochs_cv": (100, 3000),
+        "kan_hidden": (4, 32),
+        "kan_grid": (2, 20),
+        "kan_k": (2, 5),
+        "batch_iv": (256, 16384),
+        "batch_cv": (64, 4096),
+    },
     "full_model": {
         "epochs": (100, 5000),
         "learning_rate": (0.0001, 0.01),
         "cv_weight": (1.0, 50.0),
         "early_stop_patience": (2, 30),
         "early_stop_min_epochs": (50, 500),
+        "batch_iv": (512, 16384),
+        "batch_cv": (64, 4096),
+        "symbolic_training_weight": (0.0, 0.1),
+        "print_every": (1, 200),
+    },
+    "temperature": {
+        "minimum_span_K": (1.0, 100.0),
+        "kan_scale": (0.1, 1.0),
     },
     "hysteresis": {
         "epochs": (200, 5000),
         "hidden_capture": (4, 32),
         "hidden_emission": (4, 32),
+        "print_every": (1, 200),
     },
 }
 
@@ -97,15 +116,30 @@ _PARAMETER_WHITELIST: frozenset[str] = frozenset({
     "physical_fit.max_nfev_scale",
     "physical_fit.max_iv_points",
     "physical_fit.max_cv_points",
+    "base_pkan.epochs_shared",
+    "base_pkan.epochs_iv",
+    "base_pkan.epochs_cv",
+    "base_pkan.kan_hidden",
+    "base_pkan.kan_grid",
+    "base_pkan.kan_k",
+    "base_pkan.batch_iv",
+    "base_pkan.batch_cv",
     "full_model.epochs",
     "full_model.learning_rate",
+    "full_model.batch_iv",
+    "full_model.batch_cv",
     "full_model.cv_weight",
     "full_model.early_stop_patience",
     "full_model.early_stop_min_epochs",
+    "full_model.symbolic_training_weight",
+    "full_model.print_every",
+    "temperature.minimum_span_K",
+    "temperature.kan_scale",
     "hysteresis.epochs",
     "hysteresis.hidden_capture",
     "hysteresis.hidden_emission",
     "hysteresis.amp_parameterization",
+    "hysteresis.print_every",
 })
 
 # ── Stage-specific console labels ───────────────────────────────────
@@ -358,7 +392,7 @@ def _read_ini_value(ini_path: str, section: str, key: str) -> float | None:
 def validate_agent_adjustments(
     params: dict[str, int | float | bool | str],
     param_table: dict[str, dict[str, object]],
-    stage_section: str,
+    stage_sections: list[str],
     stage_name: str = "",
 ) -> tuple[dict[str, object], list[str]]:
     """Validate and sanitize an Agent's ``adjust_params`` output against parameter definitions.
@@ -370,12 +404,12 @@ def validate_agent_adjustments(
     2. **Type** — value type must match the definition (int/float/bool/string).
     3. **Bounds** — numeric values are clamped to ``[lo, hi]``.
     4. **Enum** — string/enum values must be one of the allowed options.
-    5. **Stage isolation** — unknown keys are silently dropped (not from this section).
+    5. **Stage isolation** — unknown keys are silently dropped.
 
     Args:
         params: Raw key→value dict from Agent (exclude ``reasoning``).
         param_table: Parameter definition table for the current stage.
-        stage_section: INI section name (e.g. ``"physical_fit"``).
+        stage_sections: INI section names the stage may write to (list for multi-section stages).
         stage_name: Stage name for log messages.
 
     Returns:
@@ -385,7 +419,7 @@ def validate_agent_adjustments(
     """
     sanitized: dict[str, object] = {}
     warnings: list[str] = []
-    label = stage_name or stage_section
+    label = stage_name or (stage_sections[0] if stage_sections else "unknown")
 
     for key, raw_value in params.items():
         # --- Step 1: Whitelist check ----------------------------------
