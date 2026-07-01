@@ -34,6 +34,7 @@ class AttemptTrigger(str, Enum):
     UPSTREAM_CHANGED = "upstream_changed"
     VERIFIER_FAIL = "verifier_fail"
     PREP_RETRY = "prep_retry"
+    AGENT_ACCEPT = "agent_accept"
 
 
 @dataclass
@@ -43,6 +44,7 @@ class StageAttemptLog:
     upstream: str = ""
     handoff: dict[str, Any] | None = None
     agent_decision: dict[str, Any] | None = None
+    agent_reasoning: str = ""
     ini_snapshot: str = ""
     duration_s: float = 0.0
     metrics: dict[str, float] = field(default_factory=dict)
@@ -58,6 +60,7 @@ class StageAttemptLog:
             "upstream": self.upstream,
             "handoff": self.handoff,
             "agent_decision": self.agent_decision,
+            "agent_reasoning": self.agent_reasoning,
             "ini_snapshot": self.ini_snapshot,
             "duration_s": self.duration_s,
             "metrics": self.metrics,
@@ -75,6 +78,7 @@ class StageAttemptLog:
             upstream=d.get("upstream", ""),
             handoff=d.get("handoff"),
             agent_decision=d.get("agent_decision"),
+            agent_reasoning=d.get("agent_reasoning", ""),
             ini_snapshot=d.get("ini_snapshot", ""),
             duration_s=d.get("duration_s", 0.0),
             metrics=d.get("metrics", {}),

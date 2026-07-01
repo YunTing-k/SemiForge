@@ -933,8 +933,8 @@ def cmd_task_list_all(args: list[str], ctx: AgentContext, board: Scoreboard, con
     console.print("\n")
 
 
-def cmd_workflow_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query all DG-TFT workflow runs and data preparations"""
+def cmd_dg_tft_list(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+    """list all DG-TFT workflow runs and data preparations"""
     runs = ctx.workflow_man.list_runs()
     preps = ctx.workflow_man.preparation_tracker._preps
 
@@ -978,10 +978,10 @@ def cmd_workflow_list(args: list[str], ctx: AgentContext, board: Scoreboard, con
     console.print("\n")
 
 
-def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
-    """query details of a DG-TFT workflow run by run_id, or prep by prep_id"""
+def cmd_dg_tft_status(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+    """query status of a DG-TFT workflow run by run_id, or prep by prep_id"""
     if not args:
-        console.print("Usage: /workflow_get <run_id|prep_id>", style="bold yellow")
+        console.print("Usage: /dg_tft_status <run_id|prep_id>", style="bold yellow")
         return
     try:
         lookup_id = int(args[0])
@@ -1066,10 +1066,10 @@ def cmd_workflow_get(args: list[str], ctx: AgentContext, board: Scoreboard, cons
     console.print("\n")
 
 
-def cmd_workflow_report(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
+def cmd_dg_tft_report(args: list[str], ctx: AgentContext, board: Scoreboard, console: Console):
     """read the final report of a DG-TFT workflow run by run_id"""
     if not args:
-        console.print("Usage: /workflow_report <run_id>", style="bold yellow")
+        console.print("Usage: /dg_tft_report <run_id>", style="bold yellow")
         return
     try:
         run_id = int(args[0])
@@ -1146,11 +1146,11 @@ class BuiltinCommands:
             "task_list": (cmd_task_list, "list agent tasks", "list all agent tasks that are not archived"),
             "task_list_all": (cmd_task_list_all, "list all agent tasks", "list all history agent tasks"),
             "agent_list": (cmd_agent_list, "list subagents", "list all active and archived subagents with status"),
-            "workflow_list": (cmd_workflow_list, "list all DG-TFT workflow runs",
+            "dg_tft_list": (cmd_dg_tft_list, "list all DG-TFT workflow runs",
                               "list all DG-TFT workflow runs with status and stage"),
-            "workflow_get": (cmd_workflow_get, "query a DG-TFT workflow run",
+            "dg_tft_status": (cmd_dg_tft_status, "query a DG-TFT workflow run",
                              "query status and details of a DG-TFT workflow run by run_id"),
-            "workflow_report": (cmd_workflow_report, "read a DG-TFT workflow report",
+            "dg_tft_report": (cmd_dg_tft_report, "read a DG-TFT workflow report",
                                 "read the final report of a completed DG-TFT workflow run by run_id"),
         }
         self._request_commands: list[str] = []

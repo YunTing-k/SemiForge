@@ -118,11 +118,10 @@ def create_tools_prompts(ctx: AgentContext) -> list[dict[str, Any]]:
         tool_skill_def(),
         tool_web_fetch_def(),
         tool_web_search_def(),
-        # DG-TFT workflow tools
-        tool_prepare_dg_tft_dataset_def(),
-        tool_start_dg_tft_workflow_def(),
-        tool_query_dg_tft_workflow_def(),
-        tool_read_dg_tft_workflow_report_def(),
+        # DG-TFT unified tools
+        tool_dg_tft_run_def(),
+        tool_dg_tft_status_def(),
+        tool_dg_tft_report_def(),
     ]
     # MCP tools
     prompts.extend(ctx.mcp_router.reg_tools)
@@ -2289,27 +2288,26 @@ def call_mcp(tool_name: str, arguments: dict[str, Any], ctx: AgentContext, progr
         return {"status": FAIL_LABEL, "info": f"Call MCP tool {tool_name} failed with error: {e}"}
 
 
-def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
-    """tool definition of starting a DG-TFT auto-modeling workflow (TOOL_NAME_START_WORKFLOW)"""
+def tool_dg_tft_run_def() -> dict[str, Any]:
+    """tool definition of DG-TFT run (prepare + start workflow, unified)"""
     return {
         "type": "function",
         "function": {
-            "name": TOOL_NAME_START_WORKFLOW,
+            "name": TOOL_NAME_DG_TFT_RUN,
             "description": (
-                f"Start a DG-TFT automatic modeling workflow for a given dataset directory. "
-                f"Returns immediately with a run_id; the workflow executes asynchronously "
-                f"in the background. Use `{TOOL_NAME_QUERY_WORKFLOW}` to monitor progress "
-                f"and `{TOOL_NAME_READ_WORKFLOW_REPORT}` to read the final report.\n"
-                f"The workflow includes: dataset validation, physical fit, base PKAN "
-                f"training, static training, hysteresis training (if hysteresis data is "
-                f"available), deployment validation, and a final report."
+                f"Launch a DG-TFT auto-modeling run with a single call. Handles data "
+                f"preparation (if needed), dataset inspection, config generation, and the "
+                f"full training pipeline (physical fit, PKAN, static, hysteresis, "
+                f"deployment). This is a BLOCKING call — it returns the final result.\n"
+                f"Use `{TOOL_NAME_DG_TFT_STATUS}` to check progress of a running job "
+                f"and `{TOOL_NAME_DG_TFT_REPORT}` to read the final report."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "dataset_dir": {
                         "type": "string",
-                        "description": "Absolute path to the static IV/CV dataset directory.",
+                        "description": "Absolute path to the dataset directory (raw or already in *_train.xlsx format).",
                     },
                     "hysteresis_dir": {
                         "type": "string",
@@ -2322,7 +2320,15 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
                     "overrides": {
                         "type": "object",
                         "description": "Optional. Dict of section.key=value to override in the generated model_config.ini. "
-                                       "Example: {\"runtime.minimal_run\": \"yes\"} for a fast validation-only run that skips quality checks.",
+                                       "Example: {\"runtime.minimal_run\": \"yes\"} for a fast validation-only run.",
+                    },
+                    "entry": {
+                        "type": "string",
+                        "enum": ["full", "verifier", "check-data"],
+                        "description": "Pipeline entry point. "
+                                       "\"full\" (default): Preparer → Verifier → check-data → ... — for raw data. "
+                                       "\"verifier\": skip Preparer, start from Verifier — for *_train.xlsx data that still needs validation. "
+                                       "\"check-data\": skip all agents, start directly from check-data — only when user explicitly requests to skip verification.",
                     },
                 },
                 "required": ["dataset_dir"],
@@ -2332,10 +2338,24 @@ def tool_start_dg_tft_workflow_def() -> dict[str, Any]:
     }
 
 
-def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
-                          board=None) -> dict[str, Any]:
-    """tool realization of starting a DG-TFT auto-modeling workflow (blocking, P5-T3/P6-T2)."""
-    func_name = TOOL_NAME_START_WORKFLOW
+def _check_prepared_output(output_dir: str) -> bool:
+    """Check if prepared data already exists and appears complete.
+
+    Returns True if CV_train.xlsx, at least one *_train.xlsx file,
+    worker_report.json, and manifest.json all exist.
+    """
+    import glob as _glob
+    train_files = _glob.glob(os.path.join(output_dir, "*_train.xlsx"))
+    report_exists = os.path.isfile(os.path.join(output_dir, "worker_report.json"))
+    manifest_exists = os.path.isfile(os.path.join(output_dir, "manifest.json"))
+    cv_exists = os.path.isfile(os.path.join(output_dir, "CV_train.xlsx"))
+    return len(train_files) > 0 and report_exists and manifest_exists and cv_exists
+
+
+def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
+               board=None) -> dict[str, Any]:
+    """unified DG-TFT run tool: prepare data (if needed) + launch workflow (blocking)"""
+    func_name = TOOL_NAME_DG_TFT_RUN
     try:
         pause_for_permission(progress)
         token, info = ask_permission_tui(ctx, func_name,
@@ -2349,11 +2369,15 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         hysteresis_dir = arguments.get("hysteresis_dir")
         device_name = arguments.get("device_name", "")
         overrides = arguments.get("overrides") or {}
+        skip_prep = arguments.get("skip_prep", False)
+        direct = arguments.get("direct", False)
+        entry = arguments.get("entry", "full")
 
         from src.workflow.dg_tft.manager import WorkflowManager
         from src.workflow.dg_tft.dataset_inspector import inspect_dataset
         from src.workflow.dg_tft.config_builder import build_runtime_config
         from src.workflow.dg_tft.orchestrator import run_workflow
+        from src.constants import PREP_SUBDIR_NAME, DG_TFT_RUNS_SUBDIR
         wm: WorkflowManager = ctx.workflow_man
 
         ok, run_id, now = wm.create_run(
@@ -2363,6 +2387,58 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
         )
         if not ok:
             return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
+
+        prep_info = None
+        if entry == "check-data":
+            pass  # no prep, no verifier — go straight to pipeline
+        elif entry == "verifier":
+            runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
+            run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
+            from src.workflow.dg_tft.data_preparer import run_verification_only
+            verify_result = run_verification_only(
+                ctx, dataset_dir, run_output_dir, run_id,
+                preferences="",
+            )
+            prep_info = {
+                "prep_id": run_id,
+                "ok": verify_result["ok"],
+                "issues": verify_result.get("issues", []),
+                "output_dir": verify_result.get("output_dir", dataset_dir),
+                "verification_only": True,
+            }
+            if verify_result["ok"]:
+                dataset_dir = verify_result["output_dir"]
+        else:  # entry == "full" (default)
+            runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
+            run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
+            attempt_1_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
+            existing = _check_prepared_output(attempt_1_dir)
+            if existing:
+                prep_id = wm.preparation_tracker.register_prep(dataset_dir, attempt_1_dir, run_id=run_id)
+                wm.preparation_tracker.update_prep(prep_id, True, ["[SKIP] previously prepared data found"])
+                prep_info = {"prep_id": prep_id, "skipped": True, "output_dir": attempt_1_dir}
+                dataset_dir = attempt_1_dir
+            else:
+                os.makedirs(attempt_1_dir, exist_ok=True)
+                max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
+                from src.workflow.dg_tft.data_preparer import run_data_preparation_with_retry
+                prep_result = run_data_preparation_with_retry(
+                    ctx, dataset_dir, str(run_output_dir),
+                    run_id,
+                    preferences="",
+                    max_retries=max_retries,
+                )
+                prep_ok = prep_result["ok"]
+                prep_issues = prep_result.get("issues", [])
+                final_output_dir = prep_result.get("output_dir", attempt_1_dir)
+                prep_id = wm.preparation_tracker.register_prep(dataset_dir, final_output_dir, run_id=run_id)
+                wm.preparation_tracker.update_prep(prep_id, prep_ok, prep_issues)
+                prep_info = {
+                    "prep_id": prep_id, "ok": prep_ok, "issues": prep_issues,
+                    "output_dir": final_output_dir,
+                }
+                if prep_ok:
+                    dataset_dir = final_output_dir
 
         profile, _ = inspect_dataset(ctx, dataset_dir, hysteresis_dir=hysteresis_dir)
         wm.set_dataset_profile(run_id, profile)
@@ -2374,43 +2450,46 @@ def start_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
 
         workflow_ok, summary = run_workflow(ctx, run_id, config_path, board=board)
 
-        sys_log.info("%s: workflow run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
-        return {
+        sys_log.info("%s: run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
+        result = {
             "status": SUCCESS_LABEL,
-            "info": f"Workflow completed. Run ID: {run_id}. Success: {workflow_ok}. {summary}",
+            "info": f"Run completed. Run ID: {run_id}. Success: {workflow_ok}. {summary}",
             "run_id": run_id,
             "created_at": now,
             "workflow_ok": workflow_ok,
             "summary": summary,
         }
+        if prep_info is not None:
+            result["prep"] = prep_info
+        return result
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
-        return {"status": FAIL_LABEL, "info": f"Start workflow failed: {e}"}
+        return {"status": FAIL_LABEL, "info": f"DG-TFT run failed: {e}"}
 
 
-def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
-    """tool definition of querying a DG-TFT workflow run or data prep status (TOOL_NAME_QUERY_WORKFLOW)"""
+def tool_dg_tft_status_def() -> dict[str, Any]:
+    """tool definition of querying a DG-TFT workflow run or data prep status"""
     return {
         "type": "function",
         "function": {
-            "name": TOOL_NAME_QUERY_WORKFLOW,
+            "name": TOOL_NAME_DG_TFT_STATUS,
             "description": (
-                "Query the status of a DG-TFT workflow run (by run_id) or a data preparation (by prep_id). "
-                "Pass either run_id or prep_id, not both. "
-                "For workflow runs, returns current stage, status, artifacts, metrics, warnings, errors. "
-                "For data preps, returns ok/failed status with issues list and output directory."
+                "Query the status of a DG-TFT workflow run (by run_id) or a data preparation "
+                "(by prep_id). Pass either run_id or prep_id, not both. "
+                "For runs, returns current stage, status, artifacts, metrics, warnings, errors. "
+                "For preps, returns ok/failed status with issues list and output directory."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "run_id": {
                         "type": "integer",
-                        "description": "The workflow run ID to query (use this to check a running/finished modeling job).",
+                        "description": "The workflow run ID to query.",
                     },
                     "prep_id": {
                         "type": "integer",
-                        "description": "The data preparation ID to query (use this to check a preparation job).",
+                        "description": "The data preparation ID to query.",
                     },
                 },
                 "required": [],
@@ -2420,9 +2499,9 @@ def tool_query_dg_tft_workflow_def() -> dict[str, Any]:
     }
 
 
-def query_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+def dg_tft_status(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
     """tool realization of querying a DG-TFT workflow run or data prep status"""
-    func_name = TOOL_NAME_QUERY_WORKFLOW
+    func_name = TOOL_NAME_DG_TFT_STATUS
     try:
         prep_id = arguments.get("prep_id")
         if prep_id is not None:
@@ -2475,18 +2554,18 @@ def query_dg_tft_workflow(arguments: dict[str, Any], ctx: AgentContext, progress
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
-        return {"status": FAIL_LABEL, "info": f"Query workflow failed: {e}"}
+        return {"status": FAIL_LABEL, "info": f"Query status failed: {e}"}
 
 
-def tool_read_dg_tft_workflow_report_def() -> dict[str, Any]:
-    """tool definition of reading a DG-TFT workflow final report (TOOL_NAME_READ_WORKFLOW_REPORT)"""
+def tool_dg_tft_report_def() -> dict[str, Any]:
+    """tool definition of reading a DG-TFT workflow final report"""
     return {
         "type": "function",
         "function": {
-            "name": TOOL_NAME_READ_WORKFLOW_REPORT,
+            "name": TOOL_NAME_DG_TFT_REPORT,
             "description": (
                 "Read the final report and summary files from a completed DG-TFT "
-                "workflow run's output directory. Use this after the workflow reaches "
+                "workflow run's output directory. Use this after the run reaches "
                 "DONE status to review modeling results."
             ),
             "parameters": {
@@ -2504,9 +2583,9 @@ def tool_read_dg_tft_workflow_report_def() -> dict[str, Any]:
     }
 
 
-def read_dg_tft_workflow_report(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
+def dg_tft_report(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
     """tool realization of reading a DG-TFT workflow final report"""
-    func_name = TOOL_NAME_READ_WORKFLOW_REPORT
+    func_name = TOOL_NAME_DG_TFT_REPORT
     try:
         run_id = arguments["run_id"]
         run = ctx.workflow_man.get_run(run_id)
@@ -2564,122 +2643,4 @@ def read_dg_tft_workflow_report(arguments: dict[str, Any], ctx: AgentContext, pr
     except Exception as e:
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
-        return {"status": FAIL_LABEL, "info": f"Read workflow report failed: {e}"}
-
-
-def tool_prepare_dg_tft_dataset_def() -> dict[str, Any]:
-    """tool definition of preparing a raw dataset for DG-TFT modeling (TOOL_NAME_PREPARE_DATASET)"""
-    return {
-        "type": "function",
-        "function": {
-            "name": TOOL_NAME_PREPARE_DATASET,
-            "description": (
-                "Prepare a raw dataset directory for DG-TFT auto-modeling. "
-                "A worker subagent converts raw CSV/XLSX files into standardized "
-                "*_train.xlsx format, then an automated verification runs. "
-                "This is a BLOCKING call — it returns the final result with ok and issues. "
-                f"After success, call `{TOOL_NAME_START_WORKFLOW}` with the returned output_dir as dataset_dir."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "raw_dataset_dir": {
-                        "type": "string",
-                        "description": "Absolute path to the raw dataset directory containing CSV/XLSX measurement files.",
-                    },
-                },
-                "required": ["raw_dataset_dir"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def _check_prepared_output(output_dir: str) -> bool:
-    """Check if prepared data already exists and appears complete.
-
-    Returns True if CV_train.xlsx, at least one *_train.xlsx file,
-    worker_report.json, and manifest.json all exist.
-    """
-    import glob as _glob
-    train_files = _glob.glob(os.path.join(output_dir, "*_train.xlsx"))
-    report_exists = os.path.isfile(os.path.join(output_dir, "worker_report.json"))
-    manifest_exists = os.path.isfile(os.path.join(output_dir, "manifest.json"))
-    cv_exists = os.path.isfile(os.path.join(output_dir, "CV_train.xlsx"))
-    return len(train_files) > 0 and report_exists and manifest_exists and cv_exists
-
-
-def prepare_dg_tft_dataset(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> dict[str, Any]:
-    """tool realization of preparing a raw dataset for DG-TFT modeling"""
-    func_name = TOOL_NAME_PREPARE_DATASET
-    try:
-        pause_for_permission(progress)
-        token, info = ask_permission_tui(ctx, func_name,
-                                         f"raw dataset: {arguments['raw_dataset_dir']}", progress.console)
-        resume_from_permission(progress)
-        if not token:
-            reason = f"Permission denied" + (f": {info}" if info else "")
-            return {"status": DENIED_LABEL, "info": reason}
-
-        raw_dataset_dir = arguments["raw_dataset_dir"]
-        wm = ctx.workflow_man
-
-        from src.workflow.dg_tft.data_preparer import _PREP_WORKER_REPORT_NAME
-        from src.constants import PREP_SUBDIR_NAME, DG_TFT_RUNS_SUBDIR
-
-        # Create a pending run to get a unified run_id for prep
-        ok, run_id, now = wm.create_run(dataset_dir=raw_dataset_dir)
-        if not ok:
-            return {"status": FAIL_LABEL, "info": "Failed to create workflow run for prep"}
-
-        # session/<uuid>/runs/run_{run_id}/
-        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-        run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id}")
-
-        # Check if attempt_1 output already exists
-        attempt_1_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
-        existing = _check_prepared_output(attempt_1_dir)
-        if existing:
-            prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, attempt_1_dir, run_id=run_id)
-            wm.preparation_tracker.update_prep(prep_id, True, ["[SKIP] previously prepared data found"])
-            return {
-                "status": SUCCESS_LABEL,
-                "info": f"Data already prepared. Run ID / Prep ID: {run_id}. Skipping re-preparation.",
-                "prep_id": prep_id,
-                "run_id": run_id,
-                "output_dir": attempt_1_dir,
-                "ok": True,
-                "issues": ["[SKIP] previously prepared data found"],
-            }
-
-        os.makedirs(attempt_1_dir, exist_ok=True)
-
-        max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
-        from src.workflow.dg_tft.data_preparer import run_data_preparation_with_retry
-        prep_result = run_data_preparation_with_retry(
-            ctx, raw_dataset_dir, str(run_output_dir),
-            run_id,
-            preferences="",
-            max_retries=max_retries,
-        )
-
-        ok = prep_result["ok"]
-        issues = prep_result.get("issues", [])
-        final_output_dir = prep_result.get("output_dir", attempt_1_dir)
-        prep_id = wm.preparation_tracker.register_prep(raw_dataset_dir, final_output_dir, run_id=run_id)
-        wm.preparation_tracker.update_prep(prep_id, ok, issues)
-
-        sys_log.info("%s: data prep %d (run %d) done: ok=%s issues=%s", func_name, prep_id, run_id, ok, issues)
-        return {
-            "status": SUCCESS_LABEL,
-            "info": f"Data preparation complete. Run ID / Prep ID: {run_id}. OK: {ok}.",
-            "prep_id": prep_id,
-            "run_id": run_id,
-            "output_dir": final_output_dir,
-            "ok": ok,
-            "issues": issues,
-        }
-    except Exception as e:
-        sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
-        progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red")
-        return {"status": FAIL_LABEL, "info": f"Data preparation failed: {e}"}
+        return {"status": FAIL_LABEL, "info": f"Read report failed: {e}"}

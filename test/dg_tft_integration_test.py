@@ -155,7 +155,7 @@ class TestWorkflowFullLifecycle(unittest.TestCase):
             wm.update_stage(rid, "train-hysteresis", WorkflowStatus.RUNNING,
                             StageResult(ok=True, stage="train-hysteresis",
                                         summary="Hysteresis model trained",
-                                        outputs={"va": "04_hysteresis/model.va"}))
+                                        outputs={"va": "04_hysteresis/dg_tft_dynamic_srh.va"}))
 
         # Phase: final-report
         wm.update_stage(rid, "final-report", WorkflowStatus.RUNNING,

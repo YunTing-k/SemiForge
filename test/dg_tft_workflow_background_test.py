@@ -304,8 +304,8 @@ class TestToolResultEdgeCases(unittest.TestCase):
                         stage_result=sr)
         wm.mark_done(run_id)
 
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {"run_id": run_id}, self.ctx, self._mock_progress(),
         )
         self.assertEqual(result["status"], "SUCCESS")
@@ -317,31 +317,33 @@ class TestToolResultEdgeCases(unittest.TestCase):
         profile = DatasetProfile(static_ok=True, has_hysteresis=True)
         wm.set_dataset_profile(run_id, profile)
 
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {"run_id": run_id}, self.ctx, self._mock_progress(),
         )
         self.assertTrue(result["hysteresis_enabled"])
 
+    @patch("src.workflow.dg_tft.data_preparer.run_verification_only")
     @patch("src.workflow.dg_tft.orchestrator.run_workflow")
     @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
     @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    def test_start_workflow_failure_returns_success_with_details(
+    def test_dg_tft_run_failure_returns_success_with_details(
         self, mock_resume, mock_pause, mock_ask,
-        mock_inspect, mock_build, mock_run_wf,
+        mock_inspect, mock_build, mock_run_wf, mock_verify,
     ):
-        from src.tool.tool_def import start_dg_tft_workflow
+        from src.tool.tool_def import dg_tft_run
 
         mock_ask.return_value = (True, None)
         mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
         mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
         mock_run_wf.return_value = (False, "pipeline crashed")
+        mock_verify.return_value = {"ok": True, "output_dir": "/tmp/ds", "issues": []}
 
-        result = start_dg_tft_workflow(
-            {"dataset_dir": "/tmp/ds"}, self.ctx, self._mock_progress(),
+        result = dg_tft_run(
+            {"dataset_dir": "/tmp/ds", "entry": "verifier"}, self.ctx, self._mock_progress(),
         )
         self.assertEqual(result["status"], "SUCCESS")
         self.assertFalse(result.get("workflow_ok"))

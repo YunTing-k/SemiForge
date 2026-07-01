@@ -172,11 +172,10 @@ class AgentContext:
             TOOL_NAME_SKILL: False,
             TOOL_NAME_WEB_FETCH: False,
             TOOL_NAME_WEB_SEARCH: False,
-            # DG-TFT workflow tools
-            TOOL_NAME_PREPARE_DATASET: False,
-            TOOL_NAME_START_WORKFLOW: False,
-            TOOL_NAME_QUERY_WORKFLOW: False,
-            TOOL_NAME_READ_WORKFLOW_REPORT: False,
+            # DG-TFT unified tools
+            TOOL_NAME_DG_TFT_RUN: False,
+            TOOL_NAME_DG_TFT_STATUS: False,
+            TOOL_NAME_DG_TFT_REPORT: False,
         }
 
 

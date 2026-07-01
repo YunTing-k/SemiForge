@@ -26,7 +26,6 @@ ARTIFACT_KEY_DATASET_VALIDATION: str = "dataset_validation"
 ARTIFACT_KEY_FITTED_PARAMS: str = "fitted_params"
 ARTIFACT_KEY_PKAN_MODEL: str = "pkan_model"
 ARTIFACT_KEY_STATIC_MODEL_CKPT: str = "static_model_ckpt"
-ARTIFACT_KEY_STATIC_MODEL_VA: str = "static_model_va"
 ARTIFACT_KEY_HYSTERESIS_VA: str = "hysteresis_va"
 ARTIFACT_KEY_HYSTERESIS_INC: str = "hysteresis_inc"
 ARTIFACT_KEY_RUN_SUMMARY: str = "run_summary"
@@ -37,10 +36,9 @@ ARTIFACT_FILENAMES: dict[str, str] = {
     ARTIFACT_KEY_DATASET_VALIDATION: "dataset_validation.json",
     ARTIFACT_KEY_FITTED_PARAMS: "fitted_params.json",
     ARTIFACT_KEY_PKAN_MODEL: "pkan_torch_model.pt",
-    ARTIFACT_KEY_STATIC_MODEL_CKPT: "static_model_checkpoint.pt",
-    ARTIFACT_KEY_STATIC_MODEL_VA: "model.va",
-    ARTIFACT_KEY_HYSTERESIS_VA: "dg_tft_dynamic.va",
-    ARTIFACT_KEY_HYSTERESIS_INC: "dg_tft_dynamic.inc",
+    ARTIFACT_KEY_STATIC_MODEL_CKPT: "v93_safe_residual_state.pt",
+    ARTIFACT_KEY_HYSTERESIS_VA: "dg_tft_dynamic_srh.va",
+    ARTIFACT_KEY_HYSTERESIS_INC: "dg_tft_dynamic_srh.inc",
     ARTIFACT_KEY_RUN_SUMMARY: RUN_SUMMARY_MD_NAME,
     ARTIFACT_KEY_ARTIFACT_MANIFEST: ARTIFACT_MANIFEST_NAME,
 }
@@ -54,10 +52,10 @@ STAGE_ARTIFACTS: dict[str, dict[str, list[str]]] = {
         "01_physical_kernel": [ARTIFACT_KEY_FITTED_PARAMS],
     },
     "train-static": {
-        "03_full_model": [ARTIFACT_KEY_STATIC_MODEL_CKPT, ARTIFACT_KEY_STATIC_MODEL_VA],
+        "03_full_model": [ARTIFACT_KEY_STATIC_MODEL_CKPT],
     },
     "train-hysteresis": {
-        "04_hysteresis": [ARTIFACT_KEY_HYSTERESIS_VA, ARTIFACT_KEY_HYSTERESIS_INC],
+        "04_hysteresis/srh_top2_regime_banks/combined": [ARTIFACT_KEY_HYSTERESIS_VA, ARTIFACT_KEY_HYSTERESIS_INC],
     },
 }
 

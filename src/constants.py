@@ -137,11 +137,10 @@ TOOL_NAME_SKILL: str = "skill"
 TOOL_NAME_WEB_FETCH: str = "web_fetch"
 TOOL_NAME_WEB_SEARCH: str = "web_search"
 TOOL_NAME_CALL_MCP: str = "call_mcp"
-# DG-TFT workflow tools
-TOOL_NAME_START_WORKFLOW: str = "start_dg_tft_workflow"
-TOOL_NAME_QUERY_WORKFLOW: str = "query_dg_tft_workflow"
-TOOL_NAME_READ_WORKFLOW_REPORT: str = "read_dg_tft_workflow_report"
-TOOL_NAME_PREPARE_DATASET: str = "prepare_dg_tft_dataset"
+# DG-TFT unified tools
+TOOL_NAME_DG_TFT_RUN: str = "dg_tft_run"
+TOOL_NAME_DG_TFT_STATUS: str = "dg_tft_status"
+TOOL_NAME_DG_TFT_REPORT: str = "dg_tft_report"
 """Tool calls params"""
 ASK_USER_QUESTION_MAX_QUESTION: int = 4
 ASK_USER_QUESTION_MIN_QUESTION: int = 1

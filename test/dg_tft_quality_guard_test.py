@@ -280,11 +280,11 @@ class TestThresholds(unittest.TestCase):
         self.assertEqual(get_max_retries({"DG_TFT_QUALITY_MAX_RETRIES": -1}), 0)
 
     def test_threshold_key_mapping_consistency(self):
-        for stage_name, cfg_key in _STAGE_THRESHOLD_KEYS.items():
-            self.assertTrue(cfg_key.startswith(_CFG_PREFIX))
-            metrics = parse_metrics.__wrapped__ = None
-            primary = get_primary_metric(stage_name)
-            self.assertTrue(primary, f"Primary metric missing for {stage_name}")
+        for stage_name, metric_map in _STAGE_THRESHOLD_KEYS.items():
+            for metric_key, cfg_key in metric_map.items():
+                self.assertTrue(cfg_key.startswith(_CFG_PREFIX),
+                                f"Config key {cfg_key} for {stage_name}.{metric_key} should start with {_CFG_PREFIX}")
+                self.assertTrue(metric_key, f"Metric key missing for {stage_name}")
 
 
 # ────────────────────────────────────────────────────────────────────

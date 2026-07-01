@@ -16,10 +16,9 @@ from src.workflow.dg_tft.schema import (
 )
 from src.workflow.dg_tft.manager import WorkflowManager
 from src.constants import (
-    TOOL_NAME_START_WORKFLOW,
-    TOOL_NAME_QUERY_WORKFLOW,
-    TOOL_NAME_READ_WORKFLOW_REPORT,
-    TOOL_NAME_PREPARE_DATASET,
+    TOOL_NAME_DG_TFT_RUN,
+    TOOL_NAME_DG_TFT_STATUS,
+    TOOL_NAME_DG_TFT_REPORT,
     SUCCESS_LABEL,
     FAIL_LABEL,
     DENIED_LABEL,
@@ -65,120 +64,124 @@ class TestTaskBoardLinkage(unittest.TestCase):
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    def test_start_workflow_fails_without_dataset_dir(
+    def test_dg_tft_run_fails_without_dataset_dir(
         self, mock_resume, mock_pause, mock_ask,
         mock_inspect, mock_build, mock_run_wf,
     ):
-        from src.tool.tool_def import start_dg_tft_workflow
+        from src.tool.tool_def import dg_tft_run
 
         mock_ask.return_value = (True, None)
-        result = start_dg_tft_workflow(
+        result = dg_tft_run(
             {}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], FAIL_LABEL)
 
+    @patch("src.workflow.dg_tft.data_preparer.run_verification_only")
     @patch("src.workflow.dg_tft.orchestrator.run_workflow")
     @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
     @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    def test_start_workflow_board_not_required(
+    def test_dg_tft_run_board_not_required(
         self, mock_resume, mock_pause, mock_ask,
-        mock_inspect, mock_build, mock_run_wf,
+        mock_inspect, mock_build, mock_run_wf, mock_verify,
     ):
-        from src.tool.tool_def import start_dg_tft_workflow
+        from src.tool.tool_def import dg_tft_run
 
         mock_ask.return_value = (True, None)
         mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
         mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
         mock_run_wf.return_value = (True, "all done")
+        mock_verify.return_value = {"ok": True, "output_dir": "/tmp/ds", "issues": []}
 
-        result = start_dg_tft_workflow(
-            {"dataset_dir": "/tmp/ds"}, self.ctx, _make_mock_progress(),
+        result = dg_tft_run(
+            {"dataset_dir": "/tmp/ds", "entry": "verifier"}, self.ctx, _make_mock_progress(),
             board=None,
         )
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIn("run_id", result)
 
+    @patch("src.workflow.dg_tft.data_preparer.run_verification_only")
     @patch("src.workflow.dg_tft.orchestrator.run_workflow")
     @patch("src.workflow.dg_tft.config_builder.build_runtime_config")
     @patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset")
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    def test_start_workflow_with_overrides(
+    def test_dg_tft_run_with_overrides(
         self, mock_resume, mock_pause, mock_ask,
-        mock_inspect, mock_build, mock_run_wf,
+        mock_inspect, mock_build, mock_run_wf, mock_verify,
     ):
-        from src.tool.tool_def import start_dg_tft_workflow
+        from src.tool.tool_def import dg_tft_run
 
         mock_ask.return_value = (True, None)
         mock_inspect.return_value = (DatasetProfile(static_ok=True), {})
         mock_build.return_value = {"config_path": "/tmp/cfg.ini"}
         mock_run_wf.return_value = (True, "all done")
+        mock_verify.return_value = {"ok": True, "output_dir": "/tmp/ds", "issues": []}
 
         overrides = {"full_model.epochs": "1000", "physical_fit.max_nfev_scale": "2.0"}
-        result = start_dg_tft_workflow(
-            {"dataset_dir": "/tmp/ds", "overrides": overrides},
+        result = dg_tft_run(
+            {"dataset_dir": "/tmp/ds", "entry": "verifier", "overrides": overrides},
             self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], SUCCESS_LABEL)
 
-    def test_prepare_dataset_schema(self):
-        from src.tool.tool_def import tool_prepare_dg_tft_dataset_def
-        schema = tool_prepare_dg_tft_dataset_def()
+    def test_dg_tft_run_schema(self):
+        from src.tool.tool_def import tool_dg_tft_run_def
+        schema = tool_dg_tft_run_def()
         fn = schema["function"]
-        self.assertEqual(fn["name"], TOOL_NAME_PREPARE_DATASET)
-        self.assertIn("raw_dataset_dir", fn["parameters"]["properties"])
-        self.assertIn("raw_dataset_dir", fn["parameters"]["required"])
+        self.assertEqual(fn["name"], TOOL_NAME_DG_TFT_RUN)
+        self.assertIn("dataset_dir", fn["parameters"]["properties"])
+        self.assertIn("dataset_dir", fn["parameters"]["required"])
         self.assertEqual(
-            fn["parameters"]["properties"]["raw_dataset_dir"]["type"], "string"
+            fn["parameters"]["properties"]["dataset_dir"]["type"], "string"
         )
 
     @patch("src.tool.tool_def.ask_permission_tui")
     @patch("src.tool.tool_def.pause_for_permission")
     @patch("src.tool.tool_def.resume_from_permission")
-    def test_prepare_dataset_permission_denied(
+    def test_dg_tft_run_permission_denied(
         self, mock_resume, mock_pause, mock_ask,
     ):
-        from src.tool.tool_def import prepare_dg_tft_dataset
+        from src.tool.tool_def import dg_tft_run
 
         mock_ask.return_value = (False, "permission denied by user")
-        result = prepare_dg_tft_dataset(
-            {"raw_dataset_dir": "/tmp/raw_data"}, self.ctx, _make_mock_progress(),
+        result = dg_tft_run(
+            {"dataset_dir": "/tmp/raw_data"}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], DENIED_LABEL)
 
-    def test_query_prep_not_found(self):
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+    def test_status_prep_not_found(self):
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {"prep_id": 99999}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], FAIL_LABEL)
         self.assertIn("not found", result["info"].lower())
 
-    def test_query_prep_found(self):
+    def test_status_prep_found(self):
         tracker = self.ctx.workflow_man.preparation_tracker
         tracker.register_prep("/tmp/raw", "/tmp/out")
         tracker.update_prep(1, True, ["minor warning"])
 
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {"prep_id": 1}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertTrue(result["ok"])
         self.assertIn("minor warning", result["issues"])
 
-    def test_query_neither_run_id_nor_prep_id(self):
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+    def test_status_neither_run_id_nor_prep_id(self):
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], FAIL_LABEL)
 
-    def test_read_report_with_stage_results(self):
+    def test_report_with_stage_results(self):
         wm = self.ctx.workflow_man
         ok, run_id, _ = wm.create_run(
             dataset_dir="/tmp/rds", output_root="/tmp/out",
@@ -191,23 +194,23 @@ class TestTaskBoardLinkage(unittest.TestCase):
         wm.add_warning(run_id, "low sample count")
         wm.mark_done(run_id)
 
-        from src.tool.tool_def import read_dg_tft_workflow_report
-        result = read_dg_tft_workflow_report(
+        from src.tool.tool_def import dg_tft_report
+        result = dg_tft_report(
             {"run_id": run_id}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], SUCCESS_LABEL)
         self.assertIn("warnings", result)
         self.assertIn("low sample count", result["warnings"])
 
-    def test_read_report_failed_run(self):
+    def test_report_failed_run(self):
         wm = self.ctx.workflow_man
         ok, run_id, _ = wm.create_run(
             dataset_dir="/tmp/fail_ds", output_root="/tmp/out",
         )
         wm.mark_failed(run_id, "pipeline crashed at fit-physical")
 
-        from src.tool.tool_def import read_dg_tft_workflow_report
-        result = read_dg_tft_workflow_report(
+        from src.tool.tool_def import dg_tft_report
+        result = dg_tft_report(
             {"run_id": run_id}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], SUCCESS_LABEL)
@@ -461,16 +464,16 @@ class TestDispatchFallback(unittest.TestCase):
         self.assertIn("undefined", result["info"].lower())
 
     def test_query_with_non_numeric_run_id(self):
-        from src.tool.tool_def import query_dg_tft_workflow
-        result = query_dg_tft_workflow(
+        from src.tool.tool_def import dg_tft_status
+        result = dg_tft_status(
             {"run_id": "not_an_int"}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], FAIL_LABEL)
         self.assertIn("not found", result["info"].lower())
 
     def test_read_report_with_bad_run_id_type(self):
-        from src.tool.tool_def import read_dg_tft_workflow_report
-        result = read_dg_tft_workflow_report(
+        from src.tool.tool_def import dg_tft_report
+        result = dg_tft_report(
             {"run_id": "not_an_int"}, self.ctx, _make_mock_progress(),
         )
         self.assertEqual(result["status"], FAIL_LABEL)
@@ -483,25 +486,25 @@ class TestDispatchFallback(unittest.TestCase):
 
 class TestPromptRoutingIntegration(unittest.TestCase):
 
-    def test_routing_prompt_mentions_workflow_before_manual_bash(self):
+    def test_routing_prompt_mentions_dg_tft_before_manual_bash(self):
         from src.context.prompt import get_agent_guideline_prompts
         prompts = get_agent_guideline_prompts()
         content = prompts[0]["content"]
 
         self.assertIn("DG-TFT Workflow Routing", content)
-        self.assertIn(TOOL_NAME_START_WORKFLOW, content)
+        self.assertIn(TOOL_NAME_DG_TFT_RUN, content)
         workflow_index = content.index("DG-TFT Workflow Routing")
-        manual_index = content.index("instead of manually")
-        self.assertLess(workflow_index, manual_index,
-                        "Workflow routing section should appear before manual bash reminder")
+        user_req_index = content.index("User Requirements")
+        self.assertLess(workflow_index, user_req_index,
+                        "Workflow routing section should appear before user requirements section")
 
-    def test_prompt_references_all_four_workflow_tools(self):
+    def test_prompt_references_all_three_dg_tft_tools(self):
         from src.context.prompt import get_agent_guideline_prompts
         prompts = get_agent_guideline_prompts()
         content = prompts[0]["content"]
 
-        for tool_name in [TOOL_NAME_START_WORKFLOW, TOOL_NAME_QUERY_WORKFLOW,
-                          TOOL_NAME_READ_WORKFLOW_REPORT, TOOL_NAME_PREPARE_DATASET]:
+        for tool_name in [TOOL_NAME_DG_TFT_RUN, TOOL_NAME_DG_TFT_STATUS,
+                          TOOL_NAME_DG_TFT_REPORT]:
             self.assertIn(tool_name, content,
                           f"Prompt should reference {tool_name}")
 
@@ -509,7 +512,7 @@ class TestPromptRoutingIntegration(unittest.TestCase):
         from src.context.prompt import get_agent_guideline_prompts
         prompts = get_agent_guideline_prompts()
         content = prompts[0]["content"]
-        self.assertIn("instead of manually", content.lower())
+        self.assertIn("auto-modeling", content.lower())
 
 
 if __name__ == "__main__":

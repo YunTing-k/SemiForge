@@ -184,6 +184,7 @@ def run_workflow(
 
         if _noop_stage(sd):
             sys_log.info("Stage [%s] is a no-op placeholder, skipping", sd.name)
+            _console(ctx, f"  [{MAJOR_COLOR2}]{idx}/{len(stages)}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}] [bright_black](report generation handled by orchestrator)[/bright_black]")
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
             continue
 
@@ -323,17 +324,21 @@ def _finalize_run(
     prep_info = _get_prep_info(ctx, run.prep_id)
     if prep_info is None and run.run_id is not None:
         prep_info = _get_prep_info(ctx, run.run_id)
+
+    if failed:
+        wm.mark_failed(run_id, failed_error)
+    else:
+        wm.mark_done(run_id)
+
     run_data = run.to_dict()
     build_and_write_reports(run_data, output_dir, prep_info=prep_info)
 
     if failed:
-        wm.mark_failed(run_id, failed_error)
         sys_log.error("Workflow run %d failed at %s", run_id, failed_stage)
         _console(ctx, f"[{WF_STATUS_ERROR}]Run #{run_id} FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}[/{WF_STATUS_ERROR}]"
                  f" [bright_black]({elapsed:.0f}s)[/bright_black]")
         _console_summary(ctx, run_id, output_dir, failed=True, failed_stage=failed_stage, failed_error=failed_error)
     else:
-        wm.mark_done(run_id)
         sys_log.info("Workflow run %d completed successfully", run_id)
         _console(ctx, f"[{WF_STATUS_SUCCESS}]Run #{run_id} DONE[/{WF_STATUS_SUCCESS}] [bright_black]({elapsed:.0f}s)[/bright_black]")
         _console_summary(ctx, run_id, output_dir, failed=False)

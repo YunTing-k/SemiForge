@@ -349,8 +349,7 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         artifacts_to_create = [
             ("dataset_validation.json", ""),
             ("fitted_params.json", "01_physical_kernel"),
-            ("static_model_checkpoint.pt", "03_full_model"),
-            ("model.va", "03_full_model"),
+            ("v93_safe_residual_state.pt", "03_full_model"),
         ]
         for fname, subdir in artifacts_to_create:
             target_dir = os.path.join(self.tmpdir, "output", subdir)

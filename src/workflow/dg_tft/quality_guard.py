@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 
 from .schema import StageName
-from .metrics_parser import get_primary_metric
+from .metrics_parser import get_primary_metric  # used by orchestrator
 
 sys_log = logging.getLogger("logger")
 
@@ -35,10 +35,17 @@ sys_log = logging.getLogger("logger")
 
 _CFG_PREFIX: str = "DG_TFT_QUALITY_"
 
-_STAGE_THRESHOLD_KEYS: dict[str, str] = {
-    StageName.FIT_PHYSICAL: _CFG_PREFIX + "PHYSICAL_IV_RMS_MAX",
-    StageName.TRAIN_STATIC: _CFG_PREFIX + "STATIC_IV_RMS_MAX",
-    StageName.TRAIN_HYSTERESIS: _CFG_PREFIX + "HYSTERESIS_RMS_MAX",
+_STAGE_THRESHOLD_KEYS: dict[str, dict[str, str]] = {
+    StageName.FIT_PHYSICAL: {
+        "metrics_summary.iv_rms_log10_error_dec": _CFG_PREFIX + "PHYSICAL_IV_RMS_MAX",
+    },
+    StageName.TRAIN_STATIC: {
+        "residual_iv_rms": _CFG_PREFIX + "STATIC_IV_RMS_MAX",
+        "residual_cv_rms": _CFG_PREFIX + "STATIC_CV_RMS_MAX",
+    },
+    StageName.TRAIN_HYSTERESIS: {
+        "step_log_rmse_median": _CFG_PREFIX + "HYSTERESIS_RMS_MAX",
+    },
 }
 
 _CFG_MAX_RETRIES: str = _CFG_PREFIX + "MAX_RETRIES"
@@ -235,7 +242,6 @@ def assess_quality(
         ``failures`` lists human-readable descriptions of violations.
     """
     failures: list[str] = []
-    primary = get_primary_metric(stage_name)
     for metric_name, value in metrics.items():
         limit = thresholds.get(metric_name)
         if limit is None:
@@ -258,15 +264,15 @@ def get_quality_thresholds(agent_configs: dict) -> dict[str, float]:
 
     Returns a flat dict keyed by the full dotted metric key path
     (e.g. ``metrics_summary.iv_rms_log10_error_dec``).
+    Multiple metrics per stage are supported.
     """
     result: dict[str, float] = {}
-    for stage_name, cfg_key in _STAGE_THRESHOLD_KEYS.items():
-        val = agent_configs.get(cfg_key)
-        if val is None:
-            continue
-        primary = get_primary_metric(stage_name)
-        if primary:
-            result[primary] = float(val)
+    for stage_name, metric_map in _STAGE_THRESHOLD_KEYS.items():
+        for metric_key, cfg_key in metric_map.items():
+            val = agent_configs.get(cfg_key)
+            if val is None:
+                continue
+            result[metric_key] = float(val)
     return result
 
 

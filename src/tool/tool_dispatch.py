@@ -94,17 +94,14 @@ def call_tools(func_name: str, arguments: dict[str, Any], ctx: AgentContext, boa
         elif func_name == TOOL_NAME_WEB_SEARCH:
             results = tool_def.web_search(arguments, ctx, progress)
             user_addon = None
-        elif func_name == TOOL_NAME_PREPARE_DATASET:
-            results = tool_def.prepare_dg_tft_dataset(arguments, ctx, progress)
+        elif func_name == TOOL_NAME_DG_TFT_RUN:
+            results = tool_def.dg_tft_run(arguments, ctx, progress, board)
             user_addon = None
-        elif func_name == TOOL_NAME_START_WORKFLOW:
-            results = tool_def.start_dg_tft_workflow(arguments, ctx, progress, board)
+        elif func_name == TOOL_NAME_DG_TFT_STATUS:
+            results = tool_def.dg_tft_status(arguments, ctx, progress)
             user_addon = None
-        elif func_name == TOOL_NAME_QUERY_WORKFLOW:
-            results = tool_def.query_dg_tft_workflow(arguments, ctx, progress)
-            user_addon = None
-        elif func_name == TOOL_NAME_READ_WORKFLOW_REPORT:
-            results = tool_def.read_dg_tft_workflow_report(arguments, ctx, progress)
+        elif func_name == TOOL_NAME_DG_TFT_REPORT:
+            results = tool_def.dg_tft_report(arguments, ctx, progress)
             user_addon = None
         elif func_name in ctx.mcp_router.tool_registry:
             results = tool_def.call_mcp(func_name, arguments, ctx, progress)

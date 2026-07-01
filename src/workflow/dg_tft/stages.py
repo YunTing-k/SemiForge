@@ -59,7 +59,7 @@ _CORE_STAGES: list[StageDef] = [
         required=True,
         depends_on=[StageName.FIT_PHYSICAL],
         expected_output_subdir="03_full_model",
-        key_artifacts=["v90_safe_residual_state.pt", "v90_veriloga_residual_include.va"],
+        key_artifacts=["v93_safe_residual_state.pt"],
         timeout=7200,
     ),
     StageDef(

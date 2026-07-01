@@ -217,7 +217,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
-### 2026-07-01 | 参数试次记录 (3.6)
+#### 2026-07-01 | 参数试次记录 (3.6)
 
 **`operation_log.py`** — `StageAttemptLog` + `OperationLog` 基础组件：
 
@@ -241,7 +241,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
-## 2026-07-01 | 数据输入阶段 (TODO 2.5.1–2.5.11) — Version 1.2.0
+### 2026-07-01 | 数据输入阶段 (TODO 2.5.1–2.5.11) — Version 1.2.0
 
 ### 2.5.1 handoff 数据结构 (`schema.py`)
 - `PrepHandoff` — Preparer 到 Verifier 的结构化交接信息，含 `observations` / `actions` / `potential_issues` / `output_manifest`
@@ -303,7 +303,7 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
-## 2026-07-01 | TECoSimAgent v0.2.6 同步升级 + 数据准备修复
+### 2026-07-01 | TECoSimAgent v0.2.6 同步升级 + 数据准备修复
 
 ### TECoSimAgent 同步 (commit `72c8038`)
 
@@ -344,7 +344,6 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 - `dg_tft_preparer_test.py`：mock 目标更新 + SESSION_PATH 临时目录 + MagicMock 泄漏修复
 - TODO.md：新增开发原则第 8 条「测试零残留」
 - 864 tests pass，session/ 目录无残留
-
 ---
 
 ## 经验总结
@@ -373,7 +372,7 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 
 ---
 
-## 2026-07-01 | INI 参数审计与暴露 (3.2)
+### 2026-07-01 | INI 参数审计与暴露 (3.2)
 
 ### 参数定义表 (`param_defs.py`)
 - `PHYSICAL_FIT_PARAMS`：3 个参数（max_iv_points / max_cv_points / max_nfev_scale）
@@ -408,7 +407,7 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 
 ---
 
-## 2026-07-01 | DG-TFT 引擎 v90→v95 合并
+### 2026-07-01 | DG-TFT 引擎 v90→v95 合并
 
 ### 引擎升级
 - `dg_tft_full_model.py`：13.6K→19K 行。核心新增：基础 IV PKAN 训练管线（原独立 `train_base_pkan.py`）、6 个硬精度 gate、~25 新 CLI 参数、CV charge PKAN 拆分、`CompactKAN` 重命名、符号引擎扩展、safe scale search
@@ -499,3 +498,63 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 
 **新的开发顺序**：
 0-5 ✅ → 6. Tool 统一 → 7. while+pointer + Agent A → 8. Agent 基础设施 → 9. Agent B → 10. Agent C → 11. Agent D → 12. Agent E
+
+---
+
+### 2026-07-01 | Step 6 Tool 统一 + 质量门多指标 + Agent 决策设计
+
+### Step 6: Tool 统一 (1.5)
+
+**4→3 tool 收敛**：
+- `prepare_dg_tft_dataset` + `start_dg_tft_workflow` → **`dg_tft_run`**
+- `query_dg_tft_workflow` → **`dg_tft_status`**
+- `read_dg_tft_workflow_report` → **`dg_tft_report`**
+
+**入口统一为 `entry` enum**（替代 `skip_prep`/`direct` 两个 bool）：
+- `entry="full"` (默认)：Preparer→Verifier→pipeline（原始数据）
+- `entry="verifier"`：Verifier→pipeline（train-ready 数据，需验证）
+- `entry="check-data"`：直跑 pipeline（用户明确跳过检查）
+
+**受影响文件**：
+- `constants.py`：旧 4 常量 → 新 3 常量（TOOL_NAME_DG_TFT_RUN/STATUS/REPORT）
+- `tool_def.py`：旧 4 def + 4 handler → 新 3 def + 3 handler，`dg_tft_run` 统一 merge 预处理+建模
+- `tool_dispatch.py`、`command.py`、`prompt.py`、`agent_context.py`：同步更新
+- 测试 6 个文件：全部迁移到新 tool/entry 命名
+
+### Bug 修复
+
+1. **`run_id` padding 不一致**：`dg_tft_run` 用 `f"run_{run_id}"`（→ `run_1`），`config_builder` 用 `f"run_{run_id:04d}"`（→ `run_0001`）→ 导致 verifier 产物与 workflow 产物分离。统一为 `:04d`。
+
+2. **RUN_SUMMARY 状态显示 RUNNING**：`_finalize_run` 在 `mark_done` 之前调了 `build_and_write_reports`，导致 report 快照到旧状态。改为先 mark_done 再 build。
+
+3. **TUI 只显示 4/5**：final-report no-op 被静默跳过 → 加占位打印 `✓ (report generation handled by orchestrator)`。
+
+4. **Artifact 文件名过期**：v90→v93 engine 升级后 checkpoint 名变了（`v90_safe_residual_state.pt`→`v93_safe_residual_state.pt`），且不再单独产出 `.va` 文件。同步 `stages.py` `key_artifacts`、`artifacts.py` `ARTIFACT_FILENAMES` + `STAGE_ARTIFACTS`、hysteresis 嵌套路径。
+
+### Verifier 增强
+
+- Prompt 从"抽查代表性文件"→"逐个检查所有 `*_train.xlsx` 文件"
+- `operation_log.json` 记录 verifier 的 `agent_decision`（完整 IV families + CV sheets + it/ 文件审计）
+
+### 质量门升级
+
+**从单指标 → 多指标**：`_STAGE_THRESHOLD_KEYS` 类型从 `dict[str, str]` → `dict[str, dict[str, str]]`。
+- Train-static 同时检查 `residual_iv_rms` (0.35) + `residual_cv_rms` (0.06)
+- `DG_TFT_QUALITY_STATIC_CV_RMS_MAX` 从死代码 → 实际连线
+- `get_quality_thresholds()` 返回所有已定义 metric 的阈值
+- 触发规则：**任意一个 metric 超标即触发**（不是全部超标才触发）
+
+### Agent 决策设计更新
+
+- `AttemptTrigger` 新增 `AGENT_ACCEPT`：Agent 主动接受当前结果继续的 trigger
+- TODO 3.3 更新：四选一决策流程（adjust_params / fallback / accept / 耗尽）+ trigger→handoff 映射表
+- TODO 3.6 更新：operation_log schema 增加 `agent_accept` 示例
+
+### Session 清理规则
+
+- TODO.md 开发原则 #10：只允许删除非 UUID mock 目录（MagicMock/test_tools/test_integration），严禁删 UUID v4 session
+- AGENTS.md 一行浓缩版规则
+
+### 测试
+
+- 全量 911 tests pass (0 failures, 0 errors, 11 skipped)

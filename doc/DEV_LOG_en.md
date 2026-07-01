@@ -216,7 +216,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
-### 2026-07-01 | Stage Attempt Logging (3.6)
+#### 2026-07-01 | Stage Attempt Logging (3.6)
 
 **`operation_log.py`** — `StageAttemptLog` + `OperationLog` infrastructure:
 
@@ -240,7 +240,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
-## 2026-07-01 | Data Input Stage (TODO 2.5.1–2.5.11) — Version 1.2.0
+### 2026-07-01 | Data Input Stage (TODO 2.5.1–2.5.11) — Version 1.2.0
 
 ### 2.5.1 handoff data structures (`schema.py`)
 - `PrepHandoff` — structured handoff from Preparer to Verifier: `observations` / `actions` / `potential_issues` / `output_manifest`
@@ -302,7 +302,7 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
-## 2026-07-01 | TECoSimAgent v0.2.6 sync + Data Prep Fixes
+### 2026-07-01 | TECoSimAgent v0.2.6 sync + Data Prep Fixes
 
 ### TECoSimAgent sync (commit `72c8038`)
 
@@ -362,7 +362,7 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 ---
 
-## 2026-07-01 | INI Parameter Audit & Exposure (3.2)
+### 2026-07-01 | INI Parameter Audit & Exposure (3.2)
 
 ### Parameter definition tables (`param_defs.py`)
 - `PHYSICAL_FIT_PARAMS` — 3 params (max_iv_points / max_cv_points / max_nfev_scale)
@@ -396,7 +396,7 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 ---
 
-## 2026-07-01 | DG-TFT Engine v90→v95 Merge
+### 2026-07-01 | DG-TFT Engine v90→v95 Merge
 
 ### Engine Upgrade
 - `dg_tft_full_model.py`: 13.6K → 19K lines. New: base IV PKAN training pipeline (formerly standalone `train_base_pkan.py`), 6 hard precision gates, ~25 new CLI args, CV charge PKAN split, `CompactKAN` rename, symbolic engine expansion, safe scale search
@@ -487,3 +487,26 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 
 **New Development Order**:
 0-5 ✅ → 6. Tool Unification → 7. while+pointer + Agent A → 8. Agent Infrastructure → 9. Agent B → 10. Agent C → 11. Agent D → 12. Agent E
+
+---
+
+### 2026-07-01 | Step 6 Tool Unification + Multi-Metric Quality Gate + Agent Decision Design
+
+**Step 6: Tool Unification (1.5)** — 4→3 tool convergence:
+- `prepare_dg_tft_dataset` + `start_dg_tft_workflow` → **`dg_tft_run`**
+- `query_dg_tft_workflow` → **`dg_tft_status`**
+- `read_dg_tft_workflow_report` → **`dg_tft_report`**
+
+**`entry` enum** replaces two booleans: `"full"` (default), `"verifier"`, `"check-data"`.
+
+**Bug fixes**: `run_id` :04d padding mismatch, RUN_SUMMARY stale status, TUI 4/5 display, artifact filenames (v90→v93, hysteresis nested path, removed model.va).
+
+**Verifier**: prompt now requires checking ALL files individually.
+
+**Quality guard**: single→multi-metric. Train-static checks both `residual_iv_rms` + `residual_cv_rms`. Dead `DG_TFT_QUALITY_STATIC_CV_RMS_MAX` now wired. Trigger rule: any one metric exceeding threshold wakes the quality gate.
+
+**Agent decisions**: `AttemptTrigger.AGENT_ACCEPT` added. TODO updated with four-way decision flow + handoff map.
+
+**Session rules**: only delete non-UUID mock dirs. `.gitkeep` must be preserved.
+
+**Tests**: 911 pass (0 failures, 0 errors, 11 skipped).

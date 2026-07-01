@@ -22,7 +22,6 @@ from src.workflow.dg_tft.artifacts import (
     ARTIFACT_KEY_FITTED_PARAMS,
     ARTIFACT_KEY_PKAN_MODEL,
     ARTIFACT_KEY_STATIC_MODEL_CKPT,
-    ARTIFACT_KEY_STATIC_MODEL_VA,
     ARTIFACT_KEY_HYSTERESIS_VA,
     ARTIFACT_KEY_HYSTERESIS_INC,
     ARTIFACT_KEY_RUN_SUMMARY,
@@ -67,7 +66,6 @@ class TestArtifactConstants(unittest.TestCase):
             ARTIFACT_KEY_FITTED_PARAMS,
             ARTIFACT_KEY_PKAN_MODEL,
             ARTIFACT_KEY_STATIC_MODEL_CKPT,
-            ARTIFACT_KEY_STATIC_MODEL_VA,
             ARTIFACT_KEY_HYSTERESIS_VA,
             ARTIFACT_KEY_HYSTERESIS_INC,
             ARTIFACT_KEY_RUN_SUMMARY,
@@ -81,7 +79,6 @@ class TestArtifactConstants(unittest.TestCase):
             ARTIFACT_KEY_FITTED_PARAMS,
             ARTIFACT_KEY_PKAN_MODEL,
             ARTIFACT_KEY_STATIC_MODEL_CKPT,
-            ARTIFACT_KEY_STATIC_MODEL_VA,
             ARTIFACT_KEY_HYSTERESIS_VA,
             ARTIFACT_KEY_HYSTERESIS_INC,
         ]:
@@ -151,10 +148,9 @@ class TestVerifyStageArtifacts(unittest.TestCase):
     def test_partial_missing(self):
         base = os.path.join(self.tmpdir, "03_full_model")
         os.makedirs(base, exist_ok=True)
-        Path(os.path.join(base, "static_model_checkpoint.pt")).write_text("")
+        Path(os.path.join(base, "v93_safe_residual_state.pt")).write_text("")
         missing = verify_stage_artifacts(self.tmpdir, "train-static")
-        self.assertEqual(len(missing), 1)
-        self.assertIn("model.va", missing[0])
+        self.assertEqual(len(missing), 0)
 
     def test_unknown_stage(self):
         missing = verify_stage_artifacts(self.tmpdir, "nonexistent")
@@ -163,16 +159,16 @@ class TestVerifyStageArtifacts(unittest.TestCase):
     def test_train_hysteresis_missing_both_artifacts(self):
         missing = verify_stage_artifacts(self.tmpdir, "train-hysteresis")
         self.assertEqual(len(missing), 2)
-        self.assertTrue(any("dg_tft_dynamic.va" in m for m in missing))
-        self.assertTrue(any("dg_tft_dynamic.inc" in m for m in missing))
+        self.assertTrue(any("dg_tft_dynamic_srh.va" in m for m in missing))
+        self.assertTrue(any("dg_tft_dynamic_srh.inc" in m for m in missing))
 
     def test_train_hysteresis_one_present_one_missing(self):
-        base = os.path.join(self.tmpdir, "04_hysteresis")
+        base = os.path.join(self.tmpdir, "04_hysteresis", "srh_top2_regime_banks", "combined")
         os.makedirs(base, exist_ok=True)
-        Path(os.path.join(base, "dg_tft_dynamic.va")).write_text("")
+        Path(os.path.join(base, "dg_tft_dynamic_srh.va")).write_text("")
         missing = verify_stage_artifacts(self.tmpdir, "train-hysteresis")
         self.assertEqual(len(missing), 1)
-        self.assertIn("dg_tft_dynamic.inc", missing[0])
+        self.assertIn("dg_tft_dynamic_srh.inc", missing[0])
 
 
 class TestGetReportPaths(unittest.TestCase):

@@ -24,7 +24,7 @@ from src.workflow.dg_tft.data_preparer import (
     run_data_preparation,
 )
 from src.constants import (
-    TOOL_NAME_PREPARE_DATASET,
+    TOOL_NAME_DG_TFT_RUN,
     SUCCESS_LABEL,
     FAIL_LABEL,
     DENIED_LABEL,
@@ -315,7 +315,7 @@ class TestRunDataPreparationMocked(unittest.TestCase):
 
 
 class TestToolHandler(unittest.TestCase):
-    """P4.5-T2: prepare_dg_tft_dataset tool handler behavior."""
+    """P4.5-T2: dg_tft_run tool handler behavior."""
 
     def setUp(self):
         import tempfile
@@ -336,33 +336,41 @@ class TestToolHandler(unittest.TestCase):
         return ctx
 
     def test_tool_handler_creates_prep_and_output(self):
-        from src.tool.tool_def import prepare_dg_tft_dataset
-        ctx = self._mock_ctx(permissions={TOOL_NAME_PREPARE_DATASET: False})
+        from src.tool.tool_def import dg_tft_run
+        ctx = self._mock_ctx(permissions={TOOL_NAME_DG_TFT_RUN: False})
         progress = MagicMock()
-        arguments = {"raw_dataset_dir": "/some/raw/path"}
+        arguments = {"dataset_dir": "/some/raw/path"}
 
         with patch("src.workflow.dg_tft.data_preparer.run_data_preparation_with_retry",
                    return_value={"ok": True, "prep_id": 1, "output_dir": "/fake/out", "issues": []}), \
-             patch("src.tool.tool_def.SESSION_PATH", self.tmpdir.name):
-            result = prepare_dg_tft_dataset(arguments, ctx, progress)
+             patch("src.tool.tool_def.SESSION_PATH", self.tmpdir.name), \
+             patch("src.workflow.dg_tft.orchestrator.run_workflow",
+                   return_value=(True, "all done")), \
+             patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset",
+                   return_value=(MagicMock(static_ok=True), {})), \
+             patch("src.workflow.dg_tft.config_builder.build_runtime_config",
+                   return_value={"config_path": "/fake/cfg.ini"}), \
+             patch("src.tool.tool_def.ask_permission_tui", return_value=(True, None)):
+            result = dg_tft_run(arguments, ctx, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
-        self.assertIsNotNone(result.get("prep_id"))
+        self.assertIsNotNone(result.get("run_id"))
+        self.assertIn("prep", result)
 
     def test_tool_handler_permission_denied(self):
-        from src.tool.tool_def import prepare_dg_tft_dataset
-        ctx = self._mock_ctx(permissions={TOOL_NAME_PREPARE_DATASET: False})
+        from src.tool.tool_def import dg_tft_run
+        ctx = self._mock_ctx(permissions={TOOL_NAME_DG_TFT_RUN: False})
         progress = MagicMock()
-        arguments = {"raw_dataset_dir": "/some/path"}
+        arguments = {"dataset_dir": "/some/path"}
 
         with patch("src.tool.tool_def.ask_permission_tui", return_value=(False, "test denial")):
-            result = prepare_dg_tft_dataset(arguments, ctx, progress)
+            result = dg_tft_run(arguments, ctx, progress)
             self.assertEqual(result["status"], DENIED_LABEL)
 
 
 class TestToolDispatch(unittest.TestCase):
-    """P4.5-T2: prepare_dg_tft_dataset tool dispatch."""
+    """P4.5-T2: dg_tft_run tool dispatch."""
 
-    def test_dispatch_prepare_dataset(self):
+    def test_dispatch_dg_tft_run(self):
         import tempfile
         from src.tool.tool_dispatch import call_tools
         ctx = MagicMock()
@@ -370,7 +378,7 @@ class TestToolDispatch(unittest.TestCase):
         ctx.workflow_man.preparation_tracker = PreparationTracker()
         ctx.agent_configs = {}
         ctx.session_uuid = "00000000-0000-0000-0000-000000000000"
-        ctx.permissions = {TOOL_NAME_PREPARE_DATASET: False}
+        ctx.permissions = {TOOL_NAME_DG_TFT_RUN: False}
         ctx.mcp_router = MagicMock()
         ctx.mcp_router.tool_registry = {}
         progress = MagicMock()
@@ -379,15 +387,22 @@ class TestToolDispatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
              patch("src.workflow.dg_tft.data_preparer.run_data_preparation_with_retry",
                    return_value={"ok": True, "prep_id": 1, "output_dir": "/fake/out", "issues": []}), \
-             patch("src.tool.tool_def.SESSION_PATH", td):
-            result, addon = call_tools(TOOL_NAME_PREPARE_DATASET, {"raw_dataset_dir": "/data"}, ctx, board, progress)
+             patch("src.tool.tool_def.SESSION_PATH", td), \
+             patch("src.workflow.dg_tft.orchestrator.run_workflow",
+                   return_value=(True, "all done")), \
+             patch("src.workflow.dg_tft.dataset_inspector.inspect_dataset",
+                   return_value=(MagicMock(static_ok=True), {})), \
+             patch("src.workflow.dg_tft.config_builder.build_runtime_config",
+                   return_value={"config_path": "/fake/cfg.ini"}), \
+             patch("src.tool.tool_def.ask_permission_tui", return_value=(True, None)):
+            result, addon = call_tools(TOOL_NAME_DG_TFT_RUN, {"dataset_dir": "/data"}, ctx, board, progress)
         self.assertEqual(result["status"], SUCCESS_LABEL)
-        self.assertIsNotNone(result.get("prep_id"))
+        self.assertIsNotNone(result.get("run_id"))
         self.assertIsNone(addon)
 
 
 class TestCommandsPrep(unittest.TestCase):
-    """P4.5-T3: workflow commands show prep data."""
+    """P4.5-T3: dg_tft commands show prep data."""
 
     def setUp(self):
         self.ctx = MagicMock()
@@ -395,29 +410,29 @@ class TestCommandsPrep(unittest.TestCase):
         self.ctx.workflow_man.preparation_tracker = PreparationTracker()
         self.ctx.workflow_man.preparation_tracker.register_prep("/raw", "/out/prep_1")
 
-    def test_workflow_get_prep_shows_prep_info(self):
-        from src.utility.command import cmd_workflow_get
+    def test_dg_tft_status_prep_shows_prep_info(self):
+        from src.utility.command import cmd_dg_tft_status
         from src.constants import MAJOR_COLOR1
         board = MagicMock()
         console = MagicMock()
-        cmd_workflow_get(["1"], self.ctx, board, console)
+        cmd_dg_tft_status(["1"], self.ctx, board, console)
         printed = console.print.call_args[0][0] if console.print.call_args else ""
         self.assertTrue(True)
 
 
 class TestPromptRoutingPrep(unittest.TestCase):
-    """P4.5-T3: prompt includes data preparation routing."""
+    """P4.5-T3: prompt includes DG-TFT run routing."""
 
-    def test_guideline_prompts_include_prepare_tool(self):
+    def test_guideline_prompts_include_dg_tft_run(self):
         from src.context.prompt import get_agent_guideline_prompts
         prompts = get_agent_guideline_prompts()
         content = prompts[0]["content"]
-        self.assertIn(TOOL_NAME_PREPARE_DATASET, content)
-        self.assertIn("raw measurement data", content.lower())
+        self.assertIn(TOOL_NAME_DG_TFT_RUN, content)
+        self.assertIn("DG-TFT Workflow Routing", content)
 
 
-class TestPrepareToolSchema(unittest.TestCase):
-    """P4.5-T2: prepare_dg_tft_dataset tool schema."""
+class TestDgTftRunSchema(unittest.TestCase):
+    """P4.5-T2: dg_tft_run tool schema."""
 
     def test_schema_in_create_prompts(self):
         from src.tool.tool_def import create_tools_prompts
@@ -427,7 +442,7 @@ class TestPrepareToolSchema(unittest.TestCase):
         ctx.agent_configs = {}
         prompts = create_tools_prompts(ctx)
         names = [p["function"]["name"] for p in prompts]
-        self.assertIn(TOOL_NAME_PREPARE_DATASET, names)
+        self.assertIn(TOOL_NAME_DG_TFT_RUN, names)
 
 
 if __name__ == "__main__":

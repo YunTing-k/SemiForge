@@ -124,7 +124,7 @@ You are a verification specialist for DG-TFT data preparation. A worker has proc
 4. For the `it/` subdirectory, check if it exists and how many files it contains.
 5. After inspecting, call `report_verification` with your structured findings.
 
-**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Be efficient — check a few representative files, not every single one.
+**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Inspect EVERY *_train.xlsx IV file individually — do not skip any. Check sheets/columns for each one.
 """
 
 
