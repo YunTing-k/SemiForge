@@ -302,6 +302,40 @@ New `src/workflow/dg_tft/knowledge/` directory:
 
 ---
 
+## 2026-07-01 | TECoSimAgent v0.2.6 sync + Data Prep Fixes
+
+### TECoSimAgent sync (commit `72c8038`)
+
+**bash risk detection v1.5 → v1.10** (`bash_support.py`): output redirect detection, `$()`/backtick/`<()` substitution evaluation, quoted-string masking, here-doc detection, `BASH_INLINE_SCRIPT` level 4→3, +85 commands, expanded docker/kubectl/git/pkg-mgr handling.
+
+**Tool result truncation**: `truncate_tool_result()` field-level iterative truncation preserving JSON structure. `SUBAGENT_EARLY_WARN_STEPS` key name unified.
+
+**Markdown rendering theme**: `get_console()` with Theme (H1-H6/code/lists/tables/quotes/links/hr styles), `ContentMD`/`ReasonMD` with custom elements (rounded tables, icon separators).
+
+**prompt.py**: stream collector None sentinel fix, reasoning-only content patch, icon-based resume display (⚑▲❖⬟).
+
+**SubAgent**: `start_time`/`elapsed_s` persisted, GNU bash hint in system prompt, `truncate_tool_result` integration.
+
+**Constants/config**: +25 constants, limits bumped (20000/60/3000).
+
+### Data prep fixes + enhancements
+
+- **operation_log through-line**: handler uses `run_data_preparation_with_retry`, orchestrator loads existing log
+- **handoff fix**: no longer overwrites `worker_report.json` written by worker SubAgent
+- **manifest writing**: retry loop writes `manifest.json` + `prep_file_manifest.json`
+- **Console output**: Preparer/Verifier labels with completion stats
+- **agent_list archive**: worker/verifier/diagnosis SubAgent `pop` → `if_archived = True`
+- **get_console() enabled**: `main.py` uses themed Console
+- **SubAgent TUI display**: `_TOOL_DISPLAY_KEYS` extended for subagent tools
+
+### Tests
+- `bash_risk_test.py`: reclassified tar/gzip/unzip/awk/timeout
+- `dg_tft_preparer_test.py`: mock targets updated, SESSION_PATH → temp dir, MagicMock leak fixed
+- TODO.md: new rule 8 — zero residue in session/
+- 864 tests pass, session/ verified clean
+
+---
+
 ## Lessons Learned
 
 ### Python module double-import trap

@@ -303,6 +303,50 @@ AGI→CUDA 外层 subprocess 保留（解释器隔离不变），仅去除 CUDA 
 
 ---
 
+## 2026-07-01 | TECoSimAgent v0.2.6 同步升级 + 数据准备修复
+
+### TECoSimAgent 同步 (commit `72c8038`)
+
+**bash 风险检测 v1.5 → v1.10** (`bash_support.py`)：
+- 新增输出重定向检测 `_check_output_redirect()`
+- 新增 `$()` / backtick 命令替换 + `<()` / `>()` 进程替换评估
+- 引号内容掩码消误报 `_mask_quoted()`
+- here-doc 检测、eval 链替换分析
+- `BASH_INLINE_SCRIPT` 风险等级 4 → 3
+- +85 命令（包管理、构建、容器、网络等），扩展 docker/kubectl/git 子命令分类
+
+**工具结果截断**：
+- `truncate_tool_result()` 字段级迭代截断，保留 JSON 结构
+- `SUBAGENT_EARLY_WARN_STEPS` 键名统一
+
+**Markdown 渲染主题**：
+- `get_console()` + Theme（H1-H6/代码/列表/表格/引用/链接/分隔线样式）
+- `ContentMD` / `ReasonMD` 自定义 MD 元素（圆角表格、图标分隔线）
+
+**prompt.py**：流收集器 None sentinel 修复、reasoning-only 补丁、图标化 resume
+
+**SubAgent**：`start_time`/`elapsed_s` 持久化、GNU bash 提示、truncate_tool_result 集成
+
+**常量/配置**：+25 常量、限值刷新（20000/60/3000）
+
+### 数据准备修复 + 增强
+
+- **operation_log 贯通**：handler 改用 `run_data_preparation_with_retry`，orchestrator 加载已有 log
+- **handoff 修复**：不再覆盖 worker 写的 `worker_report.json`
+- **manifest 写入**：retry loop 结束写 `manifest.json` + `prep_file_manifest.json`
+- **Console 输出**：Preparer/Verifier 标记完成状态 + 统计
+- **agent_list 归档**：worker/verifier/diagnosis SubAgent `pop` → `if_archived = True`
+- **get_console() 启用**：`main.py` 使用带 Theme 的 Console
+- **SubAgent TUI 展示**：`_TOOL_DISPLAY_KEYS` 新增 subagent tool 摘要
+
+### 测试
+- `bash_risk_test.py`：适应重新分类
+- `dg_tft_preparer_test.py`：mock 目标更新 + SESSION_PATH 临时目录 + MagicMock 泄漏修复
+- TODO.md：新增开发原则第 8 条「测试零残留」
+- 864 tests pass，session/ 目录无残留
+
+---
+
 ## 经验总结
 
 ### Python 模块双重导入陷阱
