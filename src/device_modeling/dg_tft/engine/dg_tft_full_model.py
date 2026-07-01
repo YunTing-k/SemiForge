@@ -18833,10 +18833,10 @@ def main():
         "iv_residual": diag.iv_resid.grid_audit(),
         "cv_parameter_residual": diag.cv_q_resid.grid_audit(),
     }
-    for block, audit in metrics["kan_grid_audit"].items():
-        if not bool(audit.get("pass", False)):
+    for block, block_audit in metrics["kan_grid_audit"].items():
+        if not bool(block_audit.get("pass", False)):
             raise RuntimeError(
-                f"Final KAN grid audit failed for {block}: {audit}"
+                f"Final KAN grid audit failed for {block}: {block_audit}"
             )
     metrics["iv_residual_safety_split"] = iv_residual_split_report
     if base_iv_training_report is not None:
