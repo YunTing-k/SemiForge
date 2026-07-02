@@ -247,10 +247,13 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         self.assertEqual(run.status, WorkflowStatus.DONE)
 
     @patch("src.workflow.dg_tft.orchestrator.run_stage")
-    def test_fail_fast_required_stage(self, mock_run):
+    def test_required_stage_fails_but_pipeline_continues(self, mock_run):
+        # Pipeline continues after failure; all stages run.
+        # entry="check-data" → check-data, fit-physical, train-static, final-report(noop)
         responses = [
             StageResult(ok=True, stage="check-data", summary="OK"),
             StageResult(ok=False, stage="fit-physical", error="divergence"),
+            StageResult(ok=True, stage="train-static", summary="OK"),
         ]
         mock_run.side_effect = responses
         ok, rid, _ = self.ctx.workflow_man.create_run(
@@ -266,6 +269,7 @@ class TestOrchestratorRunWorkflow(unittest.TestCase):
         run = self.ctx.workflow_man.get_run(rid)
         self.assertEqual(run.status, WorkflowStatus.FAILED)
         self.assertIn("check-data", run.stage_results)
+        self.assertIn("fit-physical", run.stage_results)
 
     @patch("src.workflow.dg_tft.orchestrator.run_stage")
     def test_skip_hysteresis_when_no_data(self, mock_run):

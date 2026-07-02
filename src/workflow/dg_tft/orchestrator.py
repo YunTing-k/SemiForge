@@ -349,7 +349,7 @@ def run_workflow(
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=False)
 
             if sd.required:
-                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}] [bright_black]({sr.error})[/bright_black]")
+                _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_ERROR}]failed[/{WF_STATUS_ERROR}]—continuing")
 
                 # ── Agent A: check-data hard failure → fallback_to_previous ──
                 if sd.name == StageName.CHECK_DATA:
@@ -365,25 +365,24 @@ def run_workflow(
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             run = wm.get_run(run_id)
                             continue
-                    # Agent A chose not to fallback — fail as usual
-                    wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
-                    sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
+                    # Agent A chose not to fallback — continue to next stage
                     failed_stage = sd.name
                     failed_error = sr.error or "unknown error"
-                else:
-                    # Agent C/D placeholder: future agents will adjust params and retry
                     _agent_stage_placeholder(ctx, run_id, sd)
-                    wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
-                    sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
-                    failed_stage = sd.name
-                    failed_error = sr.error or "unknown error"
+                else:
+                    # Agent C/D placeholder — will adjust params and retry in future
+                    if not failed_stage:
+                        failed_stage = sd.name
+                    if not failed_error:
+                        failed_error = sr.error or "unknown error"
+                    _agent_stage_placeholder(ctx, run_id, sd)
 
+                wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
+                sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
                 _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path)
-                op_log.set_final_status("failed")
-                _finalize_run(ctx, run_id, output_dir, t_start, stages,
-                              failed=True, failed_stage=failed_stage, failed_error=failed_error,
-                              board=board, task_map=task_map)
-                return False, f"Failed at {sd.name}: {sr.error}"
+                pointer += 1
+                run = wm.get_run(run_id)
+                continue
             else:
                 wm.add_warning(run_id, f"Optional stage {sd.name} failed: {sr.error}")
                 sys_log.warning("Optional stage [%s] failed for run %d, continuing", sd.name, run_id)
@@ -425,9 +424,15 @@ def run_workflow(
         fallback_ctx = None
         run = wm.get_run(run_id)
 
-    # All stages completed
+    # All stages processed — some may have failed
+    if failed_stage:
+        op_log.set_final_status("failed")
+        _agent_e_placeholder(ctx, run_id, stages, op_log)
+        _finalize_run(ctx, run_id, output_dir, t_start, stages,
+                      failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
+                      board=board, task_map=task_map)
+        return False, f"Run {run_id} completed with failures: {failed_stage}"
     op_log.set_final_status("done")
-    # Agent E placeholder — interpretation + knowledge feedback (future)
     _agent_e_placeholder(ctx, run_id, stages, op_log)
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
     return True, f"Run {run_id} completed: {len(stages)} stages"
