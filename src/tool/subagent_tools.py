@@ -50,7 +50,6 @@ from src.constants import SUCCESS_LABEL, FAIL_LABEL
 SUBAGENT_TOOL_INSPECT_XLSX: str = "inspect_xlsx"
 SUBAGENT_TOOL_ADJUST_PARAMS: str = "adjust_params"
 SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS: str = "fallback_to_previous"
-SUBAGENT_TOOL_SWITCH_KERNEL: str = "switch_kernel"
 SUBAGENT_TOOL_REPORT_VERIFICATION: str = "report_verification"
 SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: str = "contribute_knowledge"
 SUBAGENT_TOOL_ACCEPT_QUALITY: str = "accept_quality"
@@ -60,7 +59,6 @@ __all__ = [
     "SUBAGENT_TOOL_INSPECT_XLSX",
     "SUBAGENT_TOOL_ADJUST_PARAMS",
     "SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS",
-    "SUBAGENT_TOOL_SWITCH_KERNEL",
     "SUBAGENT_TOOL_REPORT_VERIFICATION",
     "SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE",
     "SUBAGENT_TOOL_ACCEPT_QUALITY",
@@ -199,33 +197,6 @@ _REPORT_VERIFICATION_SCHEMA: dict[str, Any] = {
 }
 
 
-_SWITCH_KERNEL_SCHEMA: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": SUBAGENT_TOOL_SWITCH_KERNEL,
-        "description": (
-            "Switch the physical kernel used for parameter extraction. "
-            "Call this when the current kernel produces poor IV fits "
-            "(e.g. numerical oscillations, unrealistic VTO, or convergence failures)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "kernel": {
-                    "type": "string",
-                    "enum": ["uotft", "ekv_level2"],
-                    "description": "Physical kernel name: uotft (default unified-OTFT) or ekv_level2 (EKV Level 2 model).",
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "Why switching kernels is expected to help.",
-                },
-            },
-            "required": ["kernel", "reasoning"],
-        },
-    },
-}
-
 _ACCEPT_QUALITY_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -329,7 +300,6 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
         [
             _INSPECT_XLSX_SCHEMA,
             _ADJUST_PARAMS_SCHEMA,
-            _SWITCH_KERNEL_SCHEMA,
             _FALLBACK_TO_PREVIOUS_SCHEMA,
             _ACCEPT_QUALITY_SCHEMA,
         ],

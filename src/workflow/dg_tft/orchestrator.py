@@ -1347,7 +1347,6 @@ def _spawn_modeling_agent_inner(
         get_tools,
         SUBAGENT_TOOL_ADJUST_PARAMS,
         SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
-        SUBAGENT_TOOL_SWITCH_KERNEL,
         SUBAGENT_TOOL_ACCEPT_QUALITY,
     )
     from src.agent.progress import EXPLORER_AGENT_LABEL
@@ -1357,7 +1356,6 @@ def _spawn_modeling_agent_inner(
         get_soft_guard_prompt,
     )
 
-    is_fit_physical = sd.name == StageName.FIT_PHYSICAL
     upstream = _UPSTREAM_STAGE.get(sd.name, "verifier")
     agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
@@ -1369,8 +1367,6 @@ def _spawn_modeling_agent_inner(
 
     # Build stop_schemas
     stop_schemas = [SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_ACCEPT_QUALITY]
-    if is_fit_physical:
-        stop_schemas.append(SUBAGENT_TOOL_SWITCH_KERNEL)
 
     # Build prompt
     errors = stage_result.error or "none"
@@ -1394,8 +1390,6 @@ def _spawn_modeling_agent_inner(
         f"  2. `fallback_to_previous` — if you suspect the problem originates upstream (target: {upstream}).",
         f"  3. `accept_quality` — if the current quality is acceptable, or continued adjustments won't help.",
     ]
-    if is_fit_physical:
-        prompt_lines.append("  4. `switch_kernel` — if switching the physical kernel may yield better IV fits.")
 
     prompt_lines.extend([
         "",
@@ -1467,7 +1461,6 @@ def _normalize_tool_name(parsed: dict[str, Any]) -> str:
     tool_map = {
         "adjust_params": "adjust_params",
         "fallback_to_previous": "fallback_to_previous",
-        "switch_kernel": "switch_kernel",
         "accept_quality": "accept_quality",
     }
     for key, canonical in tool_map.items():
@@ -1478,8 +1471,6 @@ def _normalize_tool_name(parsed: dict[str, Any]) -> str:
         return "adjust_params"
     if parsed.get("target") and parsed.get("reason"):
         return "fallback_to_previous"
-    if parsed.get("kernel"):
-        return "switch_kernel"
 
     return "error"
 
@@ -1548,36 +1539,6 @@ def _process_agent_decision(
                 adjustments={str(k): str(v) for k, v in sanitized.items()},
                 ok=False,
             ))
-
-        return "retry" if retry_remaining > 0 else "accept"
-
-    if decision == "switch_kernel":
-        kernel = arguments.get("kernel", "") if isinstance(arguments, dict) else ""
-        if kernel:
-            _console(ctx, f"  [{WF_STATUS_SUCCESS}]{agent_label} → switch_kernel: {kernel}[/{WF_STATUS_SUCCESS}]")
-            if reasoning:
-                _console(ctx, f"  [bright_black]Reasoning: {reasoning[:120]}[/bright_black]")
-
-            try:
-                cfg = configparser.ConfigParser()
-                cfg.read(config_path, encoding="utf-8")
-                if not cfg.has_section("physical_fit"):
-                    cfg.add_section("physical_fit")
-                cfg.set("physical_fit", "physical_kernel", kernel)
-                with open(config_path, "w", encoding="utf-8") as f:
-                    cfg.write(f)
-            except Exception as e:
-                sys_log.warning("Failed to write kernel switch: %s", e)
-
-            if op_log:
-                op_log.append_attempt(sd.name, StageAttemptLog(
-                    n=op_log.get_last_attempt_n(sd.name) + 1,
-                    trigger=AttemptTrigger.AGENT_ADJUST,
-                    agent_decision=arguments,
-                    agent_reasoning=reasoning,
-                    adjustments={"physical_kernel": kernel},
-                    ok=False,
-                ))
 
         return "retry" if retry_remaining > 0 else "accept"
 

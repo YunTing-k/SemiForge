@@ -1,4 +1,4 @@
-# SemiForge Development Log
+﻿# SemiForge Development Log
 
 ## Development Guidelines
 
@@ -622,7 +622,7 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 ### 2026-07-02 | Step 8: Agent Infrastructure
 
 **Tool Definitions** (subagent_tools.py):
-- 3 new tool schemas: switch_kernel (Agent B kernel switch), accept_quality (accept current quality), contribute_knowledge (Agent E knowledge feedback)
+- 3 new tool schemas: ~~switch_kernel (Agent B kernel switch — removed 2026-07-02, only EKV Level-2 exists)~~, accept_quality (accept current quality), contribute_knowledge (Agent E knowledge feedback)
 - New _contribute_knowledge_handler: writes to knowledge/_discovered/run_{id}_{timestamp}.md
 - _STAGE_TOOLS registry extended to all 6 stages: train-static/train-hysteresis each with 4 tools (inspect_xlsx + adjust_params + fallback_to_previous + accept_quality), final-interpret with contribute_knowledge
 - get_tools() now accepts adjust_params_override parameter for auto-generated stage-specific schemas
@@ -634,14 +634,13 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 **Generic Agent Run Loop** (orchestrator.py):
 - _spawn_modeling_agent() — generic Agent B/C/D spawn:
   - Auto-generated adjust_params schema (param_defs -> params_to_tool_schema)
-  - Per-stage tool sets (Agent B additionally has switch_kernel)
-  - stop_mode="schema", 5 decisions: adjust_params / fallback_to_previous / switch_kernel / accept_quality / error
+  - Per-stage tool sets
+  - stop_mode="schema", 4 decisions: adjust_params / fallback_to_previous / accept_quality / error
   - Injects user preferences + soft guard (get_soft_guard_prompt())
   - try/except wrapper for mock/test context resilience
 - _process_agent_decision() — decision processing pipe:
   - adjust_params -> validate_agent_adjustments() -> apply_agent_adjustments() -> retry
-  - switch_kernel -> INI write -> retry
-  - fallback_to_previous -> record FALLBACK_SENT -> pointer jump upstream
+    - fallback_to_previous -> record FALLBACK_SENT -> pointer jump upstream
   - accept_quality -> record AGENT_ACCEPT -> advance
 - _spawn_agent_e() — Agent E final interpretation: stop_mode="any" + contribute_knowledge
 - _assess_stage_quality() — pure rule-driven quality check (no LLM)
@@ -659,7 +658,7 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 | Agent | Trigger | Available Tools |
 |-------|---------|----------------|
 | A | check-data hard failure | fallback_to_previous -> Verifier |
-| B | fit-physical hard failure / quality fail | adjust_params / switch_kernel / fallback_to_previous / accept_quality |
+| B | fit-physical hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
 | C | train-static hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
 | D | train-hysteresis hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
 | E | Pipeline end (success or failure) | contribute_knowledge + free text |
@@ -667,7 +666,8 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 ### 2026-07-02 | Agent E Knowledge Feedback Fixes
 
 - **contribute_knowledge -> stop_schema**: Changed from handler (LLM called repeatedly, producing many fragment files) to stop_schema tool (called once, producing a single complete contribution)
-- **File naming**: Changed from un_{run_id:04d}_{timestamp}.md (cross-session collision, meaningless) to {title_slug}_{timestamp}.md (slugified from agent's English title, human readable)
+- **File naming**: Changed from 
+un_{run_id:04d}_{timestamp}.md (cross-session collision, meaningless) to {title_slug}_{timestamp}.md (slugified from agent's English title, human readable)
 - **minimal_run skips Agent E**: Added _is_minimal_run(config_path) check
 - **Contribute only when novel**: system prompt now marks contribute_knowledge as OPTIONAL, only called for genuinely novel findings
 - **English enforced**: Agent E prompt + contribute_knowledge tool description require English only

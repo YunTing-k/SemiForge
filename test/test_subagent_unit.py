@@ -25,7 +25,6 @@ from src.tool.subagent_tools import (
     SUBAGENT_TOOL_ADJUST_PARAMS,
     SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
     SUBAGENT_TOOL_REPORT_VERIFICATION,
-    SUBAGENT_TOOL_SWITCH_KERNEL,
     SUBAGENT_TOOL_ACCEPT_QUALITY,
     SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE,
 )
@@ -410,19 +409,18 @@ def test_schema_exhausted_error(mock_openai):
 def test_get_tools_fit_physical():
     """get_tools('fit-physical') returns schemas + handlers."""
     schemas, handlers = get_tools("fit-physical")
-    assert len(schemas) == 5
+    assert len(schemas) == 4
     schema_names = {s["function"]["name"] for s in schemas}
     assert schema_names == {
         SUBAGENT_TOOL_INSPECT_XLSX,
         SUBAGENT_TOOL_ADJUST_PARAMS,
         SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
-        SUBAGENT_TOOL_SWITCH_KERNEL,
         SUBAGENT_TOOL_ACCEPT_QUALITY,
     }
     assert SUBAGENT_TOOL_INSPECT_XLSX in handlers
     assert SUBAGENT_TOOL_ADJUST_PARAMS not in handlers
     assert SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS not in handlers
-    print("[PASS] get_tools fit-physical — 5 schemas, 1 handler")
+    print("[PASS] get_tools fit-physical — 4 schemas, 1 handler")
 
 
 def test_get_tools_check_data():

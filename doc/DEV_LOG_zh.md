@@ -1,4 +1,4 @@
-# SemiForge 开发日志
+﻿# SemiForge 开发日志
 
 ## 开发规范
 
@@ -652,7 +652,8 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **Bug 修复**：
 - dg_tft_full_model.py: 修复 udit DataFrame 被 or block, audit 循环覆盖的变量名冲突 bug（v96 原有 bug，sync 后重新引入）
 - param_defs.py: 9 个默认值对齐 v96 INI（learning_rate 0.002→0.0012、cv_weight 8.0→10.0、symbolic_training_weight 0.015→0.05 等）
-- un_model.py: fallback 默认值对齐 v96（epochs、lr、early_stop 等）
+- 
+un_model.py: fallback 默认值对齐 v96（epochs、lr、early_stop 等）
 - Verifier 入口模式下 CV_原始_train.xlsx 备份文件干扰 verifier 检查：排查后确认为纯格式差异，删除冗余文件
 
 **预训练 PKAN 模型**：
@@ -672,7 +673,7 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 ### 2026-07-02 | Step 8: Agent 基础设施
 
 **Tool 定义** (subagent_tools.py):
-- 新增 3 个 tool schema：switch_kernel（Agent B 切物理内核）、ccept_quality（接受当前质量）、contribute_knowledge（Agent E 反哺知识）
+- 新增 3 个 tool schema：~~switch_kernel（Agent B 切物理内核 — 2026-07-02 删除，当前仅 EKV Level-2）~~、ccept_quality（接受当前质量）、contribute_knowledge（Agent E 反哺知识）
 - 新增 _contribute_knowledge_handler：写入 knowledge/_discovered/run_{id}_{timestamp}.md
 - _STAGE_TOOLS 注册表扩展覆盖全部 6 阶段：train-static/train-hysteresis 各 4 tools（inspect_xlsx + adjust_params + fallback_to_previous + accept_quality），final-interpret 含 contribute_knowledge
 - get_tools() 新增 djust_params_override 参数：orchestrator 注入 auto-generated 阶段专属 schema
@@ -684,14 +685,13 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **通用 Agent 运行循环** (orchestrator.py):
 - _spawn_modeling_agent() 通用 Agent B/C/D spawn：
   - auto-generated djust_params schema（param_defs → params_to_tool_schema）
-  - 每阶段专属 tool set（Agent B 额外含 switch_kernel）
-  - stop_mode="schema"，5 种决策：adjust_params / fallback_to_previous / switch_kernel / accept_quality / error
+  - 每阶段专属 tool set
+  - stop_mode="schema"，4 种决策：adjust_params / fallback_to_previous / accept_quality / error
   - 注入用户偏好 + 软护盾（get_soft_guard_prompt()）
   - try/except 包裹应对 mock/test 上下文
 - _process_agent_decision() 决策处理 pipe：
   - adjust_params → alidate_agent_adjustments() → pply_agent_adjustments() → retry
-  - switch_kernel → INI 写入 → retry
-  - fallback_to_previous → 记录 FALLBACK_SENT → pointer 跳转上游
+    - fallback_to_previous → 记录 FALLBACK_SENT → pointer 跳转上游
   - accept_quality → 记录 AGENT_ACCEPT → 推进
 - _spawn_agent_e() Agent E 最终解读：stop_mode="any" + contribute_knowledge
 - _assess_stage_quality() 纯规则质量检查（无 LLM 调用）
@@ -709,7 +709,7 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 | Agent | 触发 | 可用决策 |
 |-------|------|----------|
 | A | check-data 硬失败 | fallback_to_previous → Verifier |
-| B | fit-physical 硬失败/质量不达标 | adjust_params / switch_kernel / fallback_to_previous / accept_quality |
+| B | fit-physical 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
 | C | train-static 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
 | D | train-hysteresis 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
 | E | Pipeline 结束 | contribute_knowledge + 自由文本 |
@@ -717,7 +717,8 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 ### 2026-07-02 | Agent E 知识反哺修复
 
 - **contribute_knowledge → stop_schema**：从 handler（LLM 反复调用，输出多个碎片文件）改为 stop_schema tool（只能调用一次，凝聚成完整知识贡献）
-- **文件命名**：从 un_{run_id:04d}_{timestamp}.md（跨 session 碰撞、无意义）改为 {title_slug}_{timestamp}.md（从 agent 的英文 title slugify，人类可读）
+- **文件命名**：从 
+un_{run_id:04d}_{timestamp}.md（跨 session 碰撞、无意义）改为 {title_slug}_{timestamp}.md（从 agent 的英文 title slugify，人类可读）
 - **minimal_run 跳过 Agent E**：新增 _is_minimal_run(config_path) 检查
 - **必须时才贡献**：system prompt 明确标注 contribute_knowledge 为 OPTIONAL，仅真正新发现时才调用
 - **英文强制**：Agent E prompt + contribute_knowledge tool description 标注 English only

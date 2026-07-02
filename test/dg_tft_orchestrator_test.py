@@ -482,10 +482,6 @@ class TestModelingAgentHelpers(unittest.TestCase):
         from src.workflow.dg_tft.orchestrator import _normalize_tool_name
         self.assertEqual(_normalize_tool_name({"target": "check-data", "reason": "upstream issue"}), "fallback_to_previous")
 
-    def test_normalize_tool_name_switch_kernel(self):
-        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
-        self.assertEqual(_normalize_tool_name({"kernel": "ekv_level2"}), "switch_kernel")
-
     def test_normalize_tool_name_accept_quality(self):
         from src.workflow.dg_tft.orchestrator import _normalize_tool_name
         self.assertEqual(_normalize_tool_name({"accept_quality": True, "reasoning": "ok"}), "accept_quality")
