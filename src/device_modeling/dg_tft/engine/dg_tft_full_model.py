@@ -638,7 +638,6 @@ class CompactKAN(nn.Module):
                 nn.Tanh(),
                 nn.Linear(width[1], width[-1]),
             ).to(device=device, dtype=dtype)
-
         # Preserve pykan's constructor-time trainability contract. Structural
         # knot grids, masks, and node affine metadata are intentionally frozen.
         self._optimizer_parameter_names = tuple(
@@ -3612,13 +3611,13 @@ ROOT = Path(__file__).resolve().parent
 RELEASE_ROOT = ROOT.parents[1]
 DEFAULT_MODEL_DIR = RELEASE_ROOT / "trained_model" / "base_physical_pkan"
 DEFAULT_OUT_DIR = RELEASE_ROOT / "outputs" / "static_training"
-BASE_CHECKPOINT_FORMAT = "dg_tft_v95_compactkan_architecture"
+BASE_CHECKPOINT_FORMAT = "dg_tft_v96_compactkan_architecture"
 BASE_CHECKPOINT_SCHEMA_VERSION = 2
 LEGACY_BASE_CHECKPOINT_FORMATS = {
     "dg_tft_v92_compactkan_architecture",
     "dg_tft_v93_compactkan_architecture",
 }
-DIAGNOSTIC_CHECKPOINT_FORMAT = "dg_tft_v95_residual_diagnostic"
+DIAGNOSTIC_CHECKPOINT_FORMAT = "dg_tft_v96_residual_diagnostic"
 DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION = 2
 LEGACY_DIAGNOSTIC_CHECKPOINT_FORMATS = {
     "dg_tft_v92_residual_diagnostic",
@@ -4303,7 +4302,7 @@ def checkpoint_output_policy(
     if not isinstance(policy, dict):
         metrics = checkpoint.get("metrics") if isinstance(checkpoint, dict) else None
         if not isinstance(metrics, dict):
-            sibling = source.parent / "v93_safe_residual_metrics.json"
+            sibling = source.parent / "v92_safe_residual_metrics.json"
             if sibling.exists():
                 metrics = json.loads(sibling.read_text(encoding="utf-8"))
         if isinstance(metrics, dict):
@@ -10994,6 +10993,11 @@ def summarize(iv, cv):
                     out[f"{prefix}_cv_{sheet}_rms"] = float(np.sqrt(np.mean(ce[m] ** 2)))
         slope_error = []
         curve_rms = []
+        jump_by_family: dict[str, list[float]] = {
+            "IDVBG": [],
+            "IDVTG": [],
+            "IDVD": [],
+        }
         inversion_count = 0
         pair_count = 0
         prediction_col = {
@@ -11001,28 +11005,86 @@ def summarize(iv, cv):
             "base": "ID_base_pkan_A",
             "residual": "ID_residual_A",
         }[prefix]
-        for (family, _source), group in iv.groupby(["family", "source_file"], sort=False):
-            xcol = {"IDVBG": "VBG_V", "IDVTG": "VTG_V", "IDVD": "VDS_V"}.get(str(family))
-            if xcol is None or len(group) < 3:
+        group_columns = {
+            "IDVBG": ["source_file", "VDS_V", "VTG_V"],
+            "IDVTG": ["source_file", "VDS_V", "VBG_V"],
+            "IDVD": ["source_file", "VBG_V", "VTG_V"],
+        }
+        x_columns = {"IDVBG": "VBG_V", "IDVTG": "VTG_V", "IDVD": "VDS_V"}
+        plateau_start = {"IDVBG": 2.0, "IDVTG": 2.0, "IDVD": 1.0}
+        for family, family_frame in iv.groupby("family", sort=False):
+            family = str(family)
+            xcol = x_columns.get(family)
+            gcols = group_columns.get(family)
+            if xcol is None or gcols is None:
                 continue
-            group = group.sort_values(xcol)
-            x = group[xcol].to_numpy(float)
-            target_log = np.log10(np.maximum(np.abs(group["ID_A"].to_numpy(float)), ID_FLOOR))
-            pred_log = np.log10(np.maximum(np.abs(group[prediction_col].to_numpy(float)), ID_FLOOR))
-            curve_rms.append(float(np.sqrt(np.mean((pred_log - target_log) ** 2))))
-            dx = np.diff(x)
-            valid = (np.abs(dx) > 1.0e-12) & (
-                (np.abs(group["ID_A"].to_numpy(float)[:-1]) >= 1.0e-12)
-                | (np.abs(group["ID_A"].to_numpy(float)[1:]) >= 1.0e-12)
-            )
-            if int(np.sum(valid)) < 2:
-                continue
-            target_slope = np.divide(np.diff(target_log), dx, out=np.zeros_like(dx), where=np.abs(dx) > 1.0e-12)
-            pred_slope = np.divide(np.diff(pred_log), dx, out=np.zeros_like(dx), where=np.abs(dx) > 1.0e-12)
-            delta = pred_slope[valid] - target_slope[valid]
-            slope_error.extend(delta.tolist())
-            inversion_count += int(np.sum((pred_slope[valid] < -0.05) & (target_slope[valid] >= -0.05)))
-            pair_count += int(np.sum(valid))
+            for _, group in family_frame.groupby(gcols, sort=False):
+                if len(group) < 3:
+                    continue
+                group = group.sort_values(xcol)
+                x = group[xcol].to_numpy(float)
+                target_log = np.log10(
+                    np.maximum(np.abs(group["ID_A"].to_numpy(float)), ID_FLOOR)
+                )
+                pred_log = np.log10(
+                    np.maximum(
+                        np.abs(group[prediction_col].to_numpy(float)), ID_FLOOR
+                    )
+                )
+                # VDS=0 is constrained to exact zero by the compact model.
+                # Measured instrument offsets at that single point must not
+                # dominate a whole IDVD curve RMS by several decades.
+                curve_valid = (
+                    np.abs(group["VDS_V"].to_numpy(float)) >= 0.02
+                )
+                if np.any(curve_valid):
+                    curve_rms.append(
+                        float(
+                            np.sqrt(
+                                np.mean(
+                                    (
+                                        pred_log[curve_valid]
+                                        - target_log[curve_valid]
+                                    )
+                                    ** 2
+                                )
+                            )
+                        )
+                    )
+                dx = np.diff(x)
+                valid = (np.abs(dx) > 1.0e-12) & (
+                    (np.abs(group["ID_A"].to_numpy(float)[:-1]) >= 1.0e-12)
+                    | (np.abs(group["ID_A"].to_numpy(float)[1:]) >= 1.0e-12)
+                )
+                if int(np.sum(valid)) >= 2:
+                    target_slope = np.divide(
+                        np.diff(target_log),
+                        dx,
+                        out=np.zeros_like(dx),
+                        where=np.abs(dx) > 1.0e-12,
+                    )
+                    pred_slope = np.divide(
+                        np.diff(pred_log),
+                        dx,
+                        out=np.zeros_like(dx),
+                        where=np.abs(dx) > 1.0e-12,
+                    )
+                    delta = pred_slope[valid] - target_slope[valid]
+                    slope_error.extend(delta.tolist())
+                    inversion_count += int(
+                        np.sum(
+                            (pred_slope[valid] < -0.05)
+                            & (target_slope[valid] >= -0.05)
+                        )
+                    )
+                    pair_count += int(np.sum(valid))
+                # A monotonic knot audit catches the cause; this terminal-level
+                # metric catches any future implementation that recreates an
+                # observable plateau step by another mechanism.
+                if len(pred_log) >= 3:
+                    second_diff = np.abs(np.diff(pred_log, n=2))
+                    plateau = x[1:-1] >= plateau_start[family]
+                    jump_by_family[family].extend(second_diff[plateau].tolist())
         if slope_error:
             slope_error_np = np.asarray(slope_error, dtype=float)
             out[f"{prefix}_iv_slope_rmse_dec_per_v"] = float(np.sqrt(np.mean(slope_error_np**2)))
@@ -11032,6 +11094,14 @@ def summarize(iv, cv):
         if curve_rms:
             out[f"{prefix}_iv_curve_rms_p95"] = float(np.quantile(curve_rms, 0.95))
             out[f"{prefix}_iv_curve_rms_max"] = float(np.max(curve_rms))
+        for family, values in jump_by_family.items():
+            if values:
+                arr = np.asarray(values, dtype=float)
+                key = family.lower()
+                out[f"{prefix}_{key}_plateau_jump_max_dec"] = float(np.max(arr))
+                out[f"{prefix}_{key}_plateau_jump_p99_dec"] = float(
+                    np.quantile(arr, 0.99)
+                )
     return out
 
 
@@ -13147,7 +13217,7 @@ def _device_level_fit_iv_symbolic_to_measurements(
             residual_symbolic_kan.load_state_dict(best_residual_state, strict=True)
         final_metrics = selection_metrics()
         args.out_dir.mkdir(parents=True, exist_ok=True)
-        (args.out_dir / "v95_symbolic_iv_measured_selection.json").write_text(
+        (args.out_dir / "v96_symbolic_iv_measured_selection.json").write_text(
             json.dumps(
                 {
                     "policy": "deterministic_leave_every_fifth_curve_condition_out",
@@ -14660,12 +14730,12 @@ def export_edgewise_symbolic_residual_kans(
         }
         torch.save(
             symbolic_state,
-            out_dir / "v95_symbolic_iv_student_state.pt",
+            out_dir / "v96_symbolic_iv_student_state.pt",
         )
         topology_alias = (
-            "v95_adaptive_top2_symbolic_iv_student_state.pt"
+            "v96_adaptive_top2_symbolic_iv_student_state.pt"
             if top2_edge_count
-            else "v95_top1_symbolic_iv_student_state.pt"
+            else "v96_top1_symbolic_iv_student_state.pt"
         )
         torch.save(symbolic_state, out_dir / topology_alias)
     except Exception as exc:
@@ -15107,6 +15177,18 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
         "idvd_high_absolute_accuracy": below_if_present(
             "residual_idvd_high_rms", args.final_idvd_max_high_rms
         ),
+        "idvbg_no_plateau_steps": below_if_present(
+            "residual_idvbg_plateau_jump_max_dec",
+            args.final_iv_max_plateau_jump_dec,
+        ),
+        "idvtg_no_plateau_steps": below_if_present(
+            "residual_idvtg_plateau_jump_max_dec",
+            args.final_iv_max_plateau_jump_dec,
+        ),
+        "idvd_no_plateau_steps": below_if_present(
+            "residual_idvd_plateau_jump_max_dec",
+            args.final_iv_max_plateau_jump_dec,
+        ),
     }
     cv_acc = metrics.get("cv_acceptance_diagnostics", {}) if isinstance(metrics.get("cv_acceptance_diagnostics", {}), dict) else {}
     if cv_acc.get("enabled"):
@@ -15127,6 +15209,12 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
         checks["diagonal_capacitance_pass"] = bool(charge.get("diagonal_cap_pass", False))
         checks["cross_reciprocity_pass"] = bool(charge.get("cross_reciprocity_pass", False))
         checks["terminal_pair_parasitics_nonnegative"] = bool(charge.get("terminal_pair_cpar_nonnegative", False))
+    grid_audit = metrics.get("kan_grid_audit", {})
+    if isinstance(grid_audit, dict) and grid_audit:
+        checks["all_kan_spline_grids_strictly_monotonic"] = all(
+            isinstance(item, dict) and bool(item.get("pass", False))
+            for item in grid_audit.values()
+        )
     symbolic = metrics.get("symbolic_edge_equivalence", {}) if isinstance(metrics.get("symbolic_edge_equivalence", {}), dict) else {}
     # Gate latent mappings when they contribute to deployment. Terminal-level
     # HSPICE checks remain mandatory because compensating hidden-edge errors
@@ -16783,10 +16871,11 @@ def write_release_package(
     metrics["hspice_cv_grid_equivalence"] = hspice_cv_grid
     metrics["deployment_equivalence_summary"] = _deployment_equivalence_summary(metrics)
     metrics_text = json.dumps(metrics, indent=2)
+    (out_dir / "v92_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     (out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     status = _release_pass_fail(safe_scan, safe_shape, metrics, args)
     manifest = {
-        "version": "v95_fresh_training_top1_gate_pass_delivery",
+        "version": "v96_fresh_training_top1_gate_pass_delivery",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "base_model_dir": str(args.model_dir),
         "data_dir": str(getattr(args, "data_dir_override", None) or meta.get("training_args", {}).get("data_dir")),
@@ -16868,7 +16957,7 @@ def write_release_package(
     }
     (out_dir / "v93_release_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     lines = [
-        "# v95 Fresh-Training Top-1 Release Acceptance Report",
+        "# v96 Fresh-Training Top-1 Release Acceptance Report",
         "",
         f"Overall status: {'PASS' if status['pass'] else 'FAIL'}",
         "",
@@ -17181,6 +17270,15 @@ def parse_args():
     ap.add_argument("--final-iv-max-curve-rms-p95", type=float, default=0.412)
     ap.add_argument("--final-iv-max-on-rms", type=float, default=0.060)
     ap.add_argument("--final-iv-max-high-rms", type=float, default=0.055)
+    ap.add_argument(
+        "--final-iv-max-plateau-jump-dec",
+        type=float,
+        default=0.030,
+        help=(
+            "Maximum allowed pointwise second log-current difference on IDVBG/"
+            "IDVTG high-gate plateaus and IDVD saturation plateaus."
+        ),
+    )
     ap.add_argument("--final-idvbg-max-high-rms", type=float, default=0.055)
     ap.add_argument("--final-idvtg-max-high-rms", type=float, default=0.075)
     ap.add_argument("--final-idvd-max-high-rms", type=float, default=0.075)
@@ -17573,6 +17671,9 @@ def parse_args():
         default=0.18,
         help="Bounded scale for temperature-parameter KAN. It is used only when --enable-temperature-kan is set; keep the flag off when no measured temperature sweeps are available.",
     )
+    ap.add_argument("--temperature-kan-hidden", type=int, default=8)
+    ap.add_argument("--temperature-kan-grid", type=int, default=3)
+    ap.add_argument("--temperature-kan-k", type=int, default=3)
     ap.add_argument("--temperature-kan-lr-mult", type=float, default=0.04)
     ap.add_argument("--temperature-kan-penalty-weight", type=float, default=0.080)
     ap.add_argument("--temperature-kan-smoothness-weight", type=float, default=0.040)
@@ -17625,9 +17726,6 @@ def parse_args():
     ap.add_argument("--weight-decay", type=float, default=1e-6)
     ap.add_argument("--lr-eta-min-frac", type=float, default=0.02)
     ap.add_argument("--grad-clip", type=float, default=5.0)
-    ap.add_argument("--temperature-kan-hidden", type=int, default=8)
-    ap.add_argument("--temperature-kan-grid", type=int, default=3)
-    ap.add_argument("--temperature-kan-k", type=int, default=3)
     ap.add_argument("--deriv-warmup-epochs", type=int, default=80)
     ap.add_argument("--deriv-warmup-multiplier", type=int, default=3)
     ap.add_argument("--eval-every", type=int, default=40)
@@ -17655,7 +17753,7 @@ def parse_args():
         default=False,
         help=(
             "In finalize-only mode, reuse accepted scales/modes from the existing "
-            "v93_safe_residual_metrics.json instead of repeating expensive scans."
+            "v92_safe_residual_metrics.json instead of repeating expensive scans."
         ),
     )
     ap.add_argument(
@@ -18041,6 +18139,22 @@ def apply_quick_run_preset(args):
     args.base_iv_early_stop_min_epochs = min(
         int(args.base_iv_early_stop_min_epochs), 100
     )
+    # quick-run is an interface/regression path, not a signoff budget. Its
+    # reduced 140-epoch base stage must still reach the residual/CV stages so
+    # the complete static chain is exercised.
+    args.base_iv_max_nonzero_rms = max(
+        float(args.base_iv_max_nonzero_rms), 0.25
+    )
+    args.base_iv_max_nonzero_p95 = max(
+        float(args.base_iv_max_nonzero_p95), 0.45
+    )
+    args.base_iv_max_off_rms = max(float(args.base_iv_max_off_rms), 0.45)
+    args.base_iv_max_subthreshold_rms = max(
+        float(args.base_iv_max_subthreshold_rms), 0.30
+    )
+    args.base_iv_max_transition_rms = max(
+        float(args.base_iv_max_transition_rms), 0.30
+    )
     args.base_iv_max_on_rms = max(float(args.base_iv_max_on_rms), 0.45)
     args.base_iv_max_high_rms = max(float(args.base_iv_max_high_rms), 0.40)
     args.eval_every = max(int(args.eval_every), 60)
@@ -18077,7 +18191,7 @@ def main():
     args = apply_quick_run_preset(parse_args())
     if args.protected_iv_va is not None:
         raise ValueError(
-            "--protected-iv-va is disabled in v95: every device must train and "
+            "--protected-iv-va is disabled in v96: every device must train and "
             "symbolize its own IV model; historical formula substitution is forbidden."
         )
     set_seed(args.seed)
@@ -18420,7 +18534,7 @@ def main():
     print(f"Active external CV charge-PKAN outputs: {getattr(diag, 'active_cv_charge_pkan_outputs', [])}")
 
     if args.deployment_validation_only:
-        metrics_path = args.out_dir / "v93_safe_residual_metrics.json"
+        metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
         if not metrics_path.exists():
             raise FileNotFoundError(
                 f"Deployment-only validation requires existing accepted metrics: {metrics_path}"
@@ -18515,13 +18629,16 @@ def main():
     if args.checkpoint_diagnostic_only:
         if args.resume_diag_state is None:
             raise ValueError("--checkpoint-diagnostic-only requires --resume-diag-state")
-        reference_metrics = (
-            args.resume_diag_state.parent / "v93_safe_residual_metrics.json"
+        metric_candidates = [
+            args.resume_diag_state.parent / "v96_safe_residual_metrics.json",
+            args.resume_diag_state.parent / "v93_safe_residual_metrics.json",
+            args.resume_diag_state.parent / "v92_safe_residual_metrics.json",
+            args.resume_diag_state.parent / "safe_residual_metrics.json",
+        ]
+        reference_metrics = next(
+            (candidate for candidate in metric_candidates if candidate.exists()),
+            metric_candidates[0],
         )
-        if not reference_metrics.exists():
-            legacy_metrics = args.resume_diag_state.parent / "safe_residual_metrics.json"
-            if legacy_metrics.exists():
-                reference_metrics = legacy_metrics
         if not reference_metrics.exists():
             raise FileNotFoundError(
                 f"Missing accepted checkpoint metrics: {reference_metrics}"
@@ -18711,7 +18828,7 @@ def main():
     cv_eval_df = cv_train_df_all.copy()
     ext_iv = extrapolation_iv_dataframe()
     ext_cv = extrapolation_cv_dataframe(trap)
-    accepted_metrics_path = args.out_dir / "v93_safe_residual_metrics.json"
+    accepted_metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
     if args.reuse_safe_selection:
         if not accepted_metrics_path.exists():
             raise FileNotFoundError(
@@ -18948,7 +19065,7 @@ def main():
     cv_decomp.to_csv(args.out_dir / "v92_cv_kernel_decomposition.csv", index=False, encoding="utf-8-sig")
     audit.to_csv(args.out_dir / "v92_cv_quality_audit.csv", index=False, encoding="utf-8-sig")
     metrics_text = json.dumps(metrics, indent=2)
-    (args.out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
+    (args.out_dir / "v92_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     (args.out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     plot_diag(iv_out, cv_out, args.out_dir)
     plot_stage_outputs(iv_out, cv_out, metrics, args.out_dir)

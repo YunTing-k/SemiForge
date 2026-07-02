@@ -140,7 +140,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "float",
         "lo": 0.0001,
         "hi": 0.01,
-        "default": 0.002,
+        "default": 0.0012,
         "desc": (
             "Learning rate for the Adam optimizer during full model training. "
             "Lower values give more stable convergence; higher values may overshoot. "
@@ -173,7 +173,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "float",
         "lo": 1.0,
         "hi": 50.0,
-        "default": 8.0,
+        "default": 10.0,
         "desc": (
             "Weight multiplier for CV loss term relative to IV loss in the combined loss. "
             "Higher values force the model to fit CV curves more closely. "
@@ -206,11 +206,12 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "bool",
         "lo": None,
         "hi": None,
-        "default": True,
+        "default": False,
         "desc": (
             "Whether to fine-tune the base PKAN weights during full model training. "
             "When True, physical-kernel-fitted PKAN layers continue learning. "
-            "Set False to freeze the physical kernel and only train the residual path."
+            "When False (v96 default), freeze the physical kernel and only train the residual path "
+            "so that CV gradient corrections do not erode the accepted IV accuracy."
         ),
     },
     "early_stop_patience": {
@@ -239,7 +240,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "float",
         "lo": 0.0,
         "hi": 0.1,
-        "default": 0.015,
+        "default": 0.05,
         "desc": (
             "Weight for the symbolic training loss term. "
             "Controls how strongly the model is regularized towards symbolic interpretability. "
@@ -250,7 +251,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "int",
         "lo": 1,
         "hi": 200,
-        "default": 80,
+        "default": 10,
         "section": "full_model",
         "desc": (
             "Print training loss/metrics every N epochs. "
@@ -258,12 +259,12 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         ),
     },
 
-    # ── [full_model] v95 — base IV PKAN training ──
+    # ── [full_model] — base IV PKAN training ──
     "base_iv_epochs": {
         "type": "int",
         "lo": 100,
         "hi": 5000,
-        "default": 540,
+        "default": 700,
         "section": "full_model",
         "desc": (
             "Epochs for the base IV PKAN training phase (runs before residual/CV training). "
@@ -275,7 +276,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "int",
         "lo": 1,
         "hi": 10,
-        "default": 2,
+        "default": 1,
         "section": "full_model",
         "desc": (
             "Number of restarts for base IV PKAN training. "
@@ -472,7 +473,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "int",
         "lo": 1,
         "hi": 50,
-        "default": 12,
+        "default": 20,
         "section": "full_model",
         "desc": (
             "Shape evaluation period during the early training phase. "
@@ -484,7 +485,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "type": "int",
         "lo": 1,
         "hi": 50,
-        "default": 5,
+        "default": 10,
         "section": "full_model",
         "desc": (
             "Shape evaluation period during the middle training phase. "

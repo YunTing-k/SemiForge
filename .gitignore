@@ -7,6 +7,7 @@
 /ref/
 /log
 /session/
+/session_sample/
 !/session/.gitkeep
 /cron/cron_configs.json
 /mcps/sources/**/

@@ -333,10 +333,10 @@ def train_full_model(cfg, p, *, quick: bool = False) -> None:
     if yes(cfg, "runtime", "minimal_run"):
         quick = True
 
-    epochs = section.get("epochs", "1000")
-    lr = section.get("learning_rate", "0.001")
-    early_stop_patience = section.get("early_stop_patience", "200")
-    early_stop_min_epochs = section.get("early_stop_min_epochs", "400")
+    epochs = section.get("epochs", "700")
+    lr = section.get("learning_rate", "0.0012")
+    early_stop_patience = section.get("early_stop_patience", "5")
+    early_stop_min_epochs = section.get("early_stop_min_epochs", "220")
     print_every = section.get("print_every", "10")
     if quick:
         epochs = "1"
@@ -429,9 +429,9 @@ def train_full_model(cfg, p, *, quick: bool = False) -> None:
         "--shape-eval-period",
         section.get("shape_eval_period", "5"),
         "--shape-early-period",
-        section.get("shape_early_period", "12"),
+        section.get("shape_early_period", "20"),
         "--shape-middle-period",
-        section.get("shape_middle_period", "5"),
+        section.get("shape_middle_period", "10"),
         "--safe-scale-steps",
         cfg["validation"]["safe_scale_steps"],
         "--symbolic-edge-steps",
@@ -451,7 +451,7 @@ def train_full_model(cfg, p, *, quick: bool = False) -> None:
         "--symbolic-device-iv-measured-steps",
         cfg["symbolic"].get("device_iv_measured_steps", "1600"),
         "--iv-symbolic-calibration-max-terms",
-        cfg["symbolic"].get("iv_calibration_max_terms", "12"),
+        cfg["symbolic"].get("iv_calibration_max_terms", "24"),
         "--symbolic-device-cv-finetune-steps",
         cfg["symbolic"]["device_cv_finetune_steps"],
         "--temperature-kan-min-span-K",

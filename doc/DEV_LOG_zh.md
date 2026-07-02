@@ -640,3 +640,31 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **Preparer Prompt 增强**：Worker prompt 的 XLSX 处理部分新增 wide-format 识别和 reshape 指令（`pd.melt`/`df.stack` → 标准四列 `VD_V VBG_V VTG_V ID_A`）。
 
 **测试**：915 passed, 11 skipped
+
+### 2026-07-02 | Engine 完整同步 v96 + 预训练 PKAN + Pipeline 首次全通过
+
+**Engine v96 完整同步**：
+- dg_tft_full_model.py 整体替换为 v96 基线（之前只合并了 CompactKAN grid freeze）
+- v96 新增：plateau jump 诊断 + 3 gate checks、KAN grid monotonicity audit、VDS≈0 排除、6 阈值 quick-run 宽松
+- Port 3 处自定义：skip-precision-gates（3 个 gate）、Temperature KAN 可配（ResidualDiagnostic + 3 CLI 参数）
+- 其余 5 个 engine 文件 + 8 个 dynamic 文件 MD5 与 v96 完全一致
+
+**Bug 修复**：
+- dg_tft_full_model.py: 修复 udit DataFrame 被 or block, audit 循环覆盖的变量名冲突 bug（v96 原有 bug，sync 后重新引入）
+- param_defs.py: 9 个默认值对齐 v96 INI（learning_rate 0.002→0.0012、cv_weight 8.0→10.0、symbolic_training_weight 0.015→0.05 等）
+- un_model.py: fallback 默认值对齐 v96（epochs、lr、early_stop 等）
+- Verifier 入口模式下 CV_原始_train.xlsx 备份文件干扰 verifier 检查：排查后确认为纯格式差异，删除冗余文件
+
+**预训练 PKAN 模型**：
+- v96 自带的 	rained_model/base_physical_pkan/ 包含预训练 KAN 权重（pkan_torch_model.pt 53KB）
+- 路径：src/device_modeling/trained_model/base_physical_pkan/（已加入 .gitignore）
+- 之前 RELEASE_ROOT = CODE_ROOT.parent 解析为 src/device_modeling/，我方拷贝到了错误的 src/trained_model/
+- fallback metadata（1315 字节空壳）被引擎读取，导致 base IV-PKAN 从随机初始化起步，收敛到 on=0.074 > 0.06
+- 修正路径后 base IV-PKAN 收敛到 on=0.049（与 v96 单独测试一致），通过所有质量门
+
+**Pipeline 首次全通过**：
+- 全部 5 个阶段 DONE：verifier ✅ check-data ✅ fit-physical ✅ train-static ✅ train-hysteresis ✅
+- train-static ~1h52m，0 错误，10/10 产物齐全
+- 指标：iv_rms=0.248, residual_iv_rms=0.229, residual_cv_rms=0.021, hysteresis=0.048
+
+**测试**：916 passed, 11 skipped
