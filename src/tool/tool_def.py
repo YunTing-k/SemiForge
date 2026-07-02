@@ -2429,13 +2429,13 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         sys_log.error(f"{func_name} {FAIL_LABEL}: {e}")
         if progress.console:
             progress.console.print(f"{func_name} {FAIL_LABEL}: {e}", style="bold red", markup=False)
-        # Clean up any task board entries left in-progress on unexpected failure
+        # Clean up any task board entries left in-progress/pending on unexpected failure
         if board is not None:
             try:
                 from src.tool.scoreboard import TaskStatus, TaskUpdate
                 for tid, task in list(board._tasks.items()):
                     if task.subject and f"[DG-TFT" in str(task.subject) and str(run_id) in str(task.subject):
-                        if task.status == TaskStatus.IN_PROGRESS:
+                        if task.status in (TaskStatus.IN_PROGRESS, TaskStatus.PENDING):
                             update = TaskUpdate(
                                 task_id=tid,
                                 if_claim=True,

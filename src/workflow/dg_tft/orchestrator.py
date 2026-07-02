@@ -907,6 +907,8 @@ def _run_stage_diagnosis(
     if run is None:
         return
 
+    from rich.markup import escape as _rich_escape
+
     # 1 — Classification (always runs, no LLM)
     diag = classify_from_result(stage_result, exit_code=1)
     run.extra["diagnosis"] = diag.to_dict()
@@ -944,8 +946,8 @@ def _run_stage_diagnosis(
     muted = getattr(ctx, "subagent_mute", False)
     if console and not muted:
         console.print(
-            f"  [bright_black]Diagnosing [/{diag.category.value}][bright_black] "
-            f"via {hook.subagent_type} subagent ...[/bright_black]"
+            f"  [bright_black]Diagnosing {_rich_escape(diag.category.value)}[/bright_black] "
+            f"via {hook.subagent_type} subagent ..."
         )
 
     try:
