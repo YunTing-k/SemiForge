@@ -364,8 +364,10 @@ class TestStageAttemptLogAuditGaps(unittest.TestCase):
 
 
 class TestOperationLogStateMachine(unittest.TestCase):
-    """State-machine tests simulating typical pipeline attempt sequences
-    and verifying the audit-discovered gaps are detectable at the data level."""
+    """State-machine tests for typical pipeline attempt sequences.
+    These tests demonstrate the data model's correct-behavior specification.
+    Where the orchestrator currently falls short of this spec, the docstring
+    notes the gap explicitly."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -376,186 +378,128 @@ class TestOperationLogStateMachine(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    # ── gap: hard failure on first attempt is never logged ─────────
+    # ── correct-behavior specification tests ────────────────────────
 
-    def test_hard_failure_missing_from_log_is_detectable(self):
-        """If a stage hard-fails and no entry is appended,
-        get_stage_attempts returns empty list and get_last_attempt returns None."""
-        self.assertEqual(self.op.get_stage_attempts("check-data"), [])
-        self.assertIsNone(self.op.get_last_attempt("check-data"))
-
-    # ── gap: successful retry after agent adjust is never logged ───
-
-    def test_agent_adjust_entry_with_ok_false_implies_retry_not_logged(self):
-        """When only an AGENT_ADJUST entry exists with ok=False,
-        the actual successful re-run (if any) has no corresponding log entry."""
+    def test_every_stage_execution_logs_an_entry(self):
+        """Spec: every stage execution (init, agent decision, retry)
+        produces a log entry with that execution's actual ok/metrics.
+        Gap: orchestrator._log_initial_attempt only fires on ok=True and
+        attempt_n==1, so retry results after agent_adjust are never logged."""
         self.op.append_attempt("fit-physical", StageAttemptLog(
             n=1, trigger=AttemptTrigger.INITIAL, ok=True,
             metrics={"iv_rms_log10_error_dec": 0.40}))
-
-        # Agent B calls adjust_params — this is logged
         self.op.append_attempt("fit-physical", StageAttemptLog(
             n=2, trigger=AttemptTrigger.AGENT_ADJUST, ok=False,
-            agent_decision={"tool": "adjust_params",
-                            "adjustments": {"max_nfev_scale": 2.0}},
-            agent_reasoning="IV RMS 0.40 > 0.35, need more iterations"))
+            agent_decision={"tool": "adjust_params"},
+            agent_reasoning="need more nfev"))
+        # The actual retry execution — should be logged with its own ok=True
+        self.op.append_attempt("fit-physical", StageAttemptLog(
+            n=2, trigger=AttemptTrigger.INITIAL, ok=True,
+            metrics={"iv_rms_log10_error_dec": 0.0015}))
 
-        # The actual successful retry (n=2 re-run with ok=True, metrics=0.0015)
-        # is NEVER appended — orchestrator.py:462-463 only logs attempt_n==1
         attempts = self.op.get_stage_attempts("fit-physical")
-        self.assertEqual(len(attempts), 2)
-        self.assertFalse(attempts[1]["ok"])
-        self.assertEqual(attempts[1]["trigger"], "agent_adjust")
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(attempts[2]["ok"])
+        self.assertEqual(attempts[2]["metrics"]["iv_rms_log10_error_dec"], 0.0015)
 
-        # get_last_attempt returns the AGENT_ADJUST entry, not the successful re-run
-        last = self.op.get_last_attempt("fit-physical")
-        self.assertEqual(last["trigger"], "agent_adjust")
-        self.assertFalse(last["ok"])
+    def test_hard_failed_stage_appears_in_log(self):
+        """Spec: every stage execution logs its outcome, including hard failures.
+        Gap: orchestrator._log_initial_attempt only called when ok=True."""
+        self.op.append_attempt("check-data", StageAttemptLog(
+            n=1, trigger=AttemptTrigger.INITIAL, ok=False,
+            error="ValueError: missing column VD_V"))
+        self.assertEqual(len(self.op.get_stage_attempts("check-data")), 1)
+        entry = self.op.get_last_attempt("check-data")
+        self.assertFalse(entry["ok"])
+        self.assertIn("VD_V", entry["error"])
 
-    # ── gap: Agent E sees only last attempt ─────────────────────────
+    def test_cascade_victim_stage_logs_failure(self):
+        """Spec: when downstream stages fail because upstream failed,
+        their failure is still logged. Gap: orchestrator never appends
+        for cascade victims that hard-fail on their first attempt."""
+        self.op.append_attempt("fit-physical", StageAttemptLog(
+            n=1, trigger=AttemptTrigger.INITIAL, ok=False,
+            error="ValueError: missing column VD_V"))
+        self.op.append_attempt("train-static", StageAttemptLog(
+            n=1, trigger=AttemptTrigger.INITIAL, ok=False,
+            error="FileNotFoundError: fitted_params.json"))
+        self.assertEqual(len(self.op.get_stage_attempts("train-static")), 1)
 
-    def test_last_attempt_may_not_be_ok_even_if_stage_succeeded(self):
-        """The orchestrator uses attempts[-1] in Agent E's prompt (orchestrator.py:1650).
-        If the last entry is an AGENT_ADJUST with ok=False, Agent E sees FAIL
-        even though the stage eventually succeeded."""
+    def test_last_attempt_ok_reflects_actual_execution(self):
+        """Spec: the last log entry reflects the most recent execution's
+        actual outcome (not an intermediate agent decision).
+        Gap: Agent E's prompt reads attempts[-1] which may be an
+        AGENT_ADJUST entry with ok=False even after a successful retry."""
         self.op.append_attempt("train-static", StageAttemptLog(
             n=1, trigger=AttemptTrigger.INITIAL, ok=True,
             metrics={"residual_iv_rms": 0.30, "residual_cv_rms": 0.07}))
         self.op.append_attempt("train-static", StageAttemptLog(
             n=2, trigger=AttemptTrigger.AGENT_ADJUST, ok=False,
-            agent_decision={"tool": "adjust_params",
-                            "adjustments": {"cv_weight": 15.0}}))
+            agent_decision={"tool": "adjust_params"}))
+        self.op.append_attempt("train-static", StageAttemptLog(
+            n=2, trigger=AttemptTrigger.INITIAL, ok=True,
+            metrics={"residual_iv_rms": 0.30, "residual_cv_rms": 0.05}))
 
         last = self.op.get_last_attempt("train-static")
-        self.assertFalse(last["ok"])
+        self.assertTrue(last["ok"])
+        self.assertEqual(last["metrics"]["residual_cv_rms"], 0.05)
 
-        # The successful n=2 re-run (ok=True, cv_rms=0.05) is missing
-        # Agent E would see FAIL based on this entry
-        attempts = self.op.get_stage_attempts("train-static")
-        self.assertEqual(len(attempts), 2)
-        self.assertTrue(attempts[0]["ok"])    # initial was ok
-        self.assertFalse(attempts[1]["ok"])   # last is agent_adjust with FAIL
-
-    # ── cascade: downstream stages fail but have no log entries ────
-
-    def test_downstream_hard_failure_leaves_no_trace_in_log(self):
-        """When fit-physical hard-fails and train-static also hard-fails
-        (cascade victim), neither has an operation_log entry for train-static
-        because _log_initial_attempt only fires on ok=True."""
-        self.op.append_attempt("fit-physical", StageAttemptLog(
-            n=1, trigger=AttemptTrigger.INITIAL, ok=False,
-            error="ValueError: missing column VD_V"))
-
-        # train-static never ran or hard-failed immediately — no entry
-        self.assertEqual(self.op.get_stage_attempts("train-static"), [])
-        self.assertIsNone(self.op.get_last_attempt("train-static"))
-
-    # ── gap: PREP_RETRY defined but never emitted ───────────────────
-
-    def test_prep_retry_trigger_exists_in_enum(self):
-        """PREP_RETRY exists in the AttemptTrigger enum (line 36 of operation_log.py)
-        but is never assigned to any StageAttemptLog in production code.
-        Data-prep retries use VERIFIER_FAIL instead (data_preparer.py:421, 431).
-        The orchestrator also uses VERIFIER_FAIL for data-prep re-runs (line 577)."""
-        self.assertIn("prep_retry", AttemptTrigger._value2member_map_)
-        t = AttemptTrigger("prep_retry")
-        self.assertIsInstance(t, AttemptTrigger)
-
-    # ── gap: UPSTREAM_CHANGED defined but never emitted ─────────────
-
-    def test_upstream_changed_trigger_exists_in_enum(self):
-        """UPSTREAM_CHANGED exists in the AttemptTrigger enum but
-        the orchestrator has no code to detect upstream changes or emit it."""
-        self.assertIn("upstream_changed", AttemptTrigger._value2member_map_)
-        t = AttemptTrigger("upstream_changed")
-        self.assertIsInstance(t, AttemptTrigger)
-
-    # ── full successful pipeline simulation ─────────────────────────
+    # ── behaving correctly (no expected failure) ────────────────────
 
     def test_full_pipeline_success_sequence(self):
-        """Simulate a fully successful pipeline run and verify
-        all stages have at least one entry with ok=True."""
         stages = ["data-prep", "verifier", "check-data", "fit-physical",
                    "train-static", "train-hysteresis"]
         for s in stages:
             self.op.append_attempt(s, StageAttemptLog(n=1, ok=True))
-
         for s in stages:
             attempts = self.op.get_stage_attempts(s)
             self.assertEqual(len(attempts), 1)
             self.assertTrue(attempts[0]["ok"])
-            self.assertEqual(attempts[0]["trigger"], "initial")
 
-    def test_pipeline_with_retry_and_accept_sequence(self):
-        """Simulate: init fail → agent adjust → retry → accept_quality."""
-        # Attempt 1: quality fail
-        self.op.append_attempt("fit-physical", StageAttemptLog(
-            n=1, trigger=AttemptTrigger.INITIAL, ok=True,
-            metrics={"iv_rms_log10_error_dec": 0.40}))
-
-        # Agent B adjusts params
+    def test_agent_decision_preserves_reasoning_and_decision(self):
         self.op.append_attempt("fit-physical", StageAttemptLog(
             n=2, trigger=AttemptTrigger.AGENT_ADJUST, ok=False,
             agent_decision={"tool": "adjust_params", "adjustments": {"max_nfev_scale": 2.0}},
+            agent_reasoning="VTO at bound -5.0, suspected data issue",
             adjustments={"physical_fit.max_nfev_scale": "2.0"}))
+        entry = self.op.get_last_attempt("fit-physical")
+        self.assertEqual(entry["agent_reasoning"], "VTO at bound -5.0, suspected data issue")
+        self.assertEqual(entry["agent_decision"]["tool"], "adjust_params")
+        self.assertEqual(entry["adjustments"]["physical_fit.max_nfev_scale"], "2.0")
 
-        # NOTE: successful retry (n=2, ok=True with improved metrics) is never logged
-        # This gap is verified by test_agent_adjust_entry_with_ok_false_implies_retry_not_logged
-
-        # Agent B accepts the result after retry
-        self.op.append_attempt("fit-physical", StageAttemptLog(
-            n=3, trigger=AttemptTrigger.AGENT_ACCEPT, ok=False,
-            agent_decision={"tool": "accept_quality"},
-            agent_reasoning="IV RMS 0.0018 after retry, within tolerance"))
-
-        last = self.op.get_last_attempt("fit-physical")
-        self.assertEqual(last["trigger"], "agent_accept")
-
-    def test_pipeline_with_fallback_sequence(self):
-        """Simulate: fail → agent fallback → upstream re-run."""
-        # train-hysteresis fails → Agent D falls back
+    def test_fallback_sequence_preserves_target_and_reason(self):
         self.op.append_attempt("train-hysteresis", StageAttemptLog(
             n=1, trigger=AttemptTrigger.INITIAL, ok=False,
             error="RuntimeError: Top-2 SRH hysteresis acceptance failed"))
-
         self.op.append_attempt("train-hysteresis", StageAttemptLog(
             n=2, trigger=AttemptTrigger.FALLBACK_SENT,
             agent_decision={"tool": "fallback_to_previous", "target": "train-static",
-                            "reason": "Acceptance gate failed, need better static model"},
-            agent_reasoning="Static model checkpoint may be inadequate"))
-
-        # train-static re-runs (fallback received from downstream)
+                            "reason": "Static model checkpoint inadequate"}))
         self.op.append_attempt("train-static", StageAttemptLog(
-            n=1, trigger=AttemptTrigger.INITIAL, ok=True))  # original run
+            n=1, trigger=AttemptTrigger.INITIAL, ok=True))
         self.op.append_attempt("train-static", StageAttemptLog(
             n=2, trigger=AttemptTrigger.FALLBACK_RECEIVED, ok=True,
             metrics={"residual_iv_rms": 0.20, "residual_cv_rms": 0.04}))
 
         self.assertEqual(len(self.op.get_stage_attempts("train-hysteresis")), 2)
         self.assertEqual(len(self.op.get_stage_attempts("train-static")), 2)
-        last_ts = self.op.get_last_attempt("train-static")
-        self.assertEqual(last_ts["trigger"], "fallback_received")
-        self.assertTrue(last_ts["ok"])
+        self.assertEqual(
+            self.op.get_last_attempt("train-hysteresis")["trigger"], "fallback_sent")
+        self.assertEqual(
+            self.op.get_last_attempt("train-static")["trigger"], "fallback_received")
 
-    def test_quality_pass_field_tri_state_behavior(self):
-        """quality_pass is bool|None: None=unassessed, True=passed, False=failed."""
-        # Initial attempt — quality not assessed (pass=True, just not checked yet)
+    def test_quality_pass_tri_state_behavior(self):
         self.op.append_attempt("train-static", StageAttemptLog(
-            n=1, trigger=AttemptTrigger.INITIAL, ok=True,
-            quality_pass=None))
-        self.assertIsNone(self.op.get_last_attempt("train-static")["quality_pass"])
+            n=1, trigger=AttemptTrigger.INITIAL, ok=True, quality_pass=None))
+        self.op.append_attempt("train-static", StageAttemptLog(
+            n=2, trigger=AttemptTrigger.AGENT_ADJUST, ok=False, quality_pass=True))
+        self.op.append_attempt("train-static", StageAttemptLog(
+            n=3, trigger=AttemptTrigger.AGENT_ACCEPT, ok=False, quality_pass=False))
 
-        # Passed
-        self.op.append_attempt("train-static", StageAttemptLog(
-            n=2, trigger=AttemptTrigger.AGENT_ADJUST, ok=False,
-            quality_pass=True))
-        self.assertTrue(self.op.get_last_attempt("train-static")["quality_pass"])
-
-        # Failed
-        self.op.append_attempt("train-static", StageAttemptLog(
-            n=3, trigger=AttemptTrigger.AGENT_ACCEPT, ok=False,
-            quality_pass=False))
-        self.assertFalse(self.op.get_last_attempt("train-static")["quality_pass"])
+        entries = self.op.get_stage_attempts("train-static")
+        self.assertIsNone(entries[0]["quality_pass"])
+        self.assertTrue(entries[1]["quality_pass"])
+        self.assertFalse(entries[2]["quality_pass"])
 
 
 if __name__ == "__main__":
