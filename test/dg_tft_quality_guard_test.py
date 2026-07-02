@@ -596,7 +596,7 @@ class TestOrchestratorQualityGate(unittest.TestCase):
         )
 
     def test_quality_pass_returns_original_result(self):
-        from src.workflow.dg_tft.orchestrator import _enforce_quality_gate
+        from src.workflow.dg_tft.orchestrator import _check_quality_once
         from src.workflow.dg_tft.schema import StageResult
 
         subdir = Path(self.tmpdir) / "01_physical_kernel"
@@ -610,49 +610,48 @@ class TestOrchestratorQualityGate(unittest.TestCase):
         sd = self._make_sd()
         sr = StageResult(ok=True, stage=StageName.FIT_PHYSICAL, summary="pass")
 
-        result_sr, issues = _enforce_quality_gate(
-            ctx, 1, sd, sr, self.ini, self.tmpdir, None,
+        result_sr, issues = _check_quality_once(
+            ctx, 1, sd, sr, self.ini, self.tmpdir,
         )
         self.assertTrue(result_sr.ok)
         self.assertEqual(issues, [])
 
     def test_quality_fail_without_thresholds_returns_original(self):
-        from src.workflow.dg_tft.orchestrator import _enforce_quality_gate
+        from src.workflow.dg_tft.orchestrator import _check_quality_once
         from src.workflow.dg_tft.schema import StageResult
 
         ctx = self._make_mock_ctx(configs={})
         sd = self._make_sd()
         sr = StageResult(ok=True, stage=StageName.FIT_PHYSICAL, summary="pass")
 
-        result_sr, issues = _enforce_quality_gate(
-            ctx, 1, sd, sr, self.ini, self.tmpdir, None,
+        result_sr, issues = _check_quality_once(
+            ctx, 1, sd, sr, self.ini, self.tmpdir,
         )
         self.assertTrue(result_sr.ok)
         self.assertEqual(issues, [])
 
-    def test_quality_check_stores_retry_history_in_extra(self):
-        from src.workflow.dg_tft.orchestrator import _enforce_quality_gate
+    def test_quality_check_returns_issues_when_below_threshold(self):
+        from src.workflow.dg_tft.orchestrator import _check_quality_once
         from src.workflow.dg_tft.schema import StageResult
 
         subdir = Path(self.tmpdir) / "01_physical_kernel"
         subdir.mkdir()
         json_path = subdir / "fitted_params.json"
         json_path.write_text(json.dumps({
-            "metrics_summary": {"iv_rms_log10_error_dec": 0.015},
+            "metrics_summary": {"iv_rms_log10_error_dec": 0.95},
         }))
 
         ctx = self._make_mock_ctx()
-        run = ctx.workflow_man.get_run.return_value
         sd = self._make_sd()
         sr = StageResult(ok=True, stage=StageName.FIT_PHYSICAL, summary="pass")
 
-        _enforce_quality_gate(
-            ctx, 1, sd, sr, self.ini, self.tmpdir, None,
+        _result_sr, issues = _check_quality_once(
+            ctx, 1, sd, sr, self.ini, self.tmpdir,
         )
-        self.assertIn("quality_retry_history", run.extra)
+        self.assertNotEqual(issues, [])
 
     def test_metrics_stored_on_stage_result(self):
-        from src.workflow.dg_tft.orchestrator import _enforce_quality_gate
+        from src.workflow.dg_tft.orchestrator import _check_quality_once
         from src.workflow.dg_tft.schema import StageResult
 
         subdir = Path(self.tmpdir) / "01_physical_kernel"
@@ -666,8 +665,8 @@ class TestOrchestratorQualityGate(unittest.TestCase):
         sd = self._make_sd()
         sr = StageResult(ok=True, stage=StageName.FIT_PHYSICAL, summary="pass")
 
-        result_sr, _ = _enforce_quality_gate(
-            ctx, 1, sd, sr, self.ini, self.tmpdir, None,
+        result_sr, _ = _check_quality_once(
+            ctx, 1, sd, sr, self.ini, self.tmpdir,
         )
         self.assertIn("metrics_summary.iv_rms_log10_error_dec", result_sr.metrics)
 

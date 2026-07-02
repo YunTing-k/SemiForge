@@ -22,7 +22,6 @@ import configparser
 import logging
 import os
 import re
-import shutil
 import time
 from datetime import datetime
 from enum import Enum
@@ -45,9 +44,6 @@ from .metrics_parser import parse_metrics, get_primary_metric
 from .quality_guard import (
     assess_quality,
     get_quality_thresholds,
-    get_max_retries,
-    suggest_adjustments,
-    apply_adjustments,
     stage_display_label,
 )
 from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
@@ -81,6 +77,16 @@ _STAGE_TASK_SUBJECTS: dict[str, str] = {
     StageName.FIT_PHYSICAL: "Fit physical kernel",
     StageName.TRAIN_STATIC: "Train static model",
     StageName.TRAIN_HYSTERESIS: "Train hysteresis",
+}
+
+_STAGE_STEP_INDEX: dict[str, int] = {
+    StageName.DATA_PREP: 1,
+    StageName.VERIFIER: 2,
+    StageName.CHECK_DATA: 3,
+    StageName.FIT_PHYSICAL: 4,
+    StageName.TRAIN_STATIC: 5,
+    StageName.TRAIN_HYSTERESIS: 6,
+    StageName.FINAL_REPORT: 7,
 }
 
 _STAGE_TASK_DESCS: dict[str, str] = {
@@ -155,7 +161,7 @@ def run_workflow(
         output_dir = _read_output_dir(config_path)
     else:
         runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-        output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
+        output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Operation log ──
@@ -191,7 +197,6 @@ def run_workflow(
 
     # ── While+pointer state machine ──
     pointer = 0
-    idx_counter = 0
     max_pointer = len(stages)
     total_stages = len(stages)
     failed_stage: str = ""
@@ -201,8 +206,7 @@ def run_workflow(
 
     while pointer < max_pointer:
         sd = stages[pointer]
-        idx_counter += 1
-        display_idx = idx_counter
+        display_idx = pointer + 1
 
         # ── Overall run timeout check ──
         if _elapsed_exceeds(t_start, run_timeout):
@@ -212,7 +216,8 @@ def run_workflow(
             wm.mark_failed(run_id, failed_error)
             op_log.set_final_status("failed")
             _finalize_run(ctx, run_id, output_dir, t_start, stages,
-                          failed=True, failed_stage=failed_stage, failed_error=failed_error)
+                          failed=True, failed_stage=failed_stage, failed_error=failed_error,
+                          board=board, task_map=task_map)
             return False, failed_error
 
         # ── No-op stage check ──
@@ -256,6 +261,8 @@ def run_workflow(
                         if prep_idx >= 0:
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                            # Clear data-prep stage result so _stage_done does not skip it
+                            wm.clear_stage_result(run_id, StageName.DATA_PREP)
                         fallback_ctx = None
                         run = wm.get_run(run_id)
                         continue
@@ -272,7 +279,8 @@ def run_workflow(
                     wm.mark_failed(run_id, f"Required stage {sd.name} exhausted after {max_r} attempts")
                     op_log.set_final_status("failed")
                     _finalize_run(ctx, run_id, output_dir, t_start, stages,
-                                  failed=True, failed_stage=sd.name, failed_error=f"Verifier exhausted")
+                                  failed=True, failed_stage=sd.name, failed_error=f"Verifier exhausted",
+                                  board=board, task_map=task_map)
                     return False, f"Failed at {sd.name}: verifier exhausted"
             else:
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
@@ -371,7 +379,8 @@ def run_workflow(
                 _run_stage_diagnosis(ctx, run_id, sr, output_dir, config_path)
                 op_log.set_final_status("failed")
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
-                              failed=True, failed_stage=failed_stage, failed_error=failed_error)
+                              failed=True, failed_stage=failed_stage, failed_error=failed_error,
+                              board=board, task_map=task_map)
                 return False, f"Failed at {sd.name}: {sr.error}"
             else:
                 wm.add_warning(run_id, f"Optional stage {sd.name} failed: {sr.error}")
@@ -389,9 +398,8 @@ def run_workflow(
 
         _log_initial_attempt(op_log, sd.name, sr, output_dir, stage_duration)
 
-        sr, quality_issues = _enforce_quality_gate(
-            ctx, run_id, sd, sr, config_path, output_dir, timeout, op_log,
-        )
+        # Agent B placeholder: quality check only, no auto-retry (future Agent B will handle)
+        sr, quality_issues = _check_quality_once(ctx, run_id, sd, sr, config_path, output_dir)
 
         wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
         for p in sd.key_artifacts:
@@ -665,14 +673,17 @@ def _revert_tasks(
     stages: list[StageDef],
     fallback_pointer: int,
 ) -> None:
-    """Revert task board entries: mark stages at and after fallback_pointer as in_progress."""
+    """Revert task board entries: mark previously completed stages as in_progress."""
     if board is None:
         return
+    from src.tool.scoreboard import TaskStatus
     for i in range(fallback_pointer, len(stages)):
         sd = stages[i]
         tid = task_map.get(sd.name)
         if tid is not None:
-            _start_task(board, agent_id, tid)
+            ok, task, _ = board.get_task(tid)
+            if ok and task is not None and task.status == TaskStatus.COMPLETED:
+                _start_task(board, agent_id, tid)
 
 
 # ── Finalization (report + console + persistence) ──────────────────
@@ -687,6 +698,8 @@ def _finalize_run(
     failed: bool = False,
     failed_stage: str = "",
     failed_error: str = "",
+    board = None,
+    task_map: dict[str, int] | None = None,
 ) -> None:
     """Generate reports, mark run status, and print console summary."""
     wm = ctx.workflow_man
@@ -705,6 +718,13 @@ def _finalize_run(
         wm.mark_failed(run_id, failed_error)
     else:
         wm.mark_done(run_id)
+
+    # Clean up remaining task board entries on failure
+    if failed and board is not None and task_map:
+        for sd in stages:
+            tid = task_map.get(sd.name)
+            if tid is not None:
+                _resolve_task(board, ctx.agent_id, tid, completed=False)
 
     run_data = run.to_dict()
     build_and_write_reports(run_data, output_dir, prep_info=prep_info)
@@ -738,8 +758,9 @@ def _create_stage_tasks(
             continue
         subject = _STAGE_TASK_SUBJECTS.get(sd.name, sd.name)
         desc = _STAGE_TASK_DESCS.get(sd.name, "")
+        step = _STAGE_STEP_INDEX.get(sd.name, 0)
         ok, msg = board.create_task(
-            f"{_WF_TASK_PREFIX} [{run_id}] {subject}",
+            f"[DG-TFT, ID: {run_id}] [Step-{step}] {subject}",
             desc,
         )
         if ok:
@@ -804,6 +825,8 @@ def _console_summary(
     if c is None:
         return
 
+    from rich.markup import escape as _rich_escape
+
     wm = ctx.workflow_man
     run = wm.get_run(run_id)
     if run is None:
@@ -814,12 +837,12 @@ def _console_summary(
     c.print(f"[{WF_SECTION_TITLE}]DG-TFT Run Summary[/{WF_SECTION_TITLE}]")
     if failed:
         c.print(f"  [{WF_STATUS_ERROR}]Status   :[/{WF_STATUS_ERROR}] FAILED at {STAGE_DISPLAY_NAMES.get(failed_stage, failed_stage)}")
-        c.print(f"  Reason   : [{WF_STATUS_ERROR}]{failed_error[:120]}[/{WF_STATUS_ERROR}]")
+        c.print(f"  Reason   : [{WF_STATUS_ERROR}]{_rich_escape(failed_error[:120])}[/{WF_STATUS_ERROR}]")
     else:
         c.print(f"  [{WF_STATUS_SUCCESS}]Status   :[/{WF_STATUS_SUCCESS}] COMPLETED")
 
     c.print(f"  Run ID   : {run_id}")
-    c.print(f"  Output   : [bright_black]{output_dir}[/bright_black]")
+    c.print(f"  Output   : [bright_black]{_rich_escape(output_dir)}[/bright_black]")
     c.print("  Reports  :")
     for key, label in [("md", "Markdown"), ("json", "JSON"), ("manifest", "Manifest")]:
         p = Path(reports[key])
@@ -832,7 +855,7 @@ def _console_summary(
     if run.artifacts:
         c.print("  Key outputs:")
         for art_key, art_path in run.artifacts.items():
-            c.print(f"    [bright_black]{art_key}:[/bright_black] {art_path}")
+            c.print(f"    [bright_black]{art_key}:[/bright_black] {_rich_escape(art_path)}")
 
     # Diagnosis
     if run.extra.get("diagnosis"):
@@ -842,16 +865,16 @@ def _console_summary(
         evidence = diag.get("evidence", [])
         suggestion = diag.get("suggestion", "")
         subagent_text = diag.get("subagent_result", "")
-        c.print(f"  Diagnosis : [{WF_STATUS_WARN}]{cat}[/{WF_STATUS_WARN}] (confidence {conf:.0%})")
+        c.print(f"  Diagnosis : [{WF_STATUS_WARN}]{_rich_escape(cat)}[/{WF_STATUS_WARN}] (confidence {conf:.0%})")
         if evidence:
-            c.print(f"  Evidence  : [bright_black]{', '.join(evidence[:3])}[/bright_black]")
+            c.print(f"  Evidence  : [bright_black]{_rich_escape(', '.join(evidence[:3]))}[/bright_black]")
         if suggestion:
-            c.print(f"  Suggestion: [bright_black]{suggestion}[/bright_black]")
+            c.print(f"  Suggestion: [bright_black]{_rich_escape(suggestion)}[/bright_black]")
         if subagent_text:
             c.print("")
             c.print(f"  [{WF_SECTION_TITLE}]AI Diagnosis[/{WF_SECTION_TITLE}]")
             for line in subagent_text.strip().splitlines()[:10]:
-                c.print(f"  [bright_black]{line[:120]}[/bright_black]")
+                c.print(f"  [bright_black]{_rich_escape(line[:120])}[/bright_black]")
 
     # Recommendations
     if failed:
@@ -1013,11 +1036,12 @@ def _collect_log_snippet(output_dir: str, stage_name: str) -> str:
 def _print_diagnosis(console, diagnosis_text: str) -> None:
     """Print a formatted diagnosis block to the console."""
     from textwrap import shorten
+    from rich.markup import escape as _rich_escape
 
     console.print("  [bright_black]── Diagnosis ──[/bright_black]")
     for line in diagnosis_text.strip().splitlines()[:15]:
         shortened = shorten(line, width=120, placeholder="...")
-        console.print(f"  [bright_black]{shortened}[/bright_black]")
+        console.print(f"  [bright_black]{_rich_escape(shortened)}[/bright_black]")
 
 
 def _print_failure_recommendation(c, stage_name: str) -> None:
@@ -1105,39 +1129,25 @@ def _log_initial_attempt(
     )
     op_log.append_attempt(stage_name, entry)
 
-def _enforce_quality_gate(
+def _check_quality_once(
     ctx: AgentContext,
     run_id: int,
     sd: StageDef,
     stage_result: StageResult,
     config_path: str,
     output_dir: str,
-    timeout: int | None,
-    op_log: OperationLog | None = None,
 ) -> tuple[StageResult, list[str]]:
-    """Check stage output quality and conditionally retry with adjusted parameters.
+    """Check stage output quality once; log warning if below threshold.
 
-    When a stage exits with ok=True but quality metrics fall below configured
-    thresholds, this function enters a progressive retry loop: adjust parameters,
-    re-run the stage, re-assess quality — up to ``DG_TFT_QUALITY_MAX_RETRIES``
-    attempts.  Retry attempts (n >= 2) are logged to the operation log;
-    the initial attempt (n=1) is already logged by the caller.
-
-    Retry directories are named ``attempt_N`` (starting from 2, since attempt_1
-    is the initial run) and are **not** deleted afterwards — Agent E needs the
-    full history for interpretation.
-
-    Returns:
-        (final_result, quality_issues) — ``final_result`` is the best
-        StageResult across all attempts; ``quality_issues`` is non-empty
-        when quality still does not pass after all retries.
+    Agent B (future) will handle iterative retry + parameter adjustment.
+    For now we only assess quality and record the result — no automatic
+    re-runs.
     """
     wm = ctx.workflow_man
     run = wm.get_run(run_id)
     stage_name = sd.name
 
     if _is_minimal_run(config_path):
-        sys_log.info("Stage [%s] minimal_run enabled, skipping quality gate", stage_name)
         return stage_result, []
 
     thresholds = get_quality_thresholds(ctx.agent_configs)
@@ -1145,21 +1155,16 @@ def _enforce_quality_gate(
         return stage_result, []
 
     if not get_primary_metric(stage_name):
-        sys_log.info("Stage [%s] has no quality metric source, skipping quality gate", stage_name)
         return stage_result, []
 
-    max_retries = get_max_retries(ctx.agent_configs)
     stage_label = stage_display_label(stage_name)
-    base_output_dir = output_dir
-
-    # ── Initial quality check ──
     metrics = parse_metrics(output_dir, stage_name)
     sr = stage_result
     sr.metrics = metrics
     q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
 
     if q_ok:
-        sys_log.info("Stage [%s] quality PASS (initial)", stage_name)
+        sys_log.info("Stage [%s] quality PASS", stage_name)
         return sr, []
 
     sys_log.warning(
@@ -1167,144 +1172,8 @@ def _enforce_quality_gate(
         stage_name, "; ".join(q_failures),
     )
     _print_quality_fail(ctx, stage_label, q_failures)
-
-    # ── Retry history ──
-    retry_log: list[dict] = []
-    if "quality_retry_history" not in run.extra:
-        run.extra["quality_retry_history"] = retry_log
-    else:
-        retry_log = run.extra["quality_retry_history"]
-
-    best_sr = sr
-    best_metrics = metrics
-    best_score = _best_metric_value(metrics, stage_name)
-    best_retry_dir = ""
-    best_retry_num = 0
-
-    for attempt in range(max_retries):
-        adjustments = suggest_adjustments(stage_name, attempt, config_path)
-        if not adjustments:
-            sys_log.info("No more adjustment strategies for stage [%s]", stage_name)
-            break
-
-        retry_num = attempt + 1
-        attempt_n = retry_num + 1  # attempt_1 was the initial run
-        attempt_dir = str(Path(base_output_dir) / f"attempt_{attempt_n}")
-        Path(attempt_dir).mkdir(parents=True, exist_ok=True)
-
-        _print_retry_start(ctx, stage_label, retry_num, max_retries, adjustments)
-
-        config_path = apply_adjustments(config_path, {
-            **adjustments,
-            "paths.output_dir": attempt_dir,
-        })
-
-        t_retry_start = time.monotonic()
-
-        # Re-run stage (stream stdout during retries)
-        sr = run_stage(
-            ctx, sd.action, config_path,
-            cwd=str(Path(config_path).parent),
-            timeout=timeout,
-            extra_args=sd.extra_args,
-            stream_console=True,
-        )
-
-        retry_duration = time.monotonic() - t_retry_start
-
-        retry_entry: dict = {
-            "attempt": retry_num,
-            "adjustments": dict(adjustments),
-            "ok": sr.ok,
-            "error": sr.error,
-            "metrics": {},
-            "quality_pass": False,
-        }
-
-        attempt_entry = StageAttemptLog(
-            n=attempt_n,
-            trigger=AttemptTrigger.QUALITY_FAIL,
-            metrics={},
-            duration_s=retry_duration,
-            adjustments=dict(adjustments),
-            ok=sr.ok,
-            error=sr.error or "",
-            quality_pass=False,
-        )
-
-        if not sr.ok:
-            sys_log.warning(
-                "Stage [%s] retry %d/%d hard-failed: %s",
-                stage_name, retry_num, max_retries, sr.error,
-            )
-            _console(ctx, f"  [bright_black]Retry {retry_num}: stage crashed ({sr.error})[/bright_black]")
-            retry_log.append(retry_entry)
-            if op_log:
-                op_log.append_attempt(stage_name, attempt_entry)
-            break
-
-        # Re-assess quality (from retry output directory)
-        metrics = parse_metrics(attempt_dir, stage_name)
-        sr.metrics = metrics
-        retry_entry["metrics"] = dict(metrics)
-        attempt_entry.metrics = dict(metrics)
-        q_ok, q_failures = assess_quality(stage_name, metrics, thresholds)
-        retry_entry["quality_pass"] = q_ok
-        attempt_entry.quality_pass = q_ok
-        retry_log.append(retry_entry)
-
-        if op_log:
-            op_log.append_attempt(stage_name, attempt_entry)
-
-        current_score = _best_metric_value(metrics, stage_name)
-        if current_score < best_score:
-            best_sr = sr
-            best_metrics = metrics
-            best_score = current_score
-            best_retry_dir = attempt_dir
-            best_retry_num = retry_num
-
-        if q_ok:
-            sys_log.info(
-                "Stage [%s] quality PASS after %d retry(ies)",
-                stage_name, retry_num,
-            )
-            _print_quality_pass(ctx, stage_label, metrics)
-            _copy_retry_to_main(attempt_dir, base_output_dir)
-            apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
-            _console(ctx, f"  [bright_black]Restored artifacts to output directory (attempt_{attempt_n} kept)[/bright_black]")
-            return sr, []
-        else:
-            _print_retry_quality_fail(ctx, stage_label, retry_num, q_failures)
-
-    # ── All retries exhausted ──
-    sys_log.warning(
-        "Stage [%s] quality still below threshold after %d retries; using best attempt",
-        stage_name, len(retry_log),
-    )
-    if best_retry_dir:
-        _copy_retry_to_main(best_retry_dir, base_output_dir)
-        _console(ctx, f"  [bright_black]Restored artifacts from retry {best_retry_num} (attempt dirs kept)[/bright_black]")
-    else:
-        _console(ctx, f"  [bright_black]Keeping initial artifacts[/bright_black]")
-    apply_adjustments(config_path, {"paths.output_dir": base_output_dir})
-    _, best_failures = assess_quality(stage_name, best_metrics, thresholds)
-    _print_quality_exhausted(ctx, stage_label, best_metrics, thresholds, best_retry_num)
-    return best_sr, best_failures
-
-
-def _best_metric_value(metrics: dict[str, float], stage_name: str) -> float:
-    """Return the primary metric value for comparison (lower is better)."""
-    primary = get_primary_metric(stage_name)
-    val = metrics.get(primary, float("inf"))
-    if val != val:
-        return float("inf")
-    return val
-
-
-# ── Quality-gate console helpers ────────────────────────────────────
-
-def _print_quality_pass(ctx: AgentContext, label: str, metrics: dict[str, float]) -> None:
+    # Agent B hook placeholder — will be called here in the future
+    return sr, q_failures
     if getattr(ctx, "subagent_mute", False):
         return
     c = getattr(ctx, "console", None)
@@ -1325,70 +1194,6 @@ def _print_quality_fail(ctx: AgentContext, label: str, failures: list[str]) -> N
     c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} below threshold")
     for f in failures[:3]:
         c.print(f"    [bright_black]{f}[/bright_black]")
-
-
-def _print_retry_start(
-    ctx: AgentContext, label: str, attempt: int, max_retries: int,
-    adjustments: dict[str, str],
-) -> None:
-    if getattr(ctx, "subagent_mute", False):
-        return
-    c = getattr(ctx, "console", None)
-    if c is None:
-        return
-    c.print(f"  [{WF_STATUS_WARN}]Retry {attempt}/{max_retries}[{WF_STATUS_WARN}]: {label} — adjusting parameters")
-    for k, v in adjustments.items():
-        c.print(f"    [bright_black]{k} → {v}[/bright_black]")
-
-
-def _print_retry_quality_fail(
-    ctx: AgentContext, label: str, attempt: int, failures: list[str],
-) -> None:
-    if getattr(ctx, "subagent_mute", False):
-        return
-    c = getattr(ctx, "console", None)
-    if c is None:
-        return
-    c.print(f"  [bright_black]Retry {attempt}: quality still below threshold[/bright_black]")
-
-
-def _print_quality_exhausted(
-    ctx: AgentContext, label: str, metrics: dict[str, float],
-    thresholds: dict[str, float], best_retry_num: int = 0,
-) -> None:
-    if getattr(ctx, "subagent_mute", False):
-        return
-    c = getattr(ctx, "console", None)
-    if c is None:
-        return
-    source = f"retry {best_retry_num}" if best_retry_num else "initial run"
-    c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} [bright_black]retries exhausted, using {source}[/bright_black]")
-    for k, v in metrics.items():
-        limit = thresholds.get(k)
-        if limit and v > limit:
-            exceed = f">{limit:.6f}"
-            marker = f" [{WF_STATUS_ERROR}]{exceed}[/{WF_STATUS_ERROR}]"
-        else:
-            marker = ""
-        c.print(f"    [bright_black]{k}={v:.6f}{marker}[/bright_black]")
-
-
-# ── Retry artifact management (P7-T7) ────────────────────────────────
-
-def _copy_retry_to_main(retry_dir: str, main_dir: str) -> None:
-    """Copy all files and subdirectories from a retry directory to the main output dir.
-
-    Existing files in ``main_dir`` are overwritten.
-    """
-    retry_path = Path(retry_dir)
-    main_path = Path(main_dir)
-    for item in retry_path.iterdir():
-        dest = main_path / item.name
-        if item.is_dir():
-            shutil.copytree(str(item), str(dest), dirs_exist_ok=True)
-        else:
-            shutil.copy2(str(item), str(dest))
-    sys_log.info("Copied retry artifacts from %s to %s", retry_dir, main_dir)
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:

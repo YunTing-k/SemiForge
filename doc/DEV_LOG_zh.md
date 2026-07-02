@@ -617,3 +617,26 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 **v96 bug 修复**：`kan_grid_audit` 循环变量 `audit` 遮蔽了 DataFrame `audit` — 改名为 `block_audit`。
 
 **测试**：911 pass (0 failures, 0 errors, 11 skipped)
+
+### 2026-07-02 | Pipeline 稳定化 — 第二轮：TUI 状态、路径修复、Prompt 增强
+
+**TUI Task 状态修复**：
+- `_revert_tasks` 原来把 fallback pointer 之后**所有** task 标为 IN_PROGRESS，包括从未开始的 PENDING task。修复为只 revert `TaskStatus.COMPLETED` 的 task。
+- 进度显示：`display_idx` 从单调递增值改为 `pointer + 1`，回退时正确显示位置。
+- `_finalize_run` 新增 `board`/`task_map` 参数；失败时遍历剩余 task 标 DELETED；caller `tool_def.py` except handler 也做 task 清理。
+- Task 格式改为 `[DG-TFT, ID: 1] [Step-1] Prepare dataset`。
+
+**Rich MarkupError 崩溃修复**：`_console_summary` / `_print_diagnosis` / `error_exit` / `tool_def.py` 异常的打印全部 escape 或 `markup=False`。引擎报错文本中的 `[...]` 不再被误判为 Rich markup。
+
+**Quality Gate 重试移除**：`_enforce_quality_gate`（~180 行）替换为 `_check_quality_once`（只检查不重试），删除相关 helper 函数、未使用 import（`shutil`、`suggest_adjustments` 等）。重试留给未来 Agent B。相关 4 个测试更新为新签名。
+
+**Nested dir 路径修复**：
+- orchestrator `output_dir` 改用 `os.path.abspath`（原来相对路径 `./session/uuid/runs/run_0001`）
+- `run_model.py:resolve_path` 加最后的 `.resolve()` 防御
+- 路径翻倍链：orchestrator 相对路径 → quality gate retry 写入 INI → `resolve_path` 基于 config 父目录解析 → 双倍嵌套
+
+**目录扁平化**：`DG_TFT_RUNS_SUBDIR` 从 `"runs"` → `""`，路径 `session/<uuid>/runs/run_NNNN` → `session/<uuid>/run_NNNN`。
+
+**Preparer Prompt 增强**：Worker prompt 的 XLSX 处理部分新增 wide-format 识别和 reshape 指令（`pd.melt`/`df.stack` → 标准四列 `VD_V VBG_V VTG_V ID_A`）。
+
+**测试**：915 passed, 11 skipped

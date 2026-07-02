@@ -51,7 +51,6 @@ import os
 import openai
 
 from pathlib import Path
-from rich.console import Console
 from src.utility import sys_logger, cli_args, ui_info, client, command, agent_listen
 from src.context import session, prompt
 from src.context.agent_context import AgentContext, RequestLLMCancelled

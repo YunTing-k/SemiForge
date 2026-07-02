@@ -567,3 +567,26 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 **v96 bug fix**: `kan_grid_audit` loop variable `audit` shadowed DataFrame `audit` — renamed to `block_audit`.
 
 **Tests**: 911 pass (0 failures, 0 errors, 11 skipped)
+
+### 2026-07-02 | Pipeline Stabilization — Round 2: TUI State, Path Fixes, Prompt Enhancement
+
+**TUI Task State Fixes**:
+- `_revert_tasks` was marking ALL stages from fallback pointer as IN_PROGRESS, including never-started PENDING tasks. Fixed to only revert `TaskStatus.COMPLETED` tasks.
+- Progress counter: `display_idx` changed from monotonically-incrementing `idx_counter` to `pointer + 1`, correctly showing current position on fallback.
+- `_finalize_run` now accepts `board`/`task_map`; on failure marks remaining tasks as DELETED. Caller `tool_def.py` except handler also cleans up tasks.
+- Task format updated to `[DG-TFT, ID: 1] [Step-1] Prepare dataset`.
+
+**Rich MarkupError Crash Fix**: `_console_summary` / `_print_diagnosis` / `error_exit` / `tool_def.py` exception prints now all escape user/engine text via `rich.markup.escape()` or `markup=False`. Engine error text with `[...]` no longer triggers Rich markup parsing.
+
+**Quality Gate Retry Removed**: `_enforce_quality_gate` (~180 lines) replaced by `_check_quality_once` (check only, no retry). Removed helper functions (`_print_retry_start`, `_print_quality_exhausted`, `_copy_retry_to_main`), unused imports (`shutil`, `suggest_adjustments`). Retry loop delegated to future Agent B. 4 related tests updated to new signature.
+
+**Nested Dir Path Fix**:
+- Orchestrator `output_dir` now uses `os.path.abspath` (was relative `./session/uuid/runs/run_0001`)
+- `run_model.py:resolve_path` adds final `.resolve()` as defense layer
+- Doubling chain: relative path → quality gate retry wrote to INI → `resolve_path` resolved relative to config parent → doubled nesting
+
+**Directory Flattening**: `DG_TFT_RUNS_SUBDIR` changed from `"runs"` → `""`. Paths: `session/<uuid>/runs/run_NNNN` → `session/<uuid>/run_NNNN`.
+
+**Preparer Prompt Enhanced**: Worker prompt now includes explicit wide-format XLSX reshape instructions (`pd.melt`/`df.stack` → standard 4 columns `VD_V VBG_V VTG_V ID_A`).
+
+**Tests**: 915 passed, 11 skipped

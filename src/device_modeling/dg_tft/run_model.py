@@ -37,7 +37,7 @@ def resolve_path(value: str, config_path: Path) -> Path:
     path = Path(os.path.expandvars(os.path.expanduser(value)))
     if not path.is_absolute():
         path = (config_path.parent / path).resolve()
-    return path
+    return path.resolve()
 
 
 def yes(cfg: configparser.ConfigParser, section: str, option: str) -> bool:

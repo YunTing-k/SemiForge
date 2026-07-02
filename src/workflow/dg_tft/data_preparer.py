@@ -72,8 +72,17 @@ The output directory already exists. Write all output files into it.
    - Clean: `df.columns = df.columns.str.strip(); df.columns = [c.replace("(V)","_V").replace("(A)","_A") for c in df.columns]`
    - Save: `df.to_excel("{output_dir}/IDVBG_VDS01V_train.xlsx", sheet_name="{iv_sheet}", index=False)`
 
-   **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
-   - Same steps as CSV but use `pd.read_excel()`. Clean column names identically.
+    **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
+    - XLSX files often have wide-format/pivot layout: column headers are descriptive text like
+      `ID-VBG, VDS=0.1 V` and data rows are measurement values. You MUST reshape these to
+      **long format** with exactly these 4 columns: `VD_V, VBG_V, VTG_V, ID_A`.
+    - How to reshape: use `pd.read_excel()`, then use `pd.melt()` or `df.stack()` to
+      convert wide→long, then rename columns to the standard names.
+    - Example approach: `df = pd.read_excel("file.xlsx"); df = df.melt(id_vars=[], var_name="param", value_name="value");`
+      then extract VD/VBG/VTG/ID from the "param" column using regex, and pivot again if needed.
+    - **CRITICAL**: After reshaping, verify ALL 4 columns `VD_V, VBG_V, VTG_V, ID_A` exist.
+      If any is missing, your output is invalid and the verifier will reject it.
+    - If the file already has clean headers matching `{iv_columns}`, skip reshaping and just copy.
 
    **Family mapping rules**:
    - `IDVBG_*` -> `IDVBG_VDS<Vvalue>_V_train.xlsx` (extract V from filename)

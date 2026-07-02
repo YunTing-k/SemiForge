@@ -195,6 +195,19 @@ class WorkflowManager:
             self._save_runs()
             return True
 
+    def clear_stage_result(self, run_id: int, stage_name: str) -> bool:
+        """Remove a stage result so the resume check does not skip the stage."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return False
+            if stage_name in run.stage_results:
+                del run.stage_results[stage_name]
+                run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._runs[run_id] = run
+                self._save_runs()
+            return True
+
     def attach_artifact(self, run_id: int, key: str, path: str) -> bool:
         with self._lock:
             run = self._runs.get(run_id)

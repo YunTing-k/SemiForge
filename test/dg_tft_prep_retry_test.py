@@ -261,7 +261,7 @@ class TestRunDataPreparationWithRetry(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.run_output_dir = Path(self.tmpdir.name) / "session" / "test-uuid" / "runs" / "run_1"
+        self.run_output_dir = Path(self.tmpdir.name) / "session" / "test-uuid" / "run_1"
         self.run_output_dir.mkdir(parents=True, exist_ok=True)
         self.ctx = MagicMock()
 
@@ -379,7 +379,7 @@ class TestRunVerificationOnly(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.run_output_dir = Path(self.tmpdir.name) / "session" / "test-uuid" / "runs" / "run_2"
+        self.run_output_dir = Path(self.tmpdir.name) / "session" / "test-uuid" / "run_2"
         self.run_output_dir.mkdir(parents=True, exist_ok=True)
         self.dataset_dir = Path(self.tmpdir.name) / "standard_data"
         self.dataset_dir.mkdir(parents=True, exist_ok=True)

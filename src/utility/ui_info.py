@@ -797,5 +797,5 @@ def error_exit(ctx: AgentContext, board: Scoreboard, console: Console, error: Ex
         console.print(f"Save messages and context failed with error {e}, SemiForge exits abnormally", style="bold red")
         sys.exit(-1)
     sys_log.error(f"SemiForge exits with error: {error}")
-    console.print(f"SemiForge exits with error: {error}", style="bold red")
+    console.print(f"SemiForge exits with error: {error}", style="bold red", markup=False)
     sys.exit(-1)

@@ -43,9 +43,9 @@ CRON_NAME: str = "cron_configs.json"
 TASKS_NAME: str = "tasks.json"
 # workflow persistence
 WORKFLOW_RUNS_NAME: str = "workflow_runs.json"
-# workflow directory names under session/<uuid>/runs/
+# workflow directory names under session/<uuid>/
 PREP_SUBDIR_NAME: str = "data_prep"
-DG_TFT_RUNS_SUBDIR: str = "runs"
+DG_TFT_RUNS_SUBDIR: str = ""
 # workflow config template
 DG_TFT_DEFAULT_CONFIG_TEMPLATE: str = "./src/device_modeling/dg_tft/config/model_config_new_device_template.ini"
 # expert knowledge (DG-TFT)
@@ -78,8 +78,12 @@ SUBAGENT_PROMPT_LOG_CHAR_LEN: int = 200
 SUBAGENT_SUBJECT_CHAR_LIMIT: int = 40
 SUBAGENT_SUMMARIES_NAME: str = "summaries.json"
 SUBAGENT_TOOL_RESULT_DEFAULT_CHAR_LIMIT: int = 50000
-TOOL_RESULT_TRUNCATION_ROUNDS: int = 3
 MAIN_TOOL_RESULT_DEFAULT_CHAR_LIMIT: int = 20000
+TOOL_RESULT_TRUNCATION_ROUNDS: int = 6
+TOOL_RESULT_TRUNCATION_MIN_BUDGET: int = 1024
+TOOL_RESULT_TRUNCATION_MARKER_RESERVE: int = 60
+TOOL_RESULT_TRUNCATION_START_LABEL: str = "<truncated>"
+TOOL_RESULT_TRUNCATION_END_LABEL: str = "</truncated>"
 SUBAGENT_PENDING_ICON: str = "○"
 SUBAGENT_IN_PROGRESS_ICON: str = "♦"
 SUBAGENT_DONE_ICON: str = "✓"
@@ -161,12 +165,6 @@ WRITE_FILE_MODE_DEFAULT: str = "write"
 WRITE_FILE_ENCODING_DEFAULT: str = "utf-8"
 EDIT_FILE_ENCODING_DEFAULT: str = "utf-8"
 WEB_SEARCH_QUERY_MIN: int = 2
-"""Result output safety"""
-TOOL_RESULT_TRUNCATION_ROUNDS: int = 6
-TOOL_RESULT_TRUNCATION_MIN_BUDGET: int = 1024
-TOOL_RESULT_TRUNCATION_MARKER_RESERVE: int = 60
-TOOL_RESULT_TRUNCATION_START_LABEL: str = "<truncated>"
-TOOL_RESULT_TRUNCATION_END_LABEL: str = "</truncated>"
 """Bash command risk"""
 BASH_HIGH_RISK_LABEL = "BASH_HIGH_RISK"  # high-risk (0)
 BASH_PACKAGE_LABEL = "BASH_PACKAGE"  # high-risk (0)
