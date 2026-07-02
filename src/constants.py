@@ -49,7 +49,7 @@ DG_TFT_RUNS_SUBDIR: str = ""
 # workflow config template
 DG_TFT_DEFAULT_CONFIG_TEMPLATE: str = "./src/device_modeling/dg_tft/config/model_config_new_device_template.ini"
 # expert knowledge (DG-TFT)
-DG_TFT_KNOWLEDGE_DIR: str = "src/workflow/dg_tft/knowledge"
+DG_TFT_KNOWLEDGE_DIR: str = "knowledge"
 DG_TFT_DISCOVERED_KNOWLEDGE_DIR: str = "knowledge/_discovered"
 # subagent
 MAIN_AGENT_ID: str = "main"

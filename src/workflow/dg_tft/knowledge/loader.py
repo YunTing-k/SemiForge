@@ -54,7 +54,8 @@ _EXPERT_KNOWLEDGE_BLOCK = """\
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def _default_knowledge_dir() -> Path:
-    return Path(__file__).resolve().parent
+    """Project-root knowledge/ directory (expert + discovered knowledge)."""
+    return Path(__file__).resolve().parent.parent.parent.parent.parent / "knowledge"
 
 
 def load_knowledge(
