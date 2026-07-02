@@ -618,3 +618,48 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 - Metrics: iv_rms=0.248, residual_iv_rms=0.229, residual_cv_rms=0.021, hysteresis=0.048
 
 **Tests**: 916 passed, 11 skipped
+
+### 2026-07-02 | Step 8: Agent Infrastructure
+
+**Tool Definitions** (subagent_tools.py):
+- 3 new tool schemas: switch_kernel (Agent B kernel switch), accept_quality (accept current quality), contribute_knowledge (Agent E knowledge feedback)
+- New _contribute_knowledge_handler: writes to knowledge/_discovered/run_{id}_{timestamp}.md
+- _STAGE_TOOLS registry extended to all 6 stages: train-static/train-hysteresis each with 4 tools (inspect_xlsx + adjust_params + fallback_to_previous + accept_quality), final-interpret with contribute_knowledge
+- get_tools() now accepts adjust_params_override parameter for auto-generated stage-specific schemas
+
+**Parameter Validation Pipe** (quality_guard.py):
+- apply_agent_adjustments(config_path, adjustments, ini_section) -> snapshot: writes INI + returns operation snapshot
+- snapshot_ini_section(config_path, ini_section) -> str: reads INI section snapshot
+
+**Generic Agent Run Loop** (orchestrator.py):
+- _spawn_modeling_agent() — generic Agent B/C/D spawn:
+  - Auto-generated adjust_params schema (param_defs -> params_to_tool_schema)
+  - Per-stage tool sets (Agent B additionally has switch_kernel)
+  - stop_mode="schema", 5 decisions: adjust_params / fallback_to_previous / switch_kernel / accept_quality / error
+  - Injects user preferences + soft guard (get_soft_guard_prompt())
+  - try/except wrapper for mock/test context resilience
+- _process_agent_decision() — decision processing pipe:
+  - adjust_params -> validate_agent_adjustments() -> apply_agent_adjustments() -> retry
+  - switch_kernel -> INI write -> retry
+  - fallback_to_previous -> record FALLBACK_SENT -> pointer jump upstream
+  - accept_quality -> record AGENT_ACCEPT -> advance
+- _spawn_agent_e() — Agent E final interpretation: stop_mode="any" + contribute_knowledge
+- _assess_stage_quality() — pure rule-driven quality check (no LLM)
+- while+pointer script stage retry loop: hard failure + quality fail both trigger agent decisions
+- 4 mapping tables: _STAGE_HAS_MODELING_AGENT, _UPSTREAM_STAGE, _AGENT_LABELS
+- Old placeholders replaced: _check_quality_once / _agent_stage_placeholder / _agent_e_placeholder
+
+**Tests**:
+- test_subagent_unit.py: 8 new (train-static/hysteresis/final-interpret tool registry, adjust_params_override, contribute_knowledge handler)
+- dg_tft_quality_guard_test.py: 4 new (apply_agent_adjustments write/create section, snapshot_ini_section normal/missing)
+- dg_tft_orchestrator_test.py: 9 new (_stage_has_modeling_agent, _normalize_tool_name, _process_agent_decision adjust/accept/fallback/empty)
+- **936 passed, 11 skipped** (up from 916, +20 new tests)
+
+**Agent Decision Matrix**:
+| Agent | Trigger | Available Tools |
+|-------|---------|----------------|
+| A | check-data hard failure | fallback_to_previous -> Verifier |
+| B | fit-physical hard failure / quality fail | adjust_params / switch_kernel / fallback_to_previous / accept_quality |
+| C | train-static hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
+| D | train-hysteresis hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
+| E | Pipeline end (success or failure) | contribute_knowledge + free text |

@@ -668,3 +668,48 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 - 指标：iv_rms=0.248, residual_iv_rms=0.229, residual_cv_rms=0.021, hysteresis=0.048
 
 **测试**：916 passed, 11 skipped
+
+### 2026-07-02 | Step 8: Agent 基础设施
+
+**Tool 定义** (subagent_tools.py):
+- 新增 3 个 tool schema：switch_kernel（Agent B 切物理内核）、ccept_quality（接受当前质量）、contribute_knowledge（Agent E 反哺知识）
+- 新增 _contribute_knowledge_handler：写入 knowledge/_discovered/run_{id}_{timestamp}.md
+- _STAGE_TOOLS 注册表扩展覆盖全部 6 阶段：train-static/train-hysteresis 各 4 tools（inspect_xlsx + adjust_params + fallback_to_previous + accept_quality），final-interpret 含 contribute_knowledge
+- get_tools() 新增 djust_params_override 参数：orchestrator 注入 auto-generated 阶段专属 schema
+
+**参数校验 Pipe** (quality_guard.py):
+- pply_agent_adjustments(config_path, adjustments, ini_section) → snapshot：写 INI + 返回操作快照
+- snapshot_ini_section(config_path, ini_section) → str：读 INI section 快照
+
+**通用 Agent 运行循环** (orchestrator.py):
+- _spawn_modeling_agent() 通用 Agent B/C/D spawn：
+  - auto-generated djust_params schema（param_defs → params_to_tool_schema）
+  - 每阶段专属 tool set（Agent B 额外含 switch_kernel）
+  - stop_mode="schema"，5 种决策：adjust_params / fallback_to_previous / switch_kernel / accept_quality / error
+  - 注入用户偏好 + 软护盾（get_soft_guard_prompt()）
+  - try/except 包裹应对 mock/test 上下文
+- _process_agent_decision() 决策处理 pipe：
+  - adjust_params → alidate_agent_adjustments() → pply_agent_adjustments() → retry
+  - switch_kernel → INI 写入 → retry
+  - fallback_to_previous → 记录 FALLBACK_SENT → pointer 跳转上游
+  - accept_quality → 记录 AGENT_ACCEPT → 推进
+- _spawn_agent_e() Agent E 最终解读：stop_mode="any" + contribute_knowledge
+- _assess_stage_quality() 纯规则质量检查（无 LLM 调用）
+- while+pointer 脚本阶段重试循环：hard failure + quality fail 均触发 agent 决策
+- 4 个映射表：_STAGE_HAS_MODELING_AGENT、_UPSTREAM_STAGE、_AGENT_LABELS
+- 旧占位符 _check_quality_once / _agent_stage_placeholder / _agent_e_placeholder 替换为实际实现
+
+**测试**：
+- 	est_subagent_unit.py：8 新测试（train-static/hysteresis/final-interpret 工具注册、adjust_params_override、contribute_knowledge handler）
+- dg_tft_quality_guard_test.py：4 新测试（apply_agent_adjustments 写入/创建 section、snapshot_ini_section 正常/缺失）
+- dg_tft_orchestrator_test.py：9 新测试（_stage_has_modeling_agent、_normalize_tool_name、_process_agent_decision adjust/accept/fallback/empty）
+- **936 passed, 11 skipped**（从 916 增至 936，+20 新测试）
+
+**Agent 决策矩阵**：
+| Agent | 触发 | 可用决策 |
+|-------|------|----------|
+| A | check-data 硬失败 | fallback_to_previous → Verifier |
+| B | fit-physical 硬失败/质量不达标 | adjust_params / switch_kernel / fallback_to_previous / accept_quality |
+| C | train-static 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
+| D | train-hysteresis 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
+| E | Pipeline 结束 | contribute_knowledge + 自由文本 |
