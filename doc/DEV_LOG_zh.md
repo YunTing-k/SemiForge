@@ -713,3 +713,12 @@ LLM/SubAgent 仅介入三处：数据整理、格式校验、失败诊断。训�
 | C | train-static 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
 | D | train-hysteresis 硬失败/质量不达标 | adjust_params / fallback_to_previous / accept_quality |
 | E | Pipeline 结束 | contribute_knowledge + 自由文本 |
+
+### 2026-07-02 | Agent E 知识反哺修复
+
+- **contribute_knowledge → stop_schema**：从 handler（LLM 反复调用，输出多个碎片文件）改为 stop_schema tool（只能调用一次，凝聚成完整知识贡献）
+- **文件命名**：从 un_{run_id:04d}_{timestamp}.md（跨 session 碰撞、无意义）改为 {title_slug}_{timestamp}.md（从 agent 的英文 title slugify，人类可读）
+- **minimal_run 跳过 Agent E**：新增 _is_minimal_run(config_path) 检查
+- **必须时才贡献**：system prompt 明确标注 contribute_knowledge 为 OPTIONAL，仅真正新发现时才调用
+- **英文强制**：Agent E prompt + contribute_knowledge tool description 标注 English only
+- **gitignore 补充**：/knowledge/_discovered/ 不进仓库

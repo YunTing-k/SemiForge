@@ -253,20 +253,21 @@ _CONTRIBUTE_KNOWLEDGE_SCHEMA: dict[str, Any] = {
     "function": {
         "name": SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE,
         "description": (
-            "Contribute a factual discovery to the shared knowledge base. "
-            "This is persisted to knowledge/_discovered/ and will be available "
-            "to future runs' agents as background context."
+            "Contribute a genuinely novel, generalizable discovery to the shared knowledge base. "
+            "Only call this when you have a non-obvious finding that future runs would benefit from. "
+            "All output MUST be in English. "
+            "The file is saved to knowledge/_discovered/ with a slug based on the title."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Short title summarizing the discovery.",
+                    "description": "Short English title summarizing the discovery (used as filename slug).",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Full discovery text in Markdown, including conditions, "
+                    "description": "Full discovery text in English Markdown, including conditions, "
                     "observations, metric values, and actionable conclusions.",
                 },
             },
@@ -283,20 +284,25 @@ _CONTRIBUTE_KNOWLEDGE_SCHEMA: dict[str, Any] = {
 def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, Any]:
     """Write a knowledge contribution to the discovered knowledge directory."""
     import os
+    import re
     from datetime import datetime
 
     knowledge_dir = os.path.join("knowledge", "_discovered")
     os.makedirs(knowledge_dir, exist_ok=True)
 
-    run_id = getattr(ctx, "run_id", None) or os.urandom(4).hex()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"run_{run_id}_{timestamp}.md"
-    filepath = os.path.join(knowledge_dir, filename)
-
-    title = arguments.get("title", "Untitled")
+    title = arguments.get("title", "").strip()
     content = arguments.get("content", "")
 
-    full_text = f"# {title}\n\n{content}\n"
+    if title:
+        slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    else:
+        slug = "discovery"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{slug}_{timestamp}.md"
+    filepath = os.path.join(knowledge_dir, filename)
+
+    full_text = f"# {title or 'Untitled'}\n\n{content}\n"
 
     try:
         with open(filepath, "w", encoding="utf-8") as f:
@@ -304,7 +310,7 @@ def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, A
         return {
             "status": "written",
             "file": filepath,
-            "title": title,
+            "title": title or "Untitled",
         }
     except Exception as e:
         return {"status": FAIL_LABEL, "error": str(e)}

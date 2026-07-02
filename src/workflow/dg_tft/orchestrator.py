@@ -1696,17 +1696,22 @@ def _spawn_agent_e_inner(
         "You are Agent E (final interpretation).",
         f"The DG-TFT modeling pipeline has {status_text}.",
         "",
+        "LANGUAGE: All output MUST be in English only.",
+        "",
         "Stage results summary:",
     ]
     prompt_lines.extend(stage_summaries)
     prompt_lines.extend([
         "",
-        "Your job:",
-        "1. Analyze the overall pipeline results and identify key patterns.",
-        "2. If any stages failed or had quality issues, explain likely causes.",
-        "3. Recommend the best approach for improving the next run.",
-        "4. If you discover actionable patterns, call `contribute_knowledge` to",
-        "   persist them for future runs.",
+        "Your PRIMARY job: produce a concise text interpretation of this run.",
+        "Focus on what went well, what went wrong, and what to try next.",
+        "",
+        "IMPORTANT — `contribute_knowledge` is OPTIONAL. Call it ONLY when you",
+        "identify a genuinely novel, generalizable pattern that is NOT already",
+        "documented in the project's knowledge base and would help future runs.",
+        "Most runs do NOT produce such discoveries — simply skip the tool and",
+        "output your text interpretation. Calling `contribute_knowledge` for",
+        "routine observations (e.g. 'learning rate was too high') is noise.",
         "",
         "Be concise and actionable. Focus on what matters for this device.",
     ])
@@ -1758,18 +1763,29 @@ def _spawn_agent_e_inner(
 
 
 def _handle_contribute_knowledge(arguments: dict[str, Any], ctx, run_id: int) -> None:
-    """Write a knowledge contribution from Agent E's structured output."""
-    import json as _json
+    """Write a knowledge contribution from Agent E's structured output.
+
+    Filename: ``{title_slug}_{timestamp}.md`` — title slugified for human readability,
+    timestamp for uniqueness.
+    """
+    import re
     from datetime import datetime
 
     os.makedirs("knowledge/_discovered", exist_ok=True)
+
+    title = arguments.get("title", "").strip()
+    content = arguments.get("content", "")
+
+    if title:
+        slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    else:
+        slug = "discovery"
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"run_{run_id:04d}_{timestamp}.md"
+    filename = f"{slug}_{timestamp}.md"
     filepath = os.path.join("knowledge/_discovered", filename)
 
-    title = arguments.get("title", "Untitled")
-    content = arguments.get("content", "")
-    full_text = f"# {title}\n\n{content}\n"
+    full_text = f"# {title or 'Untitled'}\n\n{content}\n"
 
     try:
         with open(filepath, "w", encoding="utf-8") as f:

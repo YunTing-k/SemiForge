@@ -500,14 +500,12 @@ def test_get_tools_adjust_params_override_new_stage():
 
 
 def test_contribute_knowledge_handler_writes_file():
-    """contribute_knowledge handler writes to knowledge/_discovered/."""
+    """contribute_knowledge handler writes to knowledge/_discovered/ with slugified title."""
     import tempfile
     import os
     import json
     from src.tool.subagent_tools import _contribute_knowledge_handler
 
-    # Use a temp dir, but the handler writes to knowledge/_discovered/ relative to CWD
-    # We need to temporarily chdir to a temp dir
     orig_cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as tmpdir:
         os.chdir(tmpdir)
@@ -521,7 +519,7 @@ def test_contribute_knowledge_handler_writes_file():
                 FakeCtx(),
             )
             assert result["status"] == "written"
-            assert "run_999_" in result["file"]
+            assert "test_discovery_" in result["file"]
             assert result["title"] == "Test Discovery"
             assert os.path.exists(result["file"])
 
@@ -533,7 +531,7 @@ def test_contribute_knowledge_handler_writes_file():
         finally:
             os.chdir(orig_cwd)
 
-    print("[PASS] contribute_knowledge handler — file written")
+    print("[PASS] contribute_knowledge handler — slugified filename, file written")
 
 
 @patch("src.agent.subagent.OpenAI")

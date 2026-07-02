@@ -663,3 +663,12 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 | C | train-static hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
 | D | train-hysteresis hard failure / quality fail | adjust_params / fallback_to_previous / accept_quality |
 | E | Pipeline end (success or failure) | contribute_knowledge + free text |
+
+### 2026-07-02 | Agent E Knowledge Feedback Fixes
+
+- **contribute_knowledge -> stop_schema**: Changed from handler (LLM called repeatedly, producing many fragment files) to stop_schema tool (called once, producing a single complete contribution)
+- **File naming**: Changed from un_{run_id:04d}_{timestamp}.md (cross-session collision, meaningless) to {title_slug}_{timestamp}.md (slugified from agent's English title, human readable)
+- **minimal_run skips Agent E**: Added _is_minimal_run(config_path) check
+- **Contribute only when novel**: system prompt now marks contribute_knowledge as OPTIONAL, only called for genuinely novel findings
+- **English enforced**: Agent E prompt + contribute_knowledge tool description require English only
+- **gitignore**: Added /knowledge/_discovered/ (not committed to repo)
