@@ -371,6 +371,8 @@ def run_workflow(
                     failed_stage = sd.name
                     failed_error = sr.error or "unknown error"
                 else:
+                    # Agent C/D placeholder: future agents will adjust params and retry
+                    _agent_stage_placeholder(ctx, run_id, sd)
                     wm.mark_failed(run_id, f"Required stage {sd.name} failed: {sr.error}")
                     sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
                     failed_stage = sd.name
@@ -425,6 +427,8 @@ def run_workflow(
 
     # All stages completed
     op_log.set_final_status("done")
+    # Agent E placeholder — interpretation + knowledge feedback (future)
+    _agent_e_placeholder(ctx, run_id, stages, op_log)
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
@@ -1176,15 +1180,6 @@ def _check_quality_once(
     _print_quality_fail(ctx, stage_label, q_failures)
     # Agent B hook placeholder — will be called here in the future
     return sr, q_failures
-    if getattr(ctx, "subagent_mute", False):
-        return
-    c = getattr(ctx, "console", None)
-    if c is None:
-        return
-    c.print(f"  [{WF_STATUS_SUCCESS}]Quality[{WF_STATUS_SUCCESS}]: {label} [{WF_STATUS_SUCCESS}]PASS[/{WF_STATUS_SUCCESS}]", end="")
-    for k, v in metrics.items():
-        c.print(f" [bright_black]{k}={v:.6f}[/bright_black]", end="")
-    c.print("")
 
 
 def _print_quality_fail(ctx: AgentContext, label: str, failures: list[str]) -> None:
@@ -1196,6 +1191,27 @@ def _print_quality_fail(ctx: AgentContext, label: str, failures: list[str]) -> N
     c.print(f"  [{WF_STATUS_WARN}]Quality[{WF_STATUS_WARN}]: {label} below threshold")
     for f in failures[:3]:
         c.print(f"    [bright_black]{f}[/bright_black]")
+
+
+def _agent_stage_placeholder(
+    ctx: AgentContext,
+    run_id: int,
+    sd: StageDef,
+) -> None:
+    """Placeholder: Agent C/D will adjust training params and retry on failure."""
+    _console(ctx, f"  [bright_black][Agent C/D placeholder] {sd.name} failed — "
+             f"would adjust hyperparameters and retry (not implemented)[/bright_black]")
+
+
+def _agent_e_placeholder(
+    ctx: AgentContext,
+    run_id: int,
+    stages: list[StageDef],
+    op_log: OperationLog | None = None,
+) -> None:
+    """Placeholder: Agent E will interpret results and provide knowledge feedback."""
+    _console(ctx, f"  [bright_black][Agent E placeholder] workflow completed — "
+             f"would interpret results and suggest optimal parameters (not implemented)[/bright_black]")
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:
