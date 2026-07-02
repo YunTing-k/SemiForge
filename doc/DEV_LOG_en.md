@@ -590,3 +590,31 @@ LLM/subagent only at 3 points: data preparation, format verification, failure di
 **Preparer Prompt Enhanced**: Worker prompt now includes explicit wide-format XLSX reshape instructions (`pd.melt`/`df.stack` → standard 4 columns `VD_V VBG_V VTG_V ID_A`).
 
 **Tests**: 915 passed, 11 skipped
+
+### 2026-07-02 | Full v96 Engine Sync + Pre-trained PKAN + First Full Pipeline Pass
+
+**v96 Engine Sync**:
+- Replaced dg_tft_full_model.py entirely with v96 baseline (previously only merged CompactKAN grid freeze)
+- v96 additions: plateau jump diagnostics + 3 gate checks, KAN grid monotonicity audit, VDS=0 exclusion, 6-threshold quick-run relaxation
+- Ported 3 customizations: skip-precision-gates (3 gate locations), Temperature KAN configurability (ResidualDiagnostic + 3 CLI args)
+- Remaining 5 engine files + 8 dynamic files: MD5-identical to v96
+
+**Bug Fixes**:
+- dg_tft_full_model.py: Fixed variable name clash where loop variable udit overwrote DataFrame udit (v96 inherited bug, re-introduced after sync)
+- param_defs.py: 9 defaults aligned to v96 INI (learning_rate 0.002->0.0012, cv_weight 8.0->10.0, symbolic_training_weight 0.015->0.05, etc.)
+- run_model.py: Fallback defaults aligned to v96 (epochs, lr, early_stop, shape periods)
+- Removed redundant CV_original_train.xlsx backup file that interfered with verifier
+
+**Pre-trained PKAN Model**:
+- v96 ships with pre-trained KAN weights at trained_model/base_physical_pkan/ (pkan_torch_model.pt 53KB)
+- Correct path in our repo: src/device_modeling/trained_model/base_physical_pkan/ (gitignored)
+- Our RELEASE_ROOT = CODE_ROOT.parent resolves to src/device_modeling/, not src/
+- Previous fallback metadata (1315 bytes, no real weights) caused base IV-PKAN to train from scratch, converging to on=0.074 > 0.06 gate
+- After fixing path, base IV-PKAN converges to on=0.049 (matches v96 standalone), passes all quality gates
+
+**First Full Pipeline Pass**:
+- All 5 stages DONE: verifier(ok) check-data(ok) fit-physical(ok) train-static(ok) train-hysteresis(ok)
+- train-static ~1h52m, 0 errors, 10/10 artifacts present
+- Metrics: iv_rms=0.248, residual_iv_rms=0.229, residual_cv_rms=0.021, hysteresis=0.048
+
+**Tests**: 916 passed, 11 skipped
