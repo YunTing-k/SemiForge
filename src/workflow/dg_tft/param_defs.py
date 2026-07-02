@@ -1059,7 +1059,7 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
         "hi": 32,
         "default": 20,
         "desc": (
-            "Number of hidden units in the emission network (linear correction). "
+            "Number of hidden units in the emission network (full non-linear KAN, same TwoLayerTop1KAN architecture as capture). "
             "Larger networks improve time-constant resolution. "
             "Increase if transient response is inaccurate."
         ),

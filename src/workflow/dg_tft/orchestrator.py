@@ -526,7 +526,7 @@ def run_workflow(
     # All stages processed — some may have failed
     if failed_stage:
         op_log.set_final_status("failed")
-        _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage)
+        _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
         _finalize_run(ctx, run_id, output_dir, t_start, stages,
                       failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
                       board=board, task_map=task_map)
@@ -690,6 +690,10 @@ def _spawn_agent_a(
         "You are Agent A (check-data diagnostics).",
         "The check-data stage (dataset structural validation) has failed.",
         f"Error: {stage_result.error}",
+    ]
+    if stage_result.summary:
+        prompt_lines.append(f"Stdout summary (last lines): {stage_result.summary}")
+    prompt_lines.extend([
         "",
         "Your job: decide whether this failure can be fixed upstream by the Verifier.",
         "If the errors suggest that the prepared dataset is malformed (missing columns,",
@@ -701,7 +705,7 @@ def _spawn_agent_a(
         "",
         "You may use `read_file` and `glob_file` to inspect the output directory and",
         "error logs if needed, but keep it brief — you only have a few steps.",
-    ]
+    ])
 
     if op_log:
         verifier_attempts = op_log.get_stage_attempts("verifier")
