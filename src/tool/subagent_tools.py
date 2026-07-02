@@ -53,6 +53,7 @@ SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS: str = "fallback_to_previous"
 SUBAGENT_TOOL_SWITCH_KERNEL: str = "switch_kernel"
 SUBAGENT_TOOL_REPORT_VERIFICATION: str = "report_verification"
 SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: str = "contribute_knowledge"
+SUBAGENT_TOOL_ACCEPT_QUALITY: str = "accept_quality"
 
 __all__ = [
     "get_tools",
@@ -62,6 +63,7 @@ __all__ = [
     "SUBAGENT_TOOL_SWITCH_KERNEL",
     "SUBAGENT_TOOL_REPORT_VERIFICATION",
     "SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE",
+    "SUBAGENT_TOOL_ACCEPT_QUALITY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,117 @@ _REPORT_VERIFICATION_SCHEMA: dict[str, Any] = {
 }
 
 
+_SWITCH_KERNEL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_SWITCH_KERNEL,
+        "description": (
+            "Switch the physical kernel used for parameter extraction. "
+            "Call this when the current kernel produces poor IV fits "
+            "(e.g. numerical oscillations, unrealistic VTO, or convergence failures)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "enum": ["uotft", "ekv_level2"],
+                    "description": "Physical kernel name: uotft (default unified-OTFT) or ekv_level2 (EKV Level 2 model).",
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Why switching kernels is expected to help.",
+                },
+            },
+            "required": ["kernel", "reasoning"],
+        },
+    },
+}
+
+_ACCEPT_QUALITY_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_ACCEPT_QUALITY,
+        "description": (
+            "Accept the current quality metrics and move on without further adjustments. "
+            "Use this when quality is close to acceptable, user preferences deprioritize "
+            "the failing metric, or continued adjustments are unlikely to help."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reasoning": {
+                    "type": "string",
+                    "description": "Why accepting current quality is the right call.",
+                },
+            },
+            "required": ["reasoning"],
+        },
+    },
+}
+
+_CONTRIBUTE_KNOWLEDGE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE,
+        "description": (
+            "Contribute a factual discovery to the shared knowledge base. "
+            "This is persisted to knowledge/_discovered/ and will be available "
+            "to future runs' agents as background context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short title summarizing the discovery.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full discovery text in Markdown, including conditions, "
+                    "observations, metric values, and actionable conclusions.",
+                },
+            },
+            "required": ["title", "content"],
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Handlers — contribute_knowledge
+# ---------------------------------------------------------------------------
+
+def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, Any]:
+    """Write a knowledge contribution to the discovered knowledge directory."""
+    import os
+    from datetime import datetime
+
+    knowledge_dir = os.path.join("knowledge", "_discovered")
+    os.makedirs(knowledge_dir, exist_ok=True)
+
+    run_id = getattr(ctx, "run_id", None) or os.urandom(4).hex()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"run_{run_id}_{timestamp}.md"
+    filepath = os.path.join(knowledge_dir, filename)
+
+    title = arguments.get("title", "Untitled")
+    content = arguments.get("content", "")
+
+    full_text = f"# {title}\n\n{content}\n"
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(full_text)
+        return {
+            "status": "written",
+            "file": filepath,
+            "title": title,
+        }
+    except Exception as e:
+        return {"status": FAIL_LABEL, "error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # Stage tool registry — populated in Phase 2/3
 # ---------------------------------------------------------------------------
@@ -207,23 +320,67 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
     "fit-physical": (
-        [_INSPECT_XLSX_SCHEMA, _ADJUST_PARAMS_SCHEMA, _FALLBACK_TO_PREVIOUS_SCHEMA],
+        [
+            _INSPECT_XLSX_SCHEMA,
+            _ADJUST_PARAMS_SCHEMA,
+            _SWITCH_KERNEL_SCHEMA,
+            _FALLBACK_TO_PREVIOUS_SCHEMA,
+            _ACCEPT_QUALITY_SCHEMA,
+        ],
+        {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+    ),
+    "train-static": (
+        [
+            _INSPECT_XLSX_SCHEMA,
+            _ADJUST_PARAMS_SCHEMA,
+            _FALLBACK_TO_PREVIOUS_SCHEMA,
+            _ACCEPT_QUALITY_SCHEMA,
+        ],
+        {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+    ),
+    "train-hysteresis": (
+        [
+            _INSPECT_XLSX_SCHEMA,
+            _ADJUST_PARAMS_SCHEMA,
+            _FALLBACK_TO_PREVIOUS_SCHEMA,
+            _ACCEPT_QUALITY_SCHEMA,
+        ],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
     "check-data": (
         [_FALLBACK_TO_PREVIOUS_SCHEMA],
         {},
     ),
+    "final-interpret": (
+        [_CONTRIBUTE_KNOWLEDGE_SCHEMA],
+        {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: _contribute_knowledge_handler},
+    ),
 }
 
 
-def get_tools(stage: str) -> tuple[list[dict[str, Any]], dict[str, Callable[..., Any]]]:
+def get_tools(
+    stage: str,
+    adjust_params_override: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Callable[..., Any]]]:
     """Return (tool_schemas, tool_handlers) for the given modeling stage.
 
     stage: one of 'data-prep', 'check-data', 'fit-physical', 'train-static',
            'train-hysteresis', 'final-interpret', or '' for no tools.
 
+    adjust_params_override: if provided, replaces the static ``_ADJUST_PARAMS_SCHEMA``
+                           in the returned schemas.  This is used by the orchestrator to
+                           inject a stage-specific ``adjust_params`` schema auto-generated
+                           from parameter definition tables.
+
     Returns empty lists/dicts for unknown stages (graceful fallback).
     """
     schemas, handlers = _STAGE_TOOLS.get(stage, ([], {}))
-    return list(schemas), dict(handlers)
+    schemas = list(schemas)
+    if adjust_params_override is not None:
+        for i, s in enumerate(schemas):
+            if s.get("function", {}).get("name") == SUBAGENT_TOOL_ADJUST_PARAMS:
+                schemas[i] = adjust_params_override
+                break
+        else:
+            schemas.append(adjust_params_override)
+    return schemas, dict(handlers)

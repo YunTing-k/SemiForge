@@ -671,5 +671,64 @@ class TestOrchestratorQualityGate(unittest.TestCase):
         self.assertIn("metrics_summary.iv_rms_log10_error_dec", result_sr.metrics)
 
 
+class TestApplyAgentAdjustments(unittest.TestCase):
+    """Tests for apply_agent_adjustments and snapshot_ini_section (Step 8)."""
+
+    def setUp(self):
+        self.ini = _make_temp_ini()
+
+    def tearDown(self):
+        try:
+            os.unlink(self.ini)
+        except OSError:
+            pass
+
+    def test_apply_agent_adjustments_writes_ini(self):
+        """apply_agent_adjustments writes adjustments and returns snapshot."""
+        from src.workflow.dg_tft.quality_guard import apply_agent_adjustments
+
+        adjustments = {"max_nfev_scale": 3.0, "max_iv_points": 100000}
+        snapshot = apply_agent_adjustments(self.ini, adjustments, "physical_fit")
+
+        self.assertIn("physical_fit.max_nfev_scale = 3.0", snapshot)
+        self.assertIn("physical_fit.max_iv_points = 100000", snapshot)
+
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(self.ini, encoding="utf-8")
+        self.assertEqual(cfg.get("physical_fit", "max_nfev_scale"), "3.0")
+        self.assertEqual(cfg.get("physical_fit", "max_iv_points"), "100000")
+
+    def test_apply_agent_adjustments_creates_section(self):
+        """apply_agent_adjustments creates section if missing."""
+        from src.workflow.dg_tft.quality_guard import apply_agent_adjustments
+
+        adjustments = {"epochs": 2000}
+        snapshot = apply_agent_adjustments(self.ini, adjustments, "new_section")
+
+        self.assertIn("new_section.epochs = 2000", snapshot)
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(self.ini, encoding="utf-8")
+        self.assertEqual(cfg.get("new_section", "epochs"), "2000")
+
+    def test_snapshot_ini_section(self):
+        """snapshot_ini_section returns formatted section content."""
+        from src.workflow.dg_tft.quality_guard import snapshot_ini_section
+
+        text = snapshot_ini_section(self.ini, "physical_fit")
+        self.assertIn("[physical_fit]", text)
+        self.assertIn("max_nfev_scale = 1.0", text)
+        self.assertIn("max_iv_points = 50000", text)
+
+    def test_snapshot_ini_section_missing(self):
+        """snapshot_ini_section handles missing sections."""
+        from src.workflow.dg_tft.quality_guard import snapshot_ini_section
+
+        text = snapshot_ini_section(self.ini, "nonexistent")
+        self.assertIn("[nonexistent]", text)
+        self.assertIn("(empty)", text)
+
+
 if __name__ == "__main__":
     unittest.main()

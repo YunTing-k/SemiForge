@@ -25,6 +25,9 @@ from src.tool.subagent_tools import (
     SUBAGENT_TOOL_ADJUST_PARAMS,
     SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
     SUBAGENT_TOOL_REPORT_VERIFICATION,
+    SUBAGENT_TOOL_SWITCH_KERNEL,
+    SUBAGENT_TOOL_ACCEPT_QUALITY,
+    SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE,
 )
 from src.constants import *
 from rich.console import Console
@@ -407,13 +410,19 @@ def test_schema_exhausted_error(mock_openai):
 def test_get_tools_fit_physical():
     """get_tools('fit-physical') returns schemas + handlers."""
     schemas, handlers = get_tools("fit-physical")
-    assert len(schemas) == 3
+    assert len(schemas) == 5
     schema_names = {s["function"]["name"] for s in schemas}
-    assert schema_names == {SUBAGENT_TOOL_INSPECT_XLSX, SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS}
+    assert schema_names == {
+        SUBAGENT_TOOL_INSPECT_XLSX,
+        SUBAGENT_TOOL_ADJUST_PARAMS,
+        SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
+        SUBAGENT_TOOL_SWITCH_KERNEL,
+        SUBAGENT_TOOL_ACCEPT_QUALITY,
+    }
     assert SUBAGENT_TOOL_INSPECT_XLSX in handlers
     assert SUBAGENT_TOOL_ADJUST_PARAMS not in handlers
     assert SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS not in handlers
-    print("[PASS] get_tools fit-physical — 3 schemas, 1 handler")
+    print("[PASS] get_tools fit-physical — 5 schemas, 1 handler")
 
 
 def test_get_tools_check_data():
@@ -432,6 +441,99 @@ def test_get_tools_unknown_stage():
     assert schemas == []
     assert handlers == {}
     print("[PASS] get_tools unknown — empty fallback")
+
+
+def test_get_tools_train_static():
+    """get_tools('train-static') returns adjust + fallback + accept_quality."""
+    schemas, handlers = get_tools("train-static")
+    schema_names = {s["function"]["name"] for s in schemas}
+    assert schema_names == {
+        SUBAGENT_TOOL_INSPECT_XLSX,
+        SUBAGENT_TOOL_ADJUST_PARAMS,
+        SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
+        SUBAGENT_TOOL_ACCEPT_QUALITY,
+    }
+    assert SUBAGENT_TOOL_INSPECT_XLSX in handlers
+    print("[PASS] get_tools train-static — 4 schemas")
+
+
+def test_get_tools_train_hysteresis():
+    """get_tools('train-hysteresis') returns adjust + fallback + accept_quality."""
+    schemas, handlers = get_tools("train-hysteresis")
+    schema_names = {s["function"]["name"] for s in schemas}
+    assert schema_names == {
+        SUBAGENT_TOOL_INSPECT_XLSX,
+        SUBAGENT_TOOL_ADJUST_PARAMS,
+        SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
+        SUBAGENT_TOOL_ACCEPT_QUALITY,
+    }
+    print("[PASS] get_tools train-hysteresis — 4 schemas")
+
+
+def test_get_tools_final_interpret():
+    """get_tools('final-interpret') returns contribute_knowledge with handler."""
+    schemas, handlers = get_tools("final-interpret")
+    schema_names = {s["function"]["name"] for s in schemas}
+    assert schema_names == {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE}
+    assert SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE in handlers
+    print("[PASS] get_tools final-interpret — 1 schema with handler")
+
+
+def test_get_tools_adjust_params_override():
+    """get_tools with adjust_params_override replaces the static schema."""
+    custom = {"type": "function", "function": {"name": SUBAGENT_TOOL_ADJUST_PARAMS, "description": "Custom"}}
+    schemas, handlers = get_tools("fit-physical", adjust_params_override=custom)
+    schema_names = {s["function"]["name"] for s in schemas}
+    assert SUBAGENT_TOOL_ADJUST_PARAMS in schema_names
+    adjust_schema = next(s for s in schemas if s["function"]["name"] == SUBAGENT_TOOL_ADJUST_PARAMS)
+    assert adjust_schema["function"]["description"] == "Custom"
+    print("[PASS] get_tools override — custom adjust_params injected")
+
+
+def test_get_tools_adjust_params_override_new_stage():
+    """get_tools with override on stage without adjust_params appends it."""
+    custom = {"type": "function", "function": {"name": SUBAGENT_TOOL_ADJUST_PARAMS, "description": "Auto"}}
+    schemas, handlers = get_tools("check-data", adjust_params_override=custom)
+    schema_names = {s["function"]["name"] for s in schemas}
+    assert SUBAGENT_TOOL_ADJUST_PARAMS in schema_names
+    print("[PASS] get_tools override — adjust_params appended to check-data")
+
+
+def test_contribute_knowledge_handler_writes_file():
+    """contribute_knowledge handler writes to knowledge/_discovered/."""
+    import tempfile
+    import os
+    import json
+    from src.tool.subagent_tools import _contribute_knowledge_handler
+
+    # Use a temp dir, but the handler writes to knowledge/_discovered/ relative to CWD
+    # We need to temporarily chdir to a temp dir
+    orig_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
+        try:
+
+            class FakeCtx:
+                run_id = 999
+
+            result = _contribute_knowledge_handler(
+                {"title": "Test Discovery", "content": "# Finding\nSome interesting pattern."},
+                FakeCtx(),
+            )
+            assert result["status"] == "written"
+            assert "run_999_" in result["file"]
+            assert result["title"] == "Test Discovery"
+            assert os.path.exists(result["file"])
+
+            with open(result["file"], "r", encoding="utf-8") as f:
+                text = f.read()
+            assert "# Test Discovery" in text
+            assert "Some interesting pattern" in text
+
+        finally:
+            os.chdir(orig_cwd)
+
+    print("[PASS] contribute_knowledge handler — file written")
 
 
 @patch("src.agent.subagent.OpenAI")

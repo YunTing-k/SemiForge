@@ -458,6 +458,73 @@ def _read_ini_value(ini_path: str, section: str, key: str) -> float | None:
         return None
 
 
+# ── Agent adjustments → INI write ───────────────────────────────────
+
+def apply_agent_adjustments(
+    config_path: str,
+    adjustments: dict[str, object],
+    ini_section: str,
+) -> str:
+    """Write validated Agent adjustments to an INI config file.
+
+    Writes each ``section.key`` pair to the INI, creating sections as needed.
+    Returns a snapshot string for the operation log.
+
+    Args:
+        config_path: Path to the target INI file.
+        adjustments: Sanitized key→value dict (already validated by
+                     :func:`validate_agent_adjustments`).
+        ini_section: INI section name (e.g. ``"physical_fit"``, ``"full_model"``).
+
+    Returns:
+        A multi-line string of written adjustments (for logging).
+    """
+    import configparser as _cp
+    import io
+
+    cfg = _cp.ConfigParser()
+    cfg.read(config_path, encoding="utf-8")
+
+    if not cfg.has_section(ini_section):
+        cfg.add_section(ini_section)
+
+    snapshot_lines: list[str] = []
+    for key, value in adjustments.items():
+        cfg.set(ini_section, key, str(value))
+        snapshot_lines.append(f"{ini_section}.{key} = {value}")
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        cfg.write(f)
+
+    snapshot = "\n".join(snapshot_lines)
+    sys_log.info("Applied %d adjustments to [%s] in %s", len(adjustments), ini_section, config_path)
+    return snapshot
+
+
+def snapshot_ini_section(config_path: str, ini_section: str) -> str:
+    """Read a snapshot of a single INI section for the operation log.
+
+    Args:
+        config_path: Path to the INI file.
+        ini_section: INI section name.
+
+    Returns:
+        Multi-line string of ``key = value`` pairs in that section.
+    """
+    import configparser as _cp
+
+    cfg = _cp.ConfigParser()
+    cfg.read(config_path, encoding="utf-8")
+
+    if not cfg.has_section(ini_section):
+        return f"[{ini_section}]\n(empty)"
+
+    lines = [f"[{ini_section}]"]
+    for key, value in cfg.items(ini_section):
+        lines.append(f"{key} = {value}")
+    return "\n".join(lines)
+
+
 # ── Hard guard for Agent adjust_params output ─────────────────────
 
 def validate_agent_adjustments(

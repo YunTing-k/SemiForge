@@ -462,5 +462,123 @@ class TestTimeoutHelpers(unittest.TestCase):
         self.assertFalse(_elapsed_exceeds(time.monotonic(), 999999))
 
 
+class TestModelingAgentHelpers(unittest.TestCase):
+    """Tests for Step 8 agent infrastructure helpers."""
+
+    def test_stage_has_modeling_agent(self):
+        from src.workflow.dg_tft.orchestrator import _stage_has_modeling_agent
+        self.assertTrue(_stage_has_modeling_agent(StageName.FIT_PHYSICAL))
+        self.assertTrue(_stage_has_modeling_agent(StageName.TRAIN_STATIC))
+        self.assertTrue(_stage_has_modeling_agent(StageName.TRAIN_HYSTERESIS))
+        self.assertFalse(_stage_has_modeling_agent(StageName.CHECK_DATA))
+        self.assertFalse(_stage_has_modeling_agent(StageName.DATA_PREP))
+        self.assertFalse(_stage_has_modeling_agent(StageName.VERIFIER))
+
+    def test_normalize_tool_name_adjust_params(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name({"section": "physical_fit", "adjustments": {"lr": 0.001}, "reasoning": "test"}), "adjust_params")
+
+    def test_normalize_tool_name_fallback(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name({"target": "check-data", "reason": "upstream issue"}), "fallback_to_previous")
+
+    def test_normalize_tool_name_switch_kernel(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name({"kernel": "ekv_level2"}), "switch_kernel")
+
+    def test_normalize_tool_name_accept_quality(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name({"accept_quality": True, "reasoning": "ok"}), "accept_quality")
+
+    def test_normalize_tool_name_unknown(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name({"foo": "bar"}), "error")
+
+    def test_normalize_tool_name_non_dict(self):
+        from src.workflow.dg_tft.orchestrator import _normalize_tool_name
+        self.assertEqual(_normalize_tool_name("just text"), "error")
+
+    def test_process_agent_decision_adjust_params_retry(self):
+        """_process_agent_decision returns 'retry' for valid adjust_params."""
+        import tempfile
+        from src.workflow.dg_tft.orchestrator import _process_agent_decision
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ini_path = os.path.join(tmpdir, "test.ini")
+            with open(ini_path, "w") as f:
+                f.write("[physical_fit]\nmax_nfev_scale = 1.0\nmax_iv_points = 50000\n")
+            sd = StageDef(name="fit-physical", action="act", required=True)
+
+            # Need to mock ctx.console, ctx.subagent_mute
+            ctx = MockContext()
+            ctx.subagent_mute = True  # suppress console output
+
+            from src.agent.subagent import SubAgent  # mock out SubAgent so it doesn't try real LLM
+            from src.workflow.dg_tft.stage_runner import run_stage
+
+            agent_result = {
+                "decision": "adjust_params",
+                "arguments": {
+                    "section": "physical_fit",
+                    "adjustments": {"max_nfev_scale": 3.0},
+                    "reasoning": "Need more NF evaluations",
+                },
+                "reasoning": "Need more NF evaluations",
+            }
+            result = _process_agent_decision(
+                ctx, 1, sd, ini_path, None, agent_result, 3,
+            )
+            self.assertEqual(result, "retry")
+
+            # Verify INI was updated
+            import configparser
+            cfg = configparser.ConfigParser()
+            cfg.read(ini_path, encoding="utf-8")
+            self.assertEqual(cfg.get("physical_fit", "max_nfev_scale"), "3.0")
+
+    def test_process_agent_decision_accept_quality(self):
+        from src.workflow.dg_tft.orchestrator import _process_agent_decision
+
+        ctx = MockContext()
+        ctx.subagent_mute = True
+        sd = StageDef(name="fit-physical", action="act", required=True)
+        agent_result = {
+            "decision": "accept_quality",
+            "arguments": {"reasoning": "IV is close enough"},
+            "reasoning": "IV is close enough",
+        }
+        result = _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)
+        self.assertEqual(result, "accept")
+
+    def test_process_agent_decision_fallback(self):
+        from src.workflow.dg_tft.orchestrator import _process_agent_decision
+
+        ctx = MockContext()
+        ctx.subagent_mute = True
+        sd = StageDef(name="fit-physical", action="act", required=True)
+        agent_result = {
+            "decision": "fallback_to_previous",
+            "arguments": {"target": "check-data", "reason": "data issues"},
+            "reasoning": "data issues",
+        }
+        result = _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)
+        self.assertEqual(result, "fallback")
+
+    def test_process_agent_decision_empty_adjustments(self):
+        """Empty adjustments → accept (no retry)."""
+        from src.workflow.dg_tft.orchestrator import _process_agent_decision
+
+        ctx = MockContext()
+        ctx.subagent_mute = True
+        sd = StageDef(name="fit-physical", action="act", required=True)
+        agent_result = {
+            "decision": "adjust_params",
+            "arguments": {"section": "physical_fit", "adjustments": {}, "reasoning": "no changes"},
+            "reasoning": "no changes",
+        }
+        result = _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)
+        self.assertEqual(result, "accept")
+
+
 if __name__ == "__main__":
     unittest.main()
