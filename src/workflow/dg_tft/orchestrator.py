@@ -532,7 +532,7 @@ def run_workflow(
                       board=board, task_map=task_map)
         return False, f"Run {run_id} completed with failures: {failed_stage}"
     op_log.set_final_status("done")
-    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=False)
+    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=False, config_path=config_path)
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
@@ -1642,12 +1642,19 @@ def _spawn_agent_e(
     *,
     failed: bool = False,
     failed_stage: str = "",
+    config_path: str = "",
 ) -> None:
     """Spawn Agent E for final interpretation and knowledge contribution.
 
     Agent E runs with stop_mode="any" — it produces a free-text interpretation
     and may call contribute_knowledge to persist discoveries.
+
+    Skips when minimal_run is set.
     """
+    if config_path and _is_minimal_run(config_path):
+        _console(ctx, f"  [bright_black][Agent E] skipped (minimal_run)[/bright_black]")
+        return
+
     _console(ctx, f"  [bright_black][Agent E] {'pipeline failed' if failed else 'workflow completed'} — "
              f"interpreting results...[/bright_black]")
 
@@ -1669,7 +1676,7 @@ def _spawn_agent_e_inner(
     failed_stage: str,
 ) -> None:
     from src.agent.subagent import SubAgent
-    from src.tool.subagent_tools import get_tools
+    from src.tool.subagent_tools import get_tools, SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE
     from src.agent.progress import EXPLORER_AGENT_LABEL
 
     schemas, handlers = get_tools("final-interpret")
@@ -1720,6 +1727,7 @@ def _spawn_agent_e_inner(
         subagent_tools=schemas,
         tool_handlers=handlers,
         stop_mode="any",
+        stop_schemas=[SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE],
         console=None,
     )
     ctx.agent_list[agent_id] = agent.progress
@@ -1734,12 +1742,41 @@ def _spawn_agent_e_inner(
     if result and agent.status.value == "done":
         _console(ctx, f"  [{WF_SECTION_TITLE}]Agent E Interpretation[/{WF_SECTION_TITLE}]")
         if isinstance(result, str):
+            import json as _json
+            try:
+                parsed = _json.loads(result)
+                if isinstance(parsed, dict) and "title" in parsed:
+                    _handle_contribute_knowledge(parsed, ctx, run_id)
+            except _json.JSONDecodeError:
+                pass
             for line in result.strip().splitlines()[:15]:
                 _console(ctx, f"  [bright_black]{line[:120]}[/bright_black]")
         else:
             _console(ctx, f"  [bright_black]See agent dump for details[/bright_black]")
     else:
         _console(ctx, f"  [bright_black]Agent E: no interpretation produced[/bright_black]")
+
+
+def _handle_contribute_knowledge(arguments: dict[str, Any], ctx, run_id: int) -> None:
+    """Write a knowledge contribution from Agent E's structured output."""
+    import json as _json
+    from datetime import datetime
+
+    os.makedirs("knowledge/_discovered", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"run_{run_id:04d}_{timestamp}.md"
+    filepath = os.path.join("knowledge/_discovered", filename)
+
+    title = arguments.get("title", "Untitled")
+    content = arguments.get("content", "")
+    full_text = f"# {title}\n\n{content}\n"
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(full_text)
+        _console(ctx, f"  [{WF_STATUS_SUCCESS}]Contributed knowledge: {filename}[/{WF_STATUS_SUCCESS}]")
+    except Exception as e:
+        sys_log.warning("Failed to write contributed knowledge: %s", e)
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:

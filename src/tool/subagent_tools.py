@@ -353,7 +353,7 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
     ),
     "final-interpret": (
         [_CONTRIBUTE_KNOWLEDGE_SCHEMA],
-        {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: _contribute_knowledge_handler},
+        {},
     ),
 }
 

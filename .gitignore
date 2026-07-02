@@ -25,6 +25,7 @@
 /src/workflow/**/__pycache__
 /test/__pycache__
 /testdata/
+/knowledge/_discovered/
 doc/TODO.md
 AGENTS.md
 nul
