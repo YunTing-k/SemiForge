@@ -183,12 +183,13 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
     "cv_residual_level": {
         "type": "int",
         "lo": 0,
-        "hi": 3,
+        "hi": 2,
         "default": 1,
         "desc": (
             "Complexity level of the CV residual correction sub-network. "
-            "0 = disabled.  Higher levels add more learnable parameters. "
-            "Increase if CV fitting needs more flexibility."
+            "0 = disabled. 1 = shared broadened-DOS + asymmetric. 2 = shared + asymmetric + inter-gate reciprocal. "
+            "Higher levels add more learnable parameters. "
+            "Increase if CV fitting needs more flexibility. Max=2 (engine argparse restriction)."
         ),
     },
     "enable_cv_residual": {
@@ -547,13 +548,126 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "lo": None,
         "hi": None,
         "default": "primary_gate_cv",
-        "enum": ["primary_gate_cv", "all_gate_cv"],
+        "enum": ["all", "representative", "primary_gate_cv"],
         "section": "full_model",
         "desc": (
             "CV training data subset selection. "
-            "'primary_gate_cv' — use only the primary gate CV sheets. "
-            "'all_gate_cv' — include all gate capacitance sheets. "
-            "Use 'all_gate_cv' if secondary gates contain useful information."
+            "'primary_gate_cv' — use only the primary gate CV sheets (CBG, CTG, CGG). "
+            "'all' — include all gate capacitance sheets including VDS. "
+            "'representative' — select representative CV series. "
+            "Use 'all' if secondary gates contain useful information."
+        ),
+    },
+
+    # ── [full_model] — training-stage control flags and masking ──
+    "reset_base_from_physical_fit": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": True,
+        "section": "full_model",
+        "desc": (
+            "Whether to rebuild the PKAN from the physical kernel fitted_params.json. "
+            "When True, creates a fresh current-device physical+PKAN model. "
+            "When False, resume from existing PKAN checkpoint (warm-start). "
+            "Set False to fine-tune an existing checkpoint."
+        ),
+    },
+    "train_base_iv_pkan": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": True,
+        "section": "full_model",
+        "desc": (
+            "Whether to train the base IV-PKAN on current-device data. "
+            "When True, runs the base IV PKAN training phase before residual/CV training. "
+            "When False, skip base IV training (use pre-trained weights only)."
+        ),
+    },
+    "train_iv_residual_stage": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": True,
+        "section": "full_model",
+        "desc": (
+            "Whether to train the held-out IV residual stage. "
+            "When True, trains the diag.iv_resid CompactKAN on held-out IV data. "
+            "When False, skip IV residual training (rely on PKAN corrections only)."
+        ),
+    },
+    "freeze_iv_residual_after_stage": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": True,
+        "section": "full_model",
+        "desc": (
+            "Whether to freeze the IV residual KAN after its dedicated stage. "
+            "When True, IV residual weights are frozen during joint CV training. "
+            "When False, joint-finetune the IV residual alongside CV (risk IV degradation)."
+        ),
+    },
+    "iv_residual_holdout_stride": {
+        "type": "int",
+        "lo": 1,
+        "hi": 20,
+        "default": 5,
+        "section": "full_model",
+        "desc": (
+            "Stride for cross-condition holdout split in IV residual training. "
+            "Data points every N steps are held out for validation. "
+            "Lower values = larger holdout set, more conservative residual evaluation."
+        ),
+    },
+    "iv_residual_off_anchor_weight": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 20.0,
+        "default": 2.0,
+        "section": "full_model",
+        "desc": (
+            "Weight for the off-state anchor loss in IV residual training. "
+            "Higher values enforce accurate deep-off current prediction. "
+            "Increase if the residual model produces unrealistic off-state leakage."
+        ),
+    },
+    "disabled_iv_pkan": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "",
+        "section": "full_model",
+        "desc": (
+            "Comma-separated list of IV-PKAN output names to disable (set to zero). "
+            "Empty string means all outputs active. "
+            "Use to selectively remove problematic PKAN correction heads. "
+            "Example: 'dlog_rs_fwd,dpartition_inv'"
+        ),
+    },
+    "disabled_cv_pkan": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "",
+        "section": "full_model",
+        "desc": (
+            "Comma-separated list of CV-PKAN output names to disable (set to zero). "
+            "Empty string means all outputs active (subject to engine DEFAULT_DISABLED_CV_PKAN). "
+            "Additional heads can be disabled here beyond engine defaults."
+        ),
+    },
+    "disabled_cv_charge_pkan": {
+        "type": "string",
+        "lo": None,
+        "hi": None,
+        "default": "",
+        "section": "full_model",
+        "desc": (
+            "Comma-separated list of CV charge residual output names to disable. "
+            "Empty string means all outputs active (subject to engine CV_RELEASE_ACTIVE_NAMES). "
+            "Use to selectively disable specific CV residual branches."
         ),
     },
 
@@ -701,6 +815,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "hi": 32,
         "default": 8,
         "section": "temperature",
+        "ini_key": "kan_hidden",
         "desc": (
             "Hidden layer size for the temperature KAN sub-network. "
             "Larger values increase capacity for complex temperature-dependence. "
@@ -713,6 +828,7 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "hi": 20,
         "default": 3,
         "section": "temperature",
+        "ini_key": "kan_grid",
         "desc": (
             "Grid resolution for temperature KAN B-splines. "
             "Higher values provide finer temperature interpolation. "
@@ -725,10 +841,166 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "hi": 5,
         "default": 3,
         "section": "temperature",
+        "ini_key": "kan_k",
         "desc": (
             "Spline degree for temperature KAN B-splines. "
             "Higher-order splines are smoother but may oscillate. "
             "k=3 (cubic) is standard; increase only for higher-order continuity."
+        ),
+    },
+}
+
+# ── [symbolic] — symbolic export parameters ──
+SYMBOLIC_PARAMS: dict[str, ParamDef] = {
+    "edge_steps": {
+        "type": "int",
+        "lo": 10,
+        "hi": 2000,
+        "default": 180,
+        "section": "symbolic",
+        "desc": (
+            "Number of optimization steps for edgewise symbolic replacement. "
+            "More steps allow finer symbolic formula fitting. "
+            "Increase if Top-1 compatibility gate fails."
+        ),
+    },
+    "edge_topk": {
+        "type": "int",
+        "lo": 1,
+        "hi": 3,
+        "default": 1,
+        "section": "symbolic",
+        "desc": (
+            "Top-K symbolic edge replacement (K=1 for strict, K=2 for relaxed). "
+            "Top-2 is applied to CV and temperature edges; IV edges also promote when "
+            "iv_adaptive_top2_mse > 0. "
+            "Increase to 2 for devices with complex transfer curves."
+        ),
+    },
+    "iv_edge_topk": {
+        "type": "int",
+        "lo": 1,
+        "hi": 3,
+        "default": 1,
+        "section": "symbolic",
+        "desc": (
+            "Top-K symbolic replacement specifically for IV edges. "
+            "When > 1, edges above iv_adaptive_top2_mse threshold use Top-2 instead of Top-1. "
+            "Increase if IV symbolic edges fail precision gate."
+        ),
+    },
+    "iv_adaptive_top2_mse": {
+        "type": "float",
+        "lo": 0.0,
+        "hi": 0.1,
+        "default": 0.0015,
+        "section": "symbolic",
+        "desc": (
+            "MSE threshold for adaptively promoting IV edges from Top-1 to Top-2. "
+            "Edges with Top-1 MSE above this value use Top-2 replacement. "
+            "Set 0.0 to keep all edges strict Top-1. "
+            "Increase to allow more edges to fall back to Top-2."
+        ),
+    },
+    "iv_calibration_max_terms": {
+        "type": "int",
+        "lo": 1,
+        "hi": 100,
+        "default": 24,
+        "section": "symbolic",
+        "desc": (
+            "Maximum number of calibration terms for IV symbolic optimization. "
+            "Higher values allow more fine-tuning terms in the exported Verilog-A. "
+            "Increase if symbolic observables fail deployment fidelity targets."
+        ),
+    },
+    "edge_finetune_steps": {
+        "type": "int",
+        "lo": 10,
+        "hi": 2000,
+        "default": 80,
+        "section": "symbolic",
+        "desc": (
+            "Training steps for edge-level symbolic fine-tuning. "
+            "More steps improve per-edge symbolic accuracy. "
+            "Increase if edgewise replacement MSE is marginally above threshold."
+        ),
+    },
+    "network_finetune_steps": {
+        "type": "int",
+        "lo": 10,
+        "hi": 5000,
+        "default": 360,
+        "section": "symbolic",
+        "desc": (
+            "Training steps for full-network symbolic fine-tuning. "
+            "After edgewise replacement, the complete symbolic network is jointly refined. "
+            "Increase if network-level symbolic observables degrade after edge replacement."
+        ),
+    },
+    "device_iv_finetune_steps": {
+        "type": "int",
+        "lo": 100,
+        "hi": 10000,
+        "default": 3000,
+        "section": "symbolic",
+        "desc": (
+            "Training steps for device-specific IV symbolic calibration. "
+            "The symbolic network is fine-tuned on the current device's measured IV data. "
+            "Increase if device-level IV fidelity is poor after symbolic export."
+        ),
+    },
+    "device_iv_measured_steps": {
+        "type": "int",
+        "lo": 100,
+        "hi": 20000,
+        "default": 5000,
+        "section": "symbolic",
+        "desc": (
+            "Training steps for measured-data IV symbolic calibration. "
+            "Fine-tunes symbolic formulas directly against measured IV curves. "
+            "Increase if the exported model shows systematic IV prediction errors."
+        ),
+    },
+    "device_cv_finetune_steps": {
+        "type": "int",
+        "lo": 10,
+        "hi": 5000,
+        "default": 650,
+        "section": "symbolic",
+        "desc": (
+            "Training steps for device-specific CV symbolic calibration. "
+            "The symbolic CV model is fine-tuned on measured CV data. "
+            "Increase if exported CV predictions have systematic errors."
+        ),
+    },
+}
+
+# ── [validation] — safety/quality scan parameters ──
+VALIDATION_PARAMS: dict[str, ParamDef] = {
+    "safe_scale_steps": {
+        "type": "int",
+        "lo": 2,
+        "hi": 50,
+        "default": 8,
+        "section": "validation",
+        "desc": (
+            "Number of scale steps in the safety scan for residual output scales. "
+            "More steps produce finer-grained safety envelope discovery. "
+            "Increase if the safe scale is coarsely estimated."
+        ),
+    },
+    "joint_cv_safe_scale_search": {
+        "type": "bool",
+        "lo": None,
+        "hi": None,
+        "default": False,
+        "section": "validation",
+        "desc": (
+            "Enable 2D joint (parameter_scale, residual_scale) safety scan for CV. "
+            "When True, runs a coarse grid search for CV scale combinations. "
+            "When False, scan CV parameter and residual scales independently. "
+            "Set True if CV passivity gate fails with independent scales."
         ),
     },
 }
@@ -750,10 +1022,12 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
         "lo": None,
         "hi": None,
         "default": "all",
-        "enum": ["all", "linear", "sat"],
+        "enum": ["all", "fast", "slow"],
         "desc": (
             "Target regime for hysteresis training. "
-            "'all' — full range; 'linear' — linear region only; 'sat' — saturation region only. "
+            "'all' — train both fast and slow SRH banks. "
+            "'fast' — fast-regime only (segment duration < 50 ms). "
+            "'slow' — slow-regime only (segment duration >= 50 ms). "
             "Use 'all' unless specific regime data is problematic."
         ),
     },
@@ -794,26 +1068,16 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
         "type": "string",
         "lo": None,
         "hi": None,
-        "default": "conservative",
-        "enum": ["conservative", "aggressive"],
+        "default": "independent",
+        "enum": ["independent", "conservative"],
         "desc": (
             "Amplitude parameterization style for the hysteresis model. "
-            "'conservative' — safer, less prone to oscillation. "
-            "'aggressive' — tighter fit at the risk of overshoot artifacts. "
-            "Switch to 'aggressive' only if conservative fitting yields poor amplitude match."
+            "'independent' — legacy v90 per-amplitude head (the engine default). "
+            "'conservative' — bounded total+exchange form, less prone to oscillation. "
+            "Use 'conservative' for deployable charge-conserving models."
         ),
     },
-    "print_every": {
-        "type": "int",
-        "lo": 1,
-        "hi": 200,
-        "default": 1,
-        "section": "hysteresis",
-        "desc": (
-            "Print training loss/metrics every N epochs during hysteresis training. "
-            "Larger values reduce log noise; set to 1 for full visibility."
-        ),
-    },
+
 
     # ── [hysteresis] v95 — fast/slow regime split ──
     "fast_restarts": {
@@ -845,13 +1109,13 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
         "lo": None,
         "hi": None,
         "default": "conservative",
-        "enum": ["conservative", "independent", "aggressive"],
+        "enum": ["independent", "conservative"],
         "section": "hysteresis",
         "desc": (
             "Amplitude parameterization for the fast-transient SRH bank. "
             "'conservative' — bounded total/exchange form, less prone to oscillation. "
             "'independent' — legacy v90 per-amplitude head. "
-            "Switch to 'independent' only if conservative fitting underfits amplitudes."
+            "Use 'conservative' for stability."
         ),
     },
     "slow_amp_parameterization": {
@@ -859,13 +1123,13 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
         "lo": None,
         "hi": None,
         "default": "independent",
-        "enum": ["conservative", "independent", "aggressive"],
+        "enum": ["independent", "conservative"],
         "section": "hysteresis",
         "desc": (
             "Amplitude parameterization for the slow-transient SRH bank. "
             "'independent' — legacy v90 per-amplitude head (protected baseline). "
             "'conservative' — bounded total/exchange form. "
-            "Reduce to 'conservative' if slow-bank amplitudes oscillate."
+            "Use 'conservative' if slow-bank amplitudes oscillate."
         ),
     },
     "fast_optimizer_policy": {
@@ -903,9 +1167,14 @@ HYSTERESIS_PARAMS: dict[str, ParamDef] = {
 
 from .schema import StageName
 
+# Merge symbolic and validation params into the full-model table so they appear in
+# the adjust_params tool schema for Agent C (train-static).
+FULL_MODEL_PARAMS.update(SYMBOLIC_PARAMS)
+FULL_MODEL_PARAMS.update(VALIDATION_PARAMS)
+
 _STAGE_PARAM_MAP: dict[str, tuple[list[str], dict[str, ParamDef]]] = {
     StageName.FIT_PHYSICAL: (["physical_fit", "preprocessing"], PHYSICAL_FIT_PARAMS),
-    StageName.TRAIN_STATIC: (["full_model", "base_pkan", "temperature"], FULL_MODEL_PARAMS),
+    StageName.TRAIN_STATIC: (["full_model", "base_pkan", "temperature", "symbolic", "validation"], FULL_MODEL_PARAMS),
     StageName.TRAIN_HYSTERESIS: (["hysteresis"], HYSTERESIS_PARAMS),
 }
 

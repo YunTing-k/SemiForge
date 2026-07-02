@@ -672,3 +672,104 @@ un_{run_id:04d}_{timestamp}.md (cross-session collision, meaningless) to {title_
 - **Contribute only when novel**: system prompt now marks contribute_knowledge as OPTIONAL, only called for genuinely novel findings
 - **English enforced**: Agent E prompt + contribute_knowledge tool description require English only
 - **gitignore**: Added /knowledge/_discovered/ (not committed to repo)
+
+### 2026-07-02 | Expert Knowledge Files + Three-Way INI/Code/MD Consistency Audit (3 Fix Rounds)
+
+**switch_kernel Removal**:
+- Engine only has EKV Level-2 kernel; no kernel abstraction layer exists. switch_kernel wrote to INI but engine never consumed it
+- Full removal: subagent_tools.py, orchestrator.py, tests, all docs (6 files, -100 lines)
+
+**5 Tier-1 Expert Knowledge Files Created**:
+- Four-dimension knowledge classification: principles/behavior/current capability/experience (JSONL extraction)
+- Template: 6 sections (Global Context → Upstream/Downstream → INI Parameters → Quality Metrics → Engine Behavior → Failure Patterns)
+- Write-review-audit workflow: subagent researches code → writes MD → review subagent checks facts/omissions → I (human) cross-check INI parameters
+- 5 files: data_inspection.md (~240 lines), physical_kernel.md (~400 lines), static_model.md (~550 lines), hysteresis.md (~430 lines), final_interpret.md (~270 lines)
+- Directory unified: knowledge/ (repo root), loader _default_knowledge_dir() updated, constants.py updated
+- Section 6 (Failure Patterns) left empty, marked for population from Zikang's Codex JSONL logs
+
+**Round 1 Review (subagent cross-validation)**:
+- 5 explore subagents ran in parallel, found 40+ factual errors/omissions/oversimplifications
+- Critical errors: physical_kernel.md claimed CUDA (pure CPU scipy in reality), static_model.md IV-PKAN input features completely wrong, hysteresis.md ALL enum values wrong, final_interpret.md cascade logic completely backwards (pipeline does NOT stop immediately)
+
+**Round 2 Review (three-way INI/Code/MD consistency audit)**:
+- 68 parameters audited across all sources (6 PHY + 50 FULL + 12 HYS)
+- Found 8 dead params ([base_pkan] section never passed to subprocess)
+- Found 5 default mismatches (base_iv_epochs 700→540, hysteresis epochs 1800→4000, etc.)
+- Found critical bug: cv_train_subset enum included "all_gate_cv" but engine only accepts "all" (agent adjust would cause argparse crash)
+- Found cv_residual_level hi=3 but engine argparse choices=[0,1,2]
+- Found temperature param 4/6 key name mismatch causing agent adjustments to be SILENTLY IGNORED
+- param_defs.py fixes: regime/amp_parameterization enums aligned to engine argparse
+- Removed dead param: hysteresis print_every (never passed to subprocess)
+- quality_guard.py synced: auto-adjust strategy "aggressive"→"independent", removed print_every from bounds/whitelist
+
+**Round 3 (Missing Parameter Gap Fill)**:
+- 21 params that run_model.py passes to subprocess but were missing from param_defs now added:
+  - [full_model] 9: reset_base_from_physical_fit, train_base_iv_pkan, train_iv_residual_stage, freeze_iv_residual_after_stage, iv_residual_holdout_stride, iv_residual_off_anchor_weight, disabled_iv_pkan/cv_pkan/cv_charge_pkan
+  - [symbolic] 10: edge_steps, edge_topk, iv_edge_topk, iv_adaptive_top2_mse, iv_calibration_max_terms, edge_finetune_steps, network_finetune_steps, device_iv_finetune_steps, device_iv_measured_steps, device_cv_finetune_steps
+  - [validation] 2: safe_scale_steps, joint_cv_safe_scale_search
+- Temperature key naming fixed: param_defs now has ini_key field mapping; apply_agent_adjustments refactored to accept param_table and write to correct section+key
+- _STAGE_PARAM_MAP extended with [symbolic] and [validation] sections
+- quality_guard bounds + whitelist updated with all new params
+- Final: 68 → 71 parameters, agent can now adjust ALL modeling hyperparameters forwarded by the pipeline
+
+**Knowledge MD Sync with Code**:
+- physical_kernel.md: CUDA→pure CPU scipy, engine path corrected, IV residual 6-factor weight table, CV trap fit separate coefficients, exact regularization values, f_scale=0.55, CGG 10kHz retained for fitting, auto-orientation span_ratio=1.55, iv_stage_alignment modifies data
+- static_model.md: finetune_base_pkan default accuracy, cv_residual_level semantics, IV-PKAN 6 features, two scheduling mechanisms (loss eval + CV parameter phase architecture), CV residual 21 slots/7 active, final-report kind="script", training phase architecture
+- hysteresis.md: ALL enum values corrected, epochs/hidden runtime defaults documented, print_every removed from table, knowledge-not-injected status documented
+- final_interpret.md: cascade logic fully rewritten, Agent E only receives last attempt per stage, upstream field always empty, contribute_knowledge mechanism, minimal_run skip, pre-computed error classification
+
+**Tests**: 935 passed, 11 skipped
+
+---
+
+## 2026-07-02 — Expert Knowledge File 3-Round Audit + Fix
+
+**Background**: The 5 knowledge files had already been through 3 rounds of subagent review, but agents are not fully reliable — additional verification needed.
+
+**Audit Architecture**: Three rounds of 5 parallel explore subagents, with human review gate between rounds:
+
+- **Round 1 — Positive Claim Extraction**: Exhaustively list every verifiable factual claim in each MD (param defaults, enum values, behavior descriptions, algorithm steps), with source files to cross-check. Output: 187+83+82+68+49 = 469 claims.
+- **Round 2 — Claim-by-Claim Verification**: Verify each claim against actual source code, outputting ✅/❌/⚠️/📋. For parameter claims, three-way cross-check of param_defs default → run_model.py passed value → engine argparse default. Output: 18 errors + 27 oversimplifications + 17 TODO items.
+- **Round 3 — Reverse Scanning**: Ignore MDs, read only source code to find information critical for agent decisions that is completely absent from the knowledge files. Output: 48 missing items (10+10+7+8+13).
+
+**Key Findings (18 errors)**:
+
+| File | Error | Severity |
+|------|-------|----------|
+| data_inspection.md | `_run_stage_diagnosis` claimed to run for check-data but code uses `break` first | critical |
+| data_inspection.md | "All check-data errors classified as DATA_ERROR" — keyword matching is stage-agnostic, CONFIG_ERROR/etc. keywords take priority | high |
+| data_inspection.md | Artifacts checked by `run_artifact_stage` are `.pt` checkpoints (not `dataset_validation.json`) | medium |
+| physical_kernel.md | IV sampling subthreshold weight MD says ×3, code: base 1.0 + 3.0 = effective 4.0× | medium |
+| physical_kernel.md | IV sampling on-region weight MD says ×1.5, code: base 1.0 + 1.5 = effective 2.5× | medium |
+| physical_kernel.md | MISSING_ARTIFACT_ERROR category (6 keywords, 0.9 confidence) entirely absent from error table | medium |
+| static_model.md | `cv_residual_level` MD says "2 or 3" but engine choices=[0,1,2], max is 2 | high |
+| static_model.md | CV training phase 4 boundary params marked INI-writable but absent from param_defs | high |
+| static_model.md | "50 parameters total" — actual count is 51/63/71 depending on counting dimension | low |
+| static_model.md | IV-PKAN output names don't match engine CORR_NAMES (dlog_rs_fwd/reverse vs dpsi_V) | medium |
+| static_model.md | `base_iv_epochs` MD default 700, engine argparse default 540 | medium |
+| hysteresis.md | `fast_amp_parameterization` default stated "None→fallback", actual param_defs default "conservative" | high |
+| hysteresis.md | `slow_amp_parameterization` default stated "None→fallback", actual param_defs default "independent" | high |
+| final_interpret.md | Successful retries (attempt_n > 1) NEVER logged to operation_log — only agent decision entry | critical |
+| final_interpret.md | PREP_RETRY trigger defined in enum but NEVER emitted in production code | medium |
+| final_interpret.md | B/C/D quality_fail trigger only used in prompt context; actual log writes AGENT_ADJUST | medium |
+| final_interpret.md | Cascade victim description assumes operation_log entries — first-attempt hard failures produce none | high |
+
+**Key Missing Items (48 total)**:
+
+- **data_inspection.md** (10): Agent A prompt missing stdout summary (only truncated 2K-char stderr), CV normalization silently returns on Exception, diagnostic keyword concatenation boundary false positives, CV validation minimum 3 rows gate → "unknown" layout, I-t auto-discovery "it" substring match false positives
+- **physical_kernel.md** (10): **Critical**: Agent B prompt gets ZERO engine knowledge (generic 8-line template only), 9 engine-internal hardcoded thresholds not INI-adjustable (RS solve threshold / VDS filter 0.55V / Stage3 transfer ratio / smooth_pos ε etc.), silent data drops (NaN/non-positive capacitance/no "long" sheet — all silently discarded, no warnings)
+- **static_model.md** (7): **Critical**: 5 additional precision gates undocumented (base IV region 7-check gate / IV residual heldout gain @ 8e-4 / region degradation @ 0.008 / KAN grid audit / charge passivity), 30+ diagnostic files only 12 listed, engine error messages not classifier-mapped
+- **hysteresis.md** (8): **Critical**: Acceptance gate RuntimeError as distinct hard failure path undocumented, 7 acceptance gate thresholds hardcoded not adjustable, data filtering can silently drop ALL segments → "no SRH tau labels" RuntimeError
+- **final_interpret.md** (13): **Critical**: inline prompt conflates ok/quality_pass (uses exit code only, PASS may mean quality_pass=False), error text never injected into prompt, Agent E receives NEITHER output_dir NOR config_path, 15-line output truncation (not saved to disk), minimal_run skip broken on failure path
+
+**Knowledge File Fixes Applied** (~40 modifications across 5 files):
+
+| File | Modifications |
+|------|---------------|
+| data_inspection.md | `_run_stage_diagnosis` paragraph replaced with correct note, error classification fixed to note stage-agnostic keyword matching priority, new "Agent A prompt content" section (stderr 2K-only, stdout summary not in prompt), CV normalization silent-exception caveat, artifact stage artifacts clarification (.pt not dataset_validation.json), I-t substring match warning, missing error keywords added |
+| physical_kernel.md | IV sampling weights corrected ×3→×4, ×1.5→×2.5, MISSING_ARTIFACT_ERROR category + other missing keywords added, knowledge-not-injected critical status box, engine-internal hardcoded thresholds section (9 non-adjustable params), adjust_params schema diagnostic-context note, CV auto-orientation hardcoded thresholds warning, silent data filtering section |
+| static_model.md | cv_residual_level "or 3"→"2" all occurrences, CV phase params "INI-writable"→"engine-internal only", parameter count "50"→"63/71", IV-PKAN output names corrected to engine CORR_NAMES (dpsi_V replaces dlog_rs_*), new 5-level precision gate suite section, base_iv_epochs default discrepancy footnote, engine error messages classification table |
+| hysteresis.md | fast_amp_parameterization default "None→fallback"→"conservative", slow_amp_parameterization default "None→fallback"→"independent", acceptance gate RuntimeError as distinct failure path documented, 7 hardcoded acceptance gate thresholds table, silent data filtering → RuntimeError triggers documented, training constant list (lr/wd/grad_clip not adjustable), HSPICE non-blocking failure note |
+| final_interpret.md | operation_log coverage gaps documented (hard failures + successful retries not logged), PREP_RETRY trigger never-emitted note, quality_fail trigger usage clarification (Agent A only), inline prompt ok-vs-quality_pass conflation warning, error text absence from prompt documented, Agent E full tool list (bash/grep_file/web_search/web_fetch), 15-line console truncation warning, minimal_run skip broken on failure path note, agent_reasoning/ini_snapshot fields documented, quality threshold source note (configurable via agent_configs, not constants) |
+
+**Audit Reports Archived**: `doc/audit_r1/` `doc/audit_r2/` (Round 1 claims + Round 2 verification + Round 3 reverse scan results — can be cleaned up later)

@@ -55,7 +55,8 @@ class TestParamTables(unittest.TestCase):
 
     def test_print_every_present(self):
         self.assertIn("print_every", self.FULL_MODEL_PARAMS)
-        self.assertIn("print_every", self.HYSTERESIS_PARAMS)
+        # print_every was removed from HYSTERESIS_PARAMS because run_model.py
+        # never forwards --print-every to the hysteresis training subprocess.
 
     def test_cross_section_params_have_section_field(self):
         """Params from non-primary sections must declare their 'section'."""
@@ -206,7 +207,7 @@ class TestSchemaGeneration(unittest.TestCase):
         self.assertEqual(amp["type"], "string")
         self.assertIn("enum", amp)
         self.assertIn("conservative", amp["enum"])
-        self.assertIn("aggressive", amp["enum"])
+        self.assertIn("independent", amp["enum"])
 
     def test_schema_description_contains_stage_label(self):
         schema = self.params_to_tool_schema(self.PHYSICAL_FIT_PARAMS, stage_label="fit-physical")
@@ -279,12 +280,12 @@ class TestHardGuardValidation(unittest.TestCase):
 
     def test_valid_string_enum(self):
         sanitized, warnings = self.validate(
-            {"amp_parameterization": "aggressive"},
+            {"amp_parameterization": "independent"},
             self.HYSTERESIS_PARAMS,
             self.HY_SECTIONS,
         )
         self.assertEqual(warnings, [])
-        self.assertEqual(sanitized["amp_parameterization"], "aggressive")
+        self.assertEqual(sanitized["amp_parameterization"], "independent")
 
     def test_valid_bool(self):
         sanitized, warnings = self.validate(
@@ -543,7 +544,7 @@ class TestStageParamMap(unittest.TestCase):
         all_sections = set()
         for sections in (v[0] for v in _STAGE_PARAM_MAP.values()):
             all_sections.update(sections)
-        self.assertEqual(all_sections, {"physical_fit", "preprocessing", "full_model", "base_pkan", "temperature", "hysteresis"})
+        self.assertEqual(all_sections, {"physical_fit", "preprocessing", "full_model", "base_pkan", "temperature", "hysteresis", "symbolic", "validation"})
 
 
 if __name__ == "__main__":

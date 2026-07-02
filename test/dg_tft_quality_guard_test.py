@@ -347,10 +347,10 @@ class TestSuggestAdjustments(unittest.TestCase):
         self.assertEqual(adjustments["hysteresis.hidden_capture"], "20")
         self.assertEqual(adjustments["hysteresis.hidden_emission"], "24")
 
-    def test_hysteresis_attempt_2_aggressive(self):
+    def test_hysteresis_attempt_2_independent(self):
         adjustments = suggest_adjustments(StageName.TRAIN_HYSTERESIS, 2, self.ini)
         self.assertIn("hysteresis.amp_parameterization", adjustments)
-        self.assertEqual(adjustments["hysteresis.amp_parameterization"], "aggressive")
+        self.assertEqual(adjustments["hysteresis.amp_parameterization"], "independent")
 
     def test_unknown_stage_returns_empty(self):
         adjustments = suggest_adjustments("nonexistent", 0, self.ini)
@@ -422,14 +422,14 @@ class TestApplyAdjustments(unittest.TestCase):
         apply_adjustments(self.ini, {
             "physical_fit.max_nfev_scale": "2.0",
             "full_model.epochs": "1000",
-            "hysteresis.amp_parameterization": "aggressive",
+            "hysteresis.amp_parameterization": "independent",
         })
         import configparser
         cfg = configparser.ConfigParser()
         cfg.read(self.ini, encoding="utf-8")
         self.assertEqual(cfg.get("physical_fit", "max_nfev_scale"), "2.0")
         self.assertEqual(cfg.get("full_model", "epochs"), "1000")
-        self.assertEqual(cfg.get("hysteresis", "amp_parameterization"), "aggressive")
+        self.assertEqual(cfg.get("hysteresis", "amp_parameterization"), "independent")
 
     def test_apply_empty_adjustments_returns_same_path(self):
         result = apply_adjustments(self.ini, {})
@@ -531,6 +531,10 @@ class TestStrategyTables(unittest.TestCase):
             "slow_optimizer_policy",
             "cv_train_subset",
             "staged_loss_schedule",
+            "disabled_iv_pkan",
+            "disabled_cv_pkan",
+            "disabled_cv_charge_pkan",
+            "joint_cv_safe_scale_search",
         }
         for full_key in _PARAMETER_WHITELIST:
             section, key = full_key.split(".", 1)

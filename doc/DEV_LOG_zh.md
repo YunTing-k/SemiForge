@@ -722,4 +722,106 @@ un_{run_id:04d}_{timestamp}.md（跨 session 碰撞、无意义）改为 {title_
 - **minimal_run 跳过 Agent E**：新增 _is_minimal_run(config_path) 检查
 - **必须时才贡献**：system prompt 明确标注 contribute_knowledge 为 OPTIONAL，仅真正新发现时才调用
 - **英文强制**：Agent E prompt + contribute_knowledge tool description 标注 English only
+- **gitignore**：新增 /knowledge/_discovered/（不进仓库）
+
+### 2026-07-02 | 专家知识文件 + INI 三方一致性审计（三轮修复）
+
+**switch_kernel 删除**：
+- 引擎仅存在 EKV Level-2 一种物理内核，无 kernel 抽象层。switch_kernel 写入 INI 但引擎不消费
+- 全量删除：subagent_tools.py、orchestrator.py、测试、全部文档（6 files, -100 lines）
+
+**5 个专家知识文件 Tier 1 创建**：
+- 知识四维分类：原理/行为/当前能力/经验（JSONL 提取）
+- 模板：6 section（Global Context → Upstream/Downstream → INI Parameters → Quality Metrics → Engine Behavior → Failure Patterns）
+- 写-审-检工作流：subagent 调研代码 → 写 MD → review subagent 查事实/遗漏 → 本人 INI 跨检
+- 5 文件：data_inspection.md（~240行）、physical_kernel.md（~400行）、static_model.md（~550行）、hysteresis.md（~430行）、final_interpret.md（~270行）
+- 目录统一：knowledge/（项目根），loader `_default_knowledge_dir()` 更新，constants.py 更新
+- Section 6（Failure Patterns）留空，标注从 Zikang 的 Codex JSONL 日志填充
+
+**第一轮 review（subagent 交叉验证）**：
+- 5 个 explore subagent 并行审查，发现 40+ 事实错误/遗漏/过简
+- 关键错误：physical_kernel.md 声称 CUDA（实为纯 CPU scipy）、static_model.md IV-PKAN 输入特征全错、hysteresis.md 所有 enum 值错误、final_interpret.md 级联逻辑完全错误（pipeline 不立即停止）
+
+**第二轮审查（INI/代码/MD 三方一致性）**：
+- 68 个参数全面审计（6 PHY + 50 FULL + 12 HYS）
+- 发现 8 个死参数（[base_pkan] 全部不传子进程）
+- 发现 5 个默认值不匹配（base_iv_epochs 700→540、hysteresis epochs 1800→4000 等）
+- 发现 critical bug：cv_train_subset enum 含 "all_gate_cv" 但引擎只接受 "all"（agent 调整会 argparse 崩溃）
+- 发现 cv_residual_level hi=3 但引擎 choices=[0,1,2]
+- 发现温度参数 4/6 key 名不匹配导致 agent 调整 SILENTLY IGNORED
+- param_defs.py 修复：regime/amp_parameterization enum 全部对齐引擎 argparse
+- 删除死参数：hysteresis print_every（从不传子进程）
+- quality_guard.py 同步修复：自动调整策略 "aggressive"→"independent"，移除 print_every bounds/whitelist
+
+**第三轮（补全缺失参数）**：
+- 21 个 run_model.py 传入子进程但未在 param_defs 中暴露的参数全部补全：
+  - [full_model] 9 个：reset_base_from_physical_fit、train_base_iv_pkan、train_iv_residual_stage、freeze_iv_residual_after_stage、iv_residual_holdout_stride、iv_residual_off_anchor_weight、disabled_iv_pkan/cv_pkan/cv_charge_pkan
+  - [symbolic] 10 个：edge_steps、edge_topk、iv_edge_topk、iv_adaptive_top2_mse、iv_calibration_max_terms、edge_finetune_steps、network_finetune_steps、device_iv_finetune_steps、device_iv_measured_steps、device_cv_finetune_steps
+  - [validation] 2 个：safe_scale_steps、joint_cv_safe_scale_search
+- 温度 key 命名修复：param_defs 新增 `ini_key` 字段映射，`apply_agent_adjustments` 改造为接受 param_table 并按 section+ini_key 写入正确的 INI
+- _STAGE_PARAM_MAP 扩展为包含 [symbolic] 和 [validation]
+- quality_guard bounds + whitelist 同步新增
+- 最终：68 → 71 参数，agent 可控全部流水线传入的建模超参数
+
+**知识文件 MD 同步**：
+- physical_kernel.md：CUDA→纯 CPU scipy、引擎路径修正、IV 残差 6 因子权重表、CV trap fit 独立系数、正则化精确值、f_scale=0.55、CGG 10kHz 保留、auto-orientation 阈值 1.55、iv_stage_alignment 修改数据
+- static_model.md：finetune_base_pkan 默认值、cv_residual_level 语义、IV-PKAN 6 特征、两套调度机制、CV residual 21 slots/7 active、final-report kind="script"、训练阶段架构
+- hysteresis.md：全部 enum 值修正、epochs/hidden 运行时默认值、移除 print_every、knowledge 未注入标注
+- final_interpret.md：级联逻辑全面重写、Agent E 仅收 last attempt、upstream 字段永为空、contribute_knowledge 机制、minimal_run 跳过、pre-computed classification
+
+**测试**：935 passed, 11 skipped
 - **gitignore 补充**：/knowledge/_discovered/ 不进仓库
+
+---
+
+## 2026-07-02 — 专家知识文件三轮审计 + 修复
+
+**背景**：5 个知识文件（data_inspection/physical_kernel/static_model/hysteresis/final_interpret.md）已经过三轮 subagent 审查，但 agent 不完全可靠，需要额外验证。
+
+**审计架构**：分三轮运行 5 个 explore subagent，每轮等待完成后审查结果再进下一轮：
+
+- **第一轮 — 正向提取清单**：穷举 MD 中每条可验证的事实声明（参数默认值、枚举值、行为描述、算法步骤），输出清单列出每条声明的待核对源文件。产出：187+83+82+68+49 = 469 条声明。
+- **第二轮 — 逐条核对**：对每条声明读源文件验证，输出 ✅/❌/⚠️/📋。对于参数声明，三值交叉比对 param_defs → run_model.py 传入值 → 引擎 argparse 默认值。产出：18 个错误 + 27 个过度简化 + 17 个 TODO 项。
+- **第三轮 — 反向扫描**：不再看 MD，只看源代码，找出影响 agent 决策但 MD 完全未提的关键信息。产出：48 个缺失项（10+10+7+8+13）。
+
+**关键发现（18 个错误）**：
+
+| 文件 | 错误 | 严重度 |
+|------|------|--------|
+| data_inspection.md | `_run_stage_diagnosis` 声称对 check-data 运行但代码用 `break` 跳过 | critical |
+| data_inspection.md | "所有 check-data 错误都分类为 DATA_ERROR" — 实际 keyword matching 是 stage-agnostic，CONFIG_ERROR/TRAINING_NUMERICAL_ERROR 关键词可匹配 | high |
+| data_inspection.md | `run_artifact_stage` 检查的 artifacts 是 `.pt` checkpoints（非 `dataset_validation.json`） | medium |
+| physical_kernel.md | IV 采样 subthreshold 权重 MD 写 ×3，代码实际 base 1.0 + 3.0 = 有效 4.0× | medium |
+| physical_kernel.md | IV 采样 on-region 权重 MD 写 ×1.5，代码实际 base 1.0 + 1.5 = 有效 2.5× | medium |
+| physical_kernel.md | 缺失 MISSING_ARTIFACT_ERROR 完整关键词分类（6 个关键词，confidence 0.9） | medium |
+| static_model.md | `cv_residual_level` MD 写 "2 or 3" 但引擎 choices=[0,1,2]，最大是 2 | high |
+| static_model.md | CV training phase 4 边界参数标为 INI-writable，实际不在 param_defs 中 | high |
+| static_model.md | "50 parameters total" 实际数为 51/63/71（不同计数维度） | low |
+| static_model.md | IV-PKAN 输出名称与引擎 CORR_NAMES 不匹配（dlog_rs_fwd/reverse vs dpsi_V） | medium |
+| static_model.md | `base_iv_epochs` MD 默认 700，引擎 argparse 默认 540 | medium |
+| hysteresis.md | `fast_amp_parameterization` 默认写 "None→fallback"，实际 param_defs 默认 "conservative" | high |
+| hysteresis.md | `slow_amp_parameterization` 默认写 "None→fallback"，实际 param_defs 默认 "independent" | high |
+| final_interpret.md | attempt_n > 1 的成功重跑 NEVER 记录到 operation_log（仅记录 agent decision entry） | critical |
+| final_interpret.md | PREP_RETRY trigger 在 enum 中存在但生产代码 NEVER 发射 | medium |
+| final_interpret.md | Agents B/C/D quality_fail trigger 仅用于 prompt 上下文，log 实际写 AGENT_ADJUST | medium |
+| final_interpret.md | 级联受害者描述假设 operation_log 有记录 — 实际首次尝试硬失败不记 op_log | high |
+
+**关键缺失项（48 项）**：
+
+- **data_inspection.md**（10 项）：Agent A prompt 不含 stdout summary（只含截断 stderr 2K 字符）、CV normalization 在 Exception 时静默返回、诊断分类 concatenation 边界可能产生假阳性、CV 验证要求 ≥3 行否则 layout="unknown"、I-t 自动发现关键词 "it" 是子串匹配可触发误报
+- **physical_kernel.md**（10 项）：**Critical：** Agent B prompt 完全不注入专家知识（zero engine context）、9 个引擎内部阈值硬编码不可调（RS 求解器阈值 / VDS 过滤器 0.55V / Stage3 transfer 比率 / smooth_pos ε 等）、silent data drops（NaN/非正电容/无"long"sheet 全部静默丢弃无警告）
+- **static_model.md**（7 项）：**Critical：** 5 个额外精度门未文档化（base IV region 7-check gate / IV residual heldout gain gate @ 8e-4 / region degradation gate @ 0.008 / KAN grid audit / charge passivity gate）、30+ 个诊断文件仅列出 12 个、引擎错误消息未分类
+- **hysteresis.md**（8 项）：**Critical：** Acceptance gate RuntimeError 作为独立硬失败路径未文档化、7 个 acceptance gate 阈值硬编码不可调、数据过滤可能静默丢弃所有段引发 "no SRH tau labels" RuntimeError
+- **final_interpret.md**（13 项）：**Critical：** inline prompt 混淆 ok/quality_pass（仅看子进程退出码，标 PASS 可能 quality_pass=False）、错误文本完全不注入 prompt、Agent E 未经 output_dir/config_path、15 行截断输出不存磁盘、minimal_run 跳过在失败路径失效
+
+**知识文件修复**（共 ~40 处修改）：
+
+| 文件 | 修改项 |
+|------|--------|
+| data_inspection.md | `_run_stage_diagnosis` 段落替换为正确说明、错误分类补丁（stage-agnostic keyword matching）、新增 Agent A prompt 内容章节（stderr 仅 2K chars、stdout 摘要不在 prompt 中）、CV normalization 静默异常说明、artifact stage artifacts 澄清（.pt 非 dataset_validation.json）、I-t 子串匹配警告、缺失关键词补充 |
+| physical_kernel.md | IV 采样权重修正 ×3→×4, ×1.5→×2.5、MISSING_ARTIFACT_ERROR 分类及其它缺失关键词添加、knowledge 未注入标注（critical box）、引擎内部硬编码阈值节（9 个不可调参数）、adjust_params schema 无诊断上下文标注、CV auto-orientation 硬编码阈值警告、静默数据过滤节 |
+| static_model.md | cv_residual_level "2 or 3"→"2" 全部修正、CV phase params "INI-writable"→"engine-internal only"、"50 parameters"→"63/71"、IV-PKAN 输出名称修正为引擎 CORR_NAMES（dpsi_V 替代 dlog_rs_*）、新增 5 个引擎精度门节、base_iv_epochs 默认差异脚注、引擎错误消息分类表 |
+| hysteresis.md | fast_amp_parameterization 默认 "None→fallback"→"conservative"、slow_amp_parameterization 默认 "None→fallback"→"independent"、acceptance gate RuntimeError 作为独立失败路径说明、7 个硬编码 acceptance gate 阈值表、静默数据过滤说明（RuntimeError 触发条件）、Hardcoded training 超参数列表（lr/wd/gradient_clip 不可调）、HSPICE 失败非阻塞标注 |
+| final_interpret.md | operation_log 覆盖缺口（尝试硬失败/成功重跑不记录）、PREP_RETRY trigger 从未发射说明、quality_fail trigger 实际使用澄清（仅 Agent A 用）、inline prompt ok 字段与 quality_pass 混淆警告、error text 不注入标注、Agent E 工具完整列表（bash/grep_file/web_search/web_fetch）、15 行输出截断警告、minimal_run 跳过在失败路径已损坏、新增 agent_reasoning/ini_snapshot 字段文档、质量阈值来源说明（agent_configs 可配置非固定常量） |
+
+**审计报告存档**：`doc/audit_r1/` `doc/audit_r2/`（Round 1 清单 + Round 2 验证 + Round 3 反向扫描结果可于后续 cleanup 删除）

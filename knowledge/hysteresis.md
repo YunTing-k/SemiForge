@@ -20,7 +20,7 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | **train-hysteresis** | **script** | **Yes (Agent D)** | **Hard failure / quality below threshold** |
 | final-report | noop | No (Agent E) | — (always runs at end) |
 
-Agent stages spawn LLM subagents. Script stages run CUDA Python subprocesses.
+Agent stages spawn LLM subagents. Script stages run subprocesses — fit-physical uses scipy (CPU-only), train-static and train-hysteresis use CUDA Python.
 When a script stage hard-fails (exit code ≠ 0) or produces quality below threshold,
 a **modeling agent** is spawned to adjust parameters and retry, or fallback upstream.
 
@@ -132,7 +132,7 @@ terminal current is `I_static × 10^{dlog}`, where `dlog` is the dynamic correct
 ## 3. INI Parameters
 
 All parameters below are from `HYSTERESIS_PARAMS` in `param_defs.py`. The stage
-reads the `[hysteresis]` INI section — **13 parameters** total. The `[hysteresis]`
+reads the `[hysteresis]` INI section — **12 parameters** total. The `[hysteresis]`
 section is the **only** section this stage writes to.
 
 ### [hysteresis] Section
@@ -140,18 +140,35 @@ section is the **only** section this stage writes to.
 | Parameter | Type | Default | Bounds/Enum | Description |
 |-----------|------|---------|-------------|-------------|
 | `enabled` | bool | True | — | Master switch for hysteresis training. **Set False if**: no I-t data is available or hysteresis modeling is not needed. This is the primary skip mechanism — the orchestrator also checks `DatasetProfile.has_hysteresis`. |
-| `regime` | string | all | ["all", "linear", "sat"] | Target regime for hysteresis training. `all` — trains both fast and slow banks. `linear` — trains only the linear-regime bank (low VDS). `sat` — trains only the saturation-regime bank. **Use `all`** unless specific regime data is known to be problematic. |
-| `epochs` | int | 1800 | [200, 5000] | Training epochs per SRH-KAN bank group. Hysteresis training typically requires more epochs than static fitting because the KAN must learn bias-dependent trap dynamics from noisy I-t transients. **Increase if**: training history shows improvement at the final checkpoint (epoch=1800). **Decrease if**: early stopping consistently fires at ~400 epochs. |
-| `hidden_capture` | int | 16 | [4, 32] | Number of hidden units in the capture-phase KAN networks. Capture processes (carriers moving into traps) often require more capacity than emission. **Increase to 20-24 if**: capture waveform shape is poorly reproduced. **Decrease to 8 if**: overfitting causes unrealistic τ predictions. |
-| `hidden_emission` | int | 20 | [4, 32] | Number of hidden units in the emission-phase KAN networks. Emission (carriers leaving traps) typically has a wider time-constant range and benefits from slightly larger networks. **Increase to 24-28 if**: emission transient response is inaccurate. **Decrease to 12 if**: emission fitting is acceptable but training time is a concern. |
-| `amp_parameterization` | string | conservative | ["conservative", "aggressive"] | Default amplitude parameterization for hysteresis model (overridden by regime-specific settings). `conservative` — bounded total+exchange form: `A_fast = total/2 + exchange`, `A_slow = total/2 − exchange` with tanh clamping. Less prone to oscillation but may underfit. `aggressive` — per-trap direct amplitude prediction. **Switch to aggressive** only if conservative fitting yields poor amplitude match. |
-| `print_every` | int | 1 | [1, 200] | Print training loss every N epochs during SRH-KAN training. Default 1 gives full visibility. **Increase if**: logs are too verbose (hysteresis has many short groups). |
+| `regime` | string | all | ["all", "fast", "slow"] | Target regime for hysteresis training. `all` — trains both fast and slow banks. `fast` — trains the fast-regime bank only (segment duration < 50 ms). `slow` — trains the slow-regime bank only (segment duration >= 50 ms). **Use `all`** unless specific regime data is known to be problematic. |
+| `epochs` | int | 1800\* | [200, 5000] | Training epochs per SRH-KAN bank group. \*Schema default is 1800, but `run_model.py` has a **runtime fallback of 4000** — if the INI `[hysteresis]` section is missing `epochs`, the effective default is 4000. Hysteresis training typically requires more epochs than static fitting because the KAN must learn bias-dependent trap dynamics from noisy I-t transients. **Increase if**: training history shows improvement at the final checkpoint. **Decrease if**: early stopping consistently fires at ~400 epochs. |
+| `hidden_capture` | int | 16\* | [4, 32] | Number of hidden units in the capture-phase KAN networks. \*Schema default is 16, but `run_model.py` runtime fallback is **32**. Capture processes (carriers moving into traps) often require more capacity than emission. **Increase to 20-24 if**: capture waveform shape is poorly reproduced. **Decrease to 8 if**: overfitting causes unrealistic tau predictions. |
+| `hidden_emission` | int | 20\* | [4, 32] | Number of hidden units in the emission-phase KAN networks. \*Schema default is 20, but `run_model.py` runtime fallback is **32**. Emission (carriers leaving traps) typically has a wider time-constant range and benefits from larger networks. **Increase to 24-28 if**: emission transient response is inaccurate. **Decrease to 12 if**: emission fitting is acceptable but training time is a concern. |
+| `amp_parameterization` | string | independent | ["independent", "conservative"] | Default amplitude parameterization for hysteresis model (overridden by regime-specific settings). **`independent`** (v90 legacy, actual default): per-trap direct amplitude prediction. **`conservative`**: bounded total+exchange form: `A_fast = total/2 + exchange`, `A_slow = total/2 - exchange` with tanh clamping. Less prone to oscillation but may underfit. Use `conservative` for stability. Note: `"aggressive"` does **not exist** in the training script's argparse — do NOT use it. |
 | `fast_restarts` | int | 1 | [1, 10] | Number of random restarts for fast-transient SRH bank training. Each restart uses a different random seed; the best result is kept. **Increase to 3-5 if**: fast-regime fitting quality is inconsistent across runs (the KAN converges to poor local minima). Each restart costs `epochs` of training time for fast groups. |
 | `slow_restarts` | int | 2 | [1, 10] | Number of random restarts for slow-transient SRH bank training. Slow transients typically benefit from more restarts than fast because the second-scale time constants have higher variance in the teacher labels. **Increase to 4-5 if**: slow-regime amplitude or decay is poorly captured. |
-| `fast_amp_parameterization` | string | conservative | ["conservative", "independent", "aggressive"] | Amplitude parameterization for the fast-transient SRH bank. `conservative` — bounded total/exchange form, less prone to oscillation. `independent` — legacy v90 per-amplitude head. **Use conservative as default**; switch to `independent` only if conservative fitting underfits fast amplitudes. |
-| `slow_amp_parameterization` | string | independent | ["conservative", "independent", "aggressive"] | Amplitude parameterization for the slow-transient SRH bank. `independent` — legacy v90 per-amplitude head (protected baseline). `conservative` — bounded total/exchange form. **Reduce to `conservative`** if slow-bank amplitudes oscillate or produce extreme values. |
+| `fast_amp_parameterization` | string | conservative | ["independent", "conservative"] | Amplitude parameterization for the fast-regime SRH bank. Default is `conservative` (schema default written to INI by config builder). Runtime fallback `section.get(key, section['amp_parameterization'])` only triggers if the key is absent from INI — which won't happen since the INI builder always writes the schema default. |
+| `slow_amp_parameterization` | string | independent | ["independent", "conservative"] | Amplitude parameterization for the slow-regime SRH bank. Default is `independent` (v90 legacy, schema default). Same runtime fallback note as `fast_amp_parameterization`. |
 | `fast_optimizer_policy` | string | optimized | ["optimized", "v90"] | Optimizer policy for fast-transient SRH bank training. `optimized` — AdamW with CosineAnnealingLR scheduler, bounded learning rate decay. `v90` — legacy fixed-AdamW full-budget policy. **Fall back to `v90`** if the optimized policy shows instability (loss spikes, NaN). |
 | `slow_optimizer_policy` | string | v90 | ["optimized", "v90"] | Optimizer policy for slow-transient SRH bank training. `v90` — legacy fixed-AdamW (protected baseline). `optimized` — faster convergence schedule. **Use `optimized`** only if slow-bank training time is a bottleneck and the v90 policy is known to be stable on this device. |
+
+### Training Constants NOT Adjustable via INI
+
+The following are hardcoded in `fit_group()` and cannot be changed by Agent D: `learning_rate=2.5e-3`, `weight_decay=1e-4`, `gradient_clip=5.0`, `eta_min=5e-5`, `early_stop_patience=16`, `early_stop_min_epochs=min(400, max(150, epochs//3))`. Agent D can only change: `epochs`, `hidden sizes`, `amp_parameterization`, `restarts`, and `optimizer_policy` choice. If these levers are exhausted, consider `fallback_to_previous` or `accept_quality`.
+
+### Acceptance Gate Thresholds NOT Adjustable
+
+The following 7 training script acceptance thresholds are hardcoded CLI arguments (never passed by `run_model.py`) and CANNOT be adjusted by Agent D via `adjust_params`:
+
+| CLI argument | Default | Controls |
+|---|---|---|
+| `max-top2-rmse-mean` | 0.020 | Top-2 KAN vs measurement RMSE |
+| `max-student-teacher-rmse-mean` | 0.006 | KAN vs teacher mean RMSE |
+| `max-student-teacher-rmse-p90` | 0.012 | KAN vs teacher p90 RMSE |
+| `max-endpoint-drift-error-mean` | 0.070 | Endpoint drift mean |
+| `max-endpoint-drift-error-p95` | 0.230 | Endpoint drift p95 |
+
+To pass a failed acceptance gate, Agent D must improve the model via training parameters — it cannot relax the gate thresholds themselves.
 
 ### minimal_run Override
 
@@ -161,6 +178,10 @@ When `[runtime] minimal_run = yes`, `run_model.py` hard-overrides:
 - `hidden_emission`: 4
 
 Training completes but results are not meaningful — only for pipeline infrastructure smoke testing.
+
+### Knowledge Injection Status
+
+**This knowledge file is currently NOT injected into Agent D's prompt.** The `build_agent_prompt()` function exists in `knowledge/loader.py` but is never called by the orchestrator. Agent D receives a generic 3-line inline prompt with no stage-specific knowledge. Until the loader is integrated, the tuning guidance and parameter recommendations in this file are not accessible to the agent at runtime.
 
 ## 4. Quality Metrics
 
@@ -215,6 +236,8 @@ From `srh_top2_regime_bank_summary.json`:
 ### Execution Flow
 
 The `train-hysteresis` action in `run_model.py` runs two subprocesses sequentially:
+
+**Silent Data Filtering Before Training**: The pre-analysis → training pipeline applies strict filters that silently exclude segments. If ALL data is excluded, two distinct RuntimeErrors are raised: "No identifiable SRH tau labels after filtering" or "No waveform segments available for end-to-end refinement." In this case, adjusting training parameters does nothing — `fallback_to_previous` is the correct action.
 
 1. **Pre-analysis** (`analyze_it_hysteresis.py`):
    ```
@@ -284,7 +307,7 @@ The `train-hysteresis` action in `run_model.py` runs two subprocesses sequential
 ### How Parameters Change Execution
 
 - **`regime`**: When set to `all` (default), all groups are trained (max 8).
-  When set to `linear` or `sat`, only groups matching that regime are trained.
+  When set to `fast` or `slow`, only groups matching that regime are trained.
   This reduces training time and focuses capacity, but the missing regime will
   not be available for deployment.
 
@@ -356,6 +379,8 @@ against the combined error message + stderr text:
 The stage suggestion: "Verify I-t data availability, hysteresis configuration,
 and that dynamic engine scripts are present."
 
+**Acceptance Gate Hard Failure**: The SRH-KAN training script's internal acceptance gate (line 702-706 in `train_srh_top2_regime_banks.py`) raises `RuntimeError('Top-2 SRH hysteresis acceptance failed: {details}')` when checks fail. This is a HARD failure (exit code != 0) that triggers Agent D, but it is separate from the pipeline quality gate (`step_log_rmse_median`). The error message contains the full acceptance dict. Agent D should inspect `srh_top2_regime_bank_summary.json` → `acceptance.checks` to identify which sub-check(s) failed — the remedy is training parameter tuning, NOT data inspection.
+
 ### Agent D Decision Framework
 
 Agent D has four tools and must call EXACTLY ONE:
@@ -386,22 +411,25 @@ Agent D has four tools and must call EXACTLY ONE:
   - `student_teacher_rmse_mean` / `student_teacher_rmse_p90`: KAN student didn't
     learn from the teacher fits. Increase `epochs` first, then increase
     `slow_restarts` (if slow-bank led to failure).
-  - `endpoint_drift_error_mean` / `endpoint_drift_error_p95`: The KAN predicts
-    wrong steady-state levels. Switch `amp_parameterization` from `aggressive`
-    to `conservative` — the bounded total+exchange form enforces charge conservation
-    which stabilizes endpoint predictions.
+   - `endpoint_drift_error_mean` / `endpoint_drift_error_p95`: The KAN predicts
+     wrong steady-state levels. Switch `amp_parameterization` from `independent`
+     to `conservative` — the bounded total+exchange form enforces charge conservation
+     which stabilizes endpoint predictions.
   - `strict_top2_symbolic_topology`: Some KAN edges failed to produce Top-2
     symbolic replacements. This is rare but may require increasing `epochs`.
 
 - **CUDA OOM**: Hysteresis training memory is dominated by the per-group batch
   (all segments concatenated). With default hidden sizes (16/20), memory usage
   is modest. If OOM occurs, reduce `hidden_capture` and `hidden_emission` to 8/12
-  or reduce the regime to `linear` or `sat` to train fewer groups.
+  or reduce the regime to `fast` or `slow` to train fewer groups.
 
 - **HSPICE validation failure**: If the KAN training succeeds but HSPICE
   equivalence fails, this is likely an HSPICE environment issue (license,
   executable path). The Verilog-A files are still valid — the HSPICE check is
   a deployment validation, not a training gate. Use `accept_quality` to proceed.
+  **Important**: HSPICE failures do NOT cause the stage to fail — the subprocess
+  handles missing HSPICE by printing a warning and continuing (`run_model.py:809-813`).
+  Agent D should never call `fallback_to_previous` for HSPICE-only failures.
 
 ### Diagnostic Tools Available to Agent D
 

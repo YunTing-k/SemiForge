@@ -20,7 +20,7 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | train-hysteresis | script | Yes (Agent D) | Hard failure / quality below threshold |
 | final-report | noop | No (Agent E) | — (always runs at end) |
 
-Agent stages spawn LLM subagents. Script stages run CUDA Python subprocesses.
+Agent stages spawn LLM subagents. Script stages run subprocesses — fit-physical uses scipy (CPU-only, no CUDA dependency), while train-static and train-hysteresis use CUDA Python.
 When a script stage hard-fails (exit code ≠ 0) or produces quality below threshold,
 a **modeling agent** is spawned to adjust parameters and retry, or fallback upstream.
 
@@ -32,12 +32,16 @@ The **fit-physical** stage is Stage 4 of 7 — the **first modeling stage**. It 
 **EKV Level-2 parameter extraction** by fitting the analytical physical model to
 measured IV and CV data using `scipy.optimize.least_squares`.
 
-This stage runs via subprocess: `CUDA python engine/fit_physical_kernel.py`.
+This stage runs via subprocess: `<python> dg_tft/engine/fit_physical_kernel.py`.
+The engine is pure CPU — imports numpy, scipy, pandas, matplotlib (no torch, no CUDA).
 It is controlled by the `[physical_fit]` INI section (max_iv_points, max_cv_points,
 max_nfev_scale) and reads `[preprocessing]` for IV stage alignment settings.
 
-On failure, **Agent B** is spawned with four tools: `adjust_params`, `fallback_to_previous`,
-`accept_quality`, and `inspect_xlsx`. Agent B's fallback target is **check-data**.
+On failure, **Agent B** is spawned with four stage-specific tools: `adjust_params`, `fallback_to_previous`,
+`accept_quality`, and `inspect_xlsx`. It also has all standard SubAgent tools (`read_file`, `glob_file`,
+`bash`, `grep_file`, `write_file`, `edit_file`). Agent B's fallback target is **check-data**.
+
+> **CRITICAL — Knowledge Injection Status**: This knowledge file is currently NOT injected into Agent B's system prompt. `_spawn_modeling_agent_inner` (orchestrator.py:1376) builds a generic prompt with error text and tool options but contains zero engine-specific knowledge. Agent B starts blind — it must discover everything through `read_file` calls. Until the knowledge loader is integrated (TODO Step 9), this document's tuning guidance is for human reference only.
 
 ### Principles: EKV Level-2 Parameter Extraction
 
@@ -174,6 +178,8 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
 - `max_nfev_scale`: 0.1
 - All preprocessing settings (iv_stage_alignment, etc.) remain as configured
 
+> **Note on Agent B's adjust_params tool**: The auto-generated `adjust_params` schema provides only parameter names, types, and bounds — it has NO diagnostic context (e.g., it does not explain that Stage 6 NFEV is fixed at 450 regardless of max_nfev_scale, or that reducing max_iv_points below the file cap minimum can drop subthreshold points). This knowledge file's tuning guidance fills this gap, but it is currently not injected into Agent B's prompt. See Knowledge Injection Status note above.
+
 ## 4. Quality Metrics
 
 ### iv_rms_log10_error_dec
@@ -194,7 +200,7 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
   - `iv_subthreshold_rms_log10_error_dec`: RMS error in subthreshold (1e-12 ≤ |ID| < 1e-9 A)
   - `cv_rms_log10_error_dec`: RMS log10 error for CV (including trap model)
   - `cv_core_qs_rms_log10_error_dec`: RMS log10 error for core quasi-static CV (no traps)
-  - `fit_nonmonotonic_steps`: count of non-monotonic fit predictions (dy < -0.03 decades)
+  - `fit_nonmonotonic_steps`: count of non-monotonic fit predictions (dy < -0.03 decades per step, checked per-family per-source per-fixed-voltage-group). A ratio of `nonmonotonic_steps / checked_steps > 0.1` indicates optimizer found a physically unreasonable local minimum.
   - `fit_checked_steps`: total monotonicity checks performed
 - **Which parameter typically affects it**:
   - **Primary**: `max_nfev_scale` — insufficient iterations is the most common cause of poor IV fit
@@ -203,7 +209,28 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
     wrong file family assignment (IDVBG vs IDVTG), or stage misalignment can produce permanently
     high iv_rms_log10_error_dec that parameter tuning cannot fix
 
+Note: When `[runtime] minimal_run = yes`, quality assessment is **fully bypassed** — `_assess_stage_quality` returns `True, []` immediately without reading any metrics or checking thresholds. Agents spawned for quality failures are never triggered in minimal_run mode.
+
 ## 5. Engine Behavior
+
+### Subprocess invocation and Engine Argparse vs INI Defaults
+
+**INI defaults** (from `param_defs.py` and `model_config.ini`):
+- `max_iv_points`: 50000 (IN), `max_cv_points`: 100000 (INI), `seed`: 20260524 (INI)
+- `max_nfev_scale`: 1.0
+
+**Engine argparse defaults** (from fit_physical_kernel.py, used as fallback if INI value is missing):
+- `--max-iv-points`: **10000** (1/5 of INI), `--max-cv-points`: **1200** (1/83 of INI)
+- `--seed`: **20260522** (2 off from INI 20260524)
+
+The orchestrator passes INI values as explicit CLI arguments, so the engine defaults are only used
+if the INI or orchestrator fails to supply the parameter. But the gap is large — an agent should be aware
+that if these parameters are missing, fitting will silently use vastly less data.
+
+Oxide thickness defaults (derived from `Cox = ε0 × 3.9 / t_ox`):
+- Top oxide: **120 nm** → Cox_t ≈ ε0 × 3.9 / 120e-9
+- Bottom oxide: **350 nm** → Cox_b ≈ ε0 × 3.9 / 350e-9
+- Cox_t > Cox_b (~2.9×), which affects the voltage weighting ratio at/ab in the overdrive calculation.
 
 ### Execution Flow
 
@@ -231,40 +258,65 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
    - Raises FileNotFoundError if no IV files found
 
 3. **Step 2 — IV stage alignment** (if `--iv-stage-alignment auto`):
-   - Detects and corrects per-source transfer-voltage shifts
-   - Uses overlapping bias conditions across measurement stages
-   - Writes alignment report to `iv_stage_alignment_report.csv`/`.json`
+    - Detects and corrects per-source transfer-voltage shifts
+    - Uses overlapping bias conditions across measurement stages
+    - **Modifies the IV dataframe voltages in-place** — the fitting uses aligned (shifted) voltages, not the original measured values
+    - Setting alignment to "off" means the original unaligned voltages are used for fitting
+    - Writes alignment report to `iv_stage_alignment_report.csv`/`.json`
 
 4. **Step 3 — Load CV data** (`load_cv_data`):
    - Reads `CV_train.xlsx`, all sheets
    - Detects layout (paired-column vs shared-bias wide-table) via `looks_like_shared_bias_wide_table`
    - Parses voltage metadata (VTG=, VBG=, VDS=) and frequency (kHz/MHz/Hz) from column labels
-   - Computes transition metadata (centroid, span, vhalf) and centered coordinates
-   - Assigns `complete_fraction` relative to the longest series per sheet
+    - Computes transition metadata (centroid, span, vhalf) and centered coordinates
+    - Assigns `complete_fraction` relative to the longest series per sheet
+
+> **Silent Data Filtering**: During data loading, several filtering steps silently discard data points with no log warnings. NaN rows in required IV columns are dropped via `dropna()`. CV sheets with <3 rows are skipped. Non-positive capacitances are masked. XLSX files without 'long' sheet are skipped without any log. Agent B should NOT assume all data was loaded — compare loaded point counts with expected file counts if fit quality is unexpectedly poor.
 
 5. **Step 4 — CV gate auto-orientation** (`auto_orient_cv_series`):
-   - If CBG capacitance span significantly exceeds CTG span AND Cox_t/Cox_b ≥ 1.40:
-     swaps CBG↔CTG sheet labels. This corrects common lab worksheet labeling errors.
-   - Writes diagnostic to `v92_phase1_cv_gate_orientation.json`
+    - Swaps CBG↔CTG labels if **both** conditions are met: (1) `Cox_t/Cox_b ≥ 1.40` AND (2) CBG capacitance span / CTG span ≥ **1.55**
+    - This corrects common lab worksheet labeling errors where gate labels are swapped
+     - Writes diagnostic to `v92_phase1_cv_gate_orientation.json`
+
+> **Warning**: The swap thresholds (Cox ratio ≥1.40, span ratio ≥1.55) are hardcoded. If they produce a false swap, CV fit quality will be systematically poor regardless of parameter tuning. The resulting CV gate label swap error is only visible in `v92_phase1_cv_gate_orientation.json`.
 
 6. **Step 5 — CV series selection** (`select_primary_cv_series`):
-   - Keeps only quasi-static gate CV sheets for fitting (drops VDS sheet, reserves high-frequency CGG for NQS validation)
-   - Drops incomplete series (<75% complete_fraction) or series with single steps >20% of span
+    - Keeps only quasi-static gate CV sheets for fitting: CGG at **~10 kHz** IS used for fitting (the filter drops CGG at non-10-kHz frequencies for NQS validation)
+    - Drops VDS sheet and high-frequency CGG (not near 10 kHz)
+    - Drops incomplete series (<75% complete_fraction) or series with single steps >20% of span
 
 7. **Step 6 — Data subsampling** (`sample_iv`, `sample_cv`):
-   - IV: weighted random sampling with emphasis on subthreshold (-12.2 to -8.5 log10|ID| = ×3 weight),
-     on-region (> -8.5 = ×1.5), and transfer families (IDVBG/IDVTG = +0.5 weight).
+   - IV: weighted random sampling with emphasis on subthreshold (-12.2 to -8.5 log10|ID| = +3.0 weight on top of base 1.0, effective 4.0× baseline),
+     on-region (> -8.5 = +1.5 weight, effective 2.5× baseline), and transfer families (IDVBG/IDVTG = +0.5 weight).
      Per-file cap of `max_points / n_files`, then global cap via final `.sample(n=max_points)`.
    - CV: uniform `np.linspace` subsampling proportional to series length, min 25 points per series.
 
 8. **Step 7 — Build residual function** (`make_residual_function`):
-   - Concatenates three residual components with configurable weights:
-     - **IV residuals**: `√w × log10_error + linear_weight × (pred - meas) / scale`
-       Weighting increases in subthreshold and on-region, decreases for |VDS| < 0.02V (noisy zero-bias)
-     - **CV residuals**: `sheet_weight × (0.55·rel + 0.65·log_err)`
-       Sheet weights: cgg=1.1, ctg/cbg=1.0, vds=0.9
-     - **Regularization**: gentle priors on Cox_t, Cox_b, nfac0, mu0 keeping them near process defaults
-   - Non-finite residuals are clamped to ±1e6
+    - Concatenates three residual components with configurable weights:
+      - **IV residuals**: `√w × log10_error + linear_weight × (pred - meas) / scale` where `w` is the product of these weights:
+
+| Factor | Condition | Weight |
+|--------|-----------|--------|
+| Family IDVD | family == "IDVD" | 0.90 (other families 1.12) |
+| Subthreshold | -12.3 ≤ log10\|ID\| ≤ -8.7 | 2.35 |
+| On-region | log10\|ID\| > -8.7 | 1.55 |
+| Deep off | log10\|ID\| < -12.8 | 0.55 |
+| Near-zero VDS | \|VDS\| < 0.02V | 0.25 |
+| Linear term | |ID_meas\| > 3e-10 A | 0.28 |
+| Linear term (weak) | |ID_meas\| ≤ 3e-10 A | 0.04 |
+
+      The linear error scale uses `max(abs_meas, 92nd_percentile × 0.015)`, a dynamic normalization per device.
+      - **CV residuals** (main fit): `sheet_weight × (0.55·rel + 0.65·log_err)`
+        Sheet weights: cgg=1.1, ctg/cbg=1.0, vds=0.9
+      - **CV residuals** (trap fit, stage 6): `sheet_weight × (0.50·rel + 0.72·log_err)`
+        Sheet weights: cgg=1.05, ctg/cbg=1.0, vds=0.9. Uses `f_scale=0.55` in `soft_l1` (vs f_scale=1.0 for main stages).
+      - **Regularization**: priors keeping parameters near process defaults:
+        - Cox_t: `0.65 × log2(Cox_t / process_top)` — strong, 13× weight relative to mu0
+        - Cox_b: `0.65 × log2(Cox_b / process_bottom)` — strong
+        - nfac0: `0.10 × (nfac0 − 4.5) / 4.5` — moderate linear
+        - mu0: `0.05 × log10(mu0 / 1e-3)` — weak
+        The regularization references (`process_top`, `process_bottom`) are captured once at init from `Params()` defaults and never updated — regularization always pulls toward original process defaults, even after Cox values are fitted.
+    - Non-finite residuals are clamped to ±1e6
 
 9. **Step 8 — Six-stage least_squares fit** (`fit_model`):
 
@@ -278,6 +330,7 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
 | 6 | cv_shared_trap | Cfr_*, Cit_t, Cit_b, trap_width, tau_s, alpha, trap_fast_frac | CV only (all series, not just selected) | N/A | N/A | **450 (fixed)** |
 
 Each stage: `run_stage() → least_squares(loss="soft_l1", f_scale=1.0, x_scale="jac", max_nfev=nfev)`
+**Stage 6 (trap fit) uses `f_scale=0.55`** (vs 1.0 for main stages) — tighter L1/L2 transition means more residuals are treated with robust L1 loss.
 If `after_rms > before_rms × 1.002`, the stage is rejected and previous parameters are kept.
 NFEV for stages 1-5 = `round(base_nfev × max_nfev_scale)`, minimum 12.
 **Stage 6 NFEV is NOT scaled by max_nfev_scale** — it is fixed at 450 regardless of the scale factor.
@@ -318,6 +371,20 @@ NFEV for stages 1-5 = `round(base_nfev × max_nfev_scale)`, minimum 12.
 - `iv_stage_alignment`: "auto" enables the alignment pipeline which can produce an `iv_stage_alignment_report.*` artifact. "off" skips it.
 - `iv_stage_max_shift_V` / `iv_stage_min_matches`: Control alignment sensitivity. Higher shift + lower matches = more aggressive alignment. Note: INI stores this as `iv_stage_max_shift_v` (configparser lowercases keys; functionally identical).
 
+### Engine-Internal Thresholds NOT Adjustable via INI
+
+The following parameters are hardcoded in the engine and **CANNOT** be changed by Agent B's `adjust_params`:
+
+- RS/RD iterative-solve threshold: 10 Ω (controls whether 30-iteration solver is used vs direct calculation)
+- RS/RD relaxation factors: 0.55/0.45
+- Stage 1 VDS filter: ≤0.55V
+- Stage 3 transfer subsample ratio: `len(idvd)//2` (hardcoded, not seed-dependent — uses `random_state=12`)
+- CV numerical diff step h: 1e-4
+- qsolve Newton iterations: 6 (fixed)
+- `smooth_pos` epsilon: 1e-3 (used in 5+ smoothed equations)
+
+If fit quality is poor and **NO** INI parameter change helps, suspect one of these hardcoded thresholds is the bottleneck.
+
 ## 6. Failure Patterns
 
 > This section will be populated from Zikang's Codex JSONL logs during the knowledge extraction phase.
@@ -336,10 +403,15 @@ the combined error message + stderr text:
 | `FileNotFoundError`, `No such file or directory`, `does not exist` | DATA_ERROR | 0.9 |
 | `missing column`, `missing sheet`, `invalid sheet`, `sheet not found`, `column not found` | DATA_ERROR | 0.9 |
 | `unexpected header`, `empty workbook`, `no valid data`, `xlsx file is empty` | DATA_ERROR | 0.9 |
+| `dataset_validation.json` | DATA_ERROR | 0.9 |
+| `data_dir not found` | DATA_ERROR | 0.9 |
+| `cannot find it directory` | DATA_ERROR | 0.9 |
+| `excel file format cannot be determined` | DATA_ERROR | 0.9 |
 | `KeyError`, `IndexError`, `ValueError` | DATA_ERROR | 0.6 |
 | `configparser`, `no section`, `no option`, `invalid config`, `missing config` | CONFIG_ERROR | 0.9 |
 | `unknown stage`, `unknown action` | CONFIG_ERROR | 0.9 |
 | `hspice.exe`, `hspice not found`, `hspice executable`, `hspice path` | HSPICE_ENV_ERROR | 0.9 |
+| `missing artifact`, `expected output not found`, `cannot find`, `not generated`, `output file.*missing`, `artifact.*not created` | MISSING_ARTIFACT_ERROR | 0.9 |
 | No keyword match, exit code ≠ 0 | TRAINING_NUMERICAL_ERROR | 0.4 |
 
 Since fit-physical is in `_EXIT_CODE_NUMERICAL_STAGES`, the default exit-code fallback

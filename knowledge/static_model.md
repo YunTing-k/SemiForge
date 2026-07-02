@@ -18,9 +18,9 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | fit-physical | script | Yes (Agent B) | Hard failure / quality below threshold |
 | **train-static** | **script** | **Yes (Agent C)** | **Hard failure / quality below threshold** |
 | train-hysteresis | script | Yes (Agent D) | Hard failure / quality below threshold |
-| final-report | noop | No (Agent E) | — (always runs at end) |
+| final-report | script | No (Agent E) | — (always runs at end) |
 
-Agent stages spawn LLM subagents. Script stages run CUDA Python subprocesses.
+Agent stages spawn LLM subagents. Script stages run subprocesses — fit-physical uses scipy (CPU-only), train-static and train-hysteresis use CUDA Python.
 When a script stage hard-fails (exit code ≠ 0) or produces quality below threshold,
 a **modeling agent** is spawned to adjust parameters and retry, or fallback upstream.
 
@@ -35,8 +35,8 @@ device-specific corrections. The output is a Verilog-A compact model suitable fo
 circuit simulation.
 
 This stage runs via subprocess: `CUDA python engine/dg_tft_full_model.py`.
-It is controlled by the `[full_model]`, `[base_pkan]`, and `[temperature]` INI sections
-(three sections, 50 adjustable parameters). Timeout is 7200s (2 hours).
+It is controlled by the `[full_model]`, `[base_pkan]`, `[temperature]`, `[symbolic]`, and `[validation]` INI sections
+(five sections, 71 adjustable parameters). Timeout is 7200s (2 hours).
 
 On failure, **Agent C** is spawned with three decision tools (`adjust_params`, `fallback_to_previous`,
 `accept_quality`) plus one investigation tool (`inspect_xlsx`). Agent C's fallback target is **fit-physical**.
@@ -59,11 +59,11 @@ a CompactKAN network with frozen B-spline knot grids (v96).
 
 | Component | Network | Input Features | Output |
 |-----------|---------|---------------|--------|
-| **IV-PKAN** (`base.kan`) | CompactKAN | (VBG, VTG, VDS, temp, temp×VBG, temp×VTG, ...) | 11 named IV parameter corrections (dpsi_V, dVth, dlog_mu_dec, dlog_theta_dec, dlambda, dlog_ileak_dec, dlog_Cit_dec, dpartition, dpartition_inv, dgamma_intergate, ...) |
-| **CV-PKAN** (`base.cv_kan`) | CompactKAN | Same input features | 10 named CV charge parameter corrections |
+| **IV-PKAN** (`base.kan`) | CompactKAN | `Ut_V, Ub_V, Veff_V, VDS_V, qbar0, VDSxqbar0` (6 physics-derived features) | 11 named IV parameter corrections (dpsi_V, dVth_t_eff_V, dVth_b_eff_V, dlog_mu_dec, dlog_theta_dec, dlambda, dlog_ileak_dec, dlog_Cit_dec, dpartition, dpartition_inv, dgamma_intergate) |
+| **CV-PKAN** (`base.cv_kan`) | CompactKAN | Same 6 input features | 10 named CV charge parameter corrections (dlog_Cit_t, dlog_Cit_b, dVfb_t, dVfb_b, dVtrap_center, dlog_tau, dlog_cpl_t, dlog_cpl_b, dlog_Cbody, dlog_wch) — but 6 of these are disabled by default (see `DEFAULT_DISABLED_CV_PKAN`), leaving only 4 active: dVfb_t, dVfb_b, dlog_Cit_t, dlog_Cit_b |
 | **IV residual** (`diag.iv_resid`) | CompactKAN | Similar features | 1 scalar: `dlog_id_residual` (additive log-current correction) |
-| **CV residual** (`diag.cv_q_resid`) | Multi-component (not flat KAN) | Similar features | Composite residual with shared broadened-DOS, asymmetric terminal redistribution, inter-gate reciprocal coupling, and CV sheet calibration — a structured system of multiple modules, not a single flat KAN with fixed output count |
-| **Temperature KAN** (`diag.temperature_kan`) | CompactKAN | Scaled temperature features | Multiplicative modulation of base PKAN output scales |
+| **CV residual** (`diag.cv_q_resid`) | Single CompactKAN with module routing | Same 6 features | A single CompactKAN with 21 output slots (`CV_RESID_PARAM_NAMES` = 12 param + 9 resid-only). Of these, only **7 are active in release** (`CV_RELEASE_ACTIVE_NAMES`): `dlog_cit_common_raw`, `miss_amp_raw`, `miss_center_raw`, `miss_width_raw`, `miss_bottom_amp_raw`, `miss_bottom_center_raw`, `miss_bottom_width_raw`. The remaining 14 are frozen. Outputs are routed through multiple physical modules (shared broadened-DOS, asymmetric terminal redistribution, inter-gate reciprocal coupling, CV PKAN parameter corrections). |
+| **Temperature KAN** (`diag.temperature_kan`) | CompactKAN | `dT_100K, Veff_V, VDS_V, qbar0, dT100_x_qbar0` (5 scaled temperature features) | 7 physics-specific temperature modulation outputs: `dalpha_common_V_per_K` (threshold TC), `dalpha_asym_V_per_K` (asymmetric TC), `dEa_mu_eV` (mobility activation energy), `dmu_power` (mobility exponent), `dEa_ileak_eV` (leakage activation energy), `dcit_tc_per_K` (trap capacitance TC), `dEa_tau_eV` (NQS time-constant activation energy). This is a multiplicative modulator scaling base PKAN outputs, not an additive correction.
 
 All KANs use `CompactKAN` — a pykan wrapper with `forward(x) = tanh(raw) × out_range × scale`,
 frozen grid knots (v96), and parameter-name-aware normalization. The grid size (default=5),
@@ -127,7 +127,7 @@ deviation.
 ## 3. INI Parameters
 
 All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage reads
-`[full_model]`, `[base_pkan]`, and `[temperature]` INI sections — 50 parameters total.
+`[full_model]`, `[base_pkan]`, and `[temperature]` INI sections — 63 parameters total (37 in [full_model] + 8 [base_pkan] + 6 [temperature] + 10 [symbolic] + 2 [validation] = 63 table entries; 71 after param_defs merge of symbolic+validation into FULL_MODEL_PARAMS).
 
 ### [full_model] — Primary Training Parameters
 
@@ -138,9 +138,9 @@ All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage 
 | `batch_iv` | int | 4096 | [512, 16384] | Batch size for IV training samples during joint training. Larger batches stabilize gradient estimates; smaller batches add stochasticity that can help escape local minima. **Reduce if**: CUDA OOM (IV tensors include VBG/VTG/VDS × all bias points). **Increase if**: gradient noise causes loss oscillations. |
 | `batch_cv` | int | 512 | [64, 4096] | Batch size for CV training samples during joint training. Typically 1/8 of `batch_iv` because CV per-sample memory cost is higher (CV involves charge differentiation which expands the computation graph). **Reduce if**: CUDA OOM. |
 | `cv_weight` | float | 10.0 | [1.0, 50.0] | Weight multiplier for the CV loss term relative to IV loss in the combined objective. CV is a derivative observable — its loss magnitude is naturally smaller than IV log-error, so it needs a booster to contribute meaningfully. **Increase if**: `residual_cv_rms` > 0.06 threshold. **Decrease if**: `residual_iv_rms` degrades (CV loss dominates and pulls the model away from a good IV fit). Values above 30.0 may cause the optimizer to ignore IV entirely. |
-| `cv_residual_level` | int | 1 | [0, 3] | Complexity level of the CV residual correction sub-network. 0 = disabled (zero residual). 1 = shared broadened-DOS only. 2 = shared + asymmetric. 3 = shared + asymmetric + inter-gate reciprocal. **Increase to 2 or 3 if**: CV RMS is high and CV plots show systematic shape mismatch (not just scaling). Higher levels add more learnable charge parameters that feed into the terminal charge law. **Set to 0 if**: CV residual introduces instability (check for NaN in `residual_cv_rms`). |
+| `cv_residual_level` | int | 1 | [0, 2] | Complexity level of the CV residual correction sub-network. **0** = completely disabled (returns zero tensors). **1** = both **shared broadened-DOS** (`cv_shared_resid_amp_raw`) AND **asymmetric terminal redistribution** (`cv_asym_resid_*`) enabled simultaneously. **2** = shared + asymmetric + **inter-gate reciprocal coupling** (`cv_tb_residual`). Individual branches are gated by their respective factor parameters (`cv_shared_residual_factor`, `cv_asym_residual_factor`, `cv_tb_residual_factor`) — each must be non-zero for the branch to receive gradients. **Max=2** (engine argparse restricts to choices=[0,1,2]). **Increase to 2 if**: CV RMS is high and CV plots show inter-gate coupling artifacts. **Set to 0 if**: CV residual introduces instability (check for NaN in `residual_cv_rms`). |
 | `enable_cv_residual` | bool | True | — | Master switch for the CV residual learning branch. When True, the `diag.cv_q_resid` CompactKAN is active. When False, CV correction comes only from the base CV-PKAN parameter corrections. **Disable only if**: you suspect the CV residual KAN is causing instability or overfitting. Typically should remain True. |
-| `finetune_base_pkan` | bool | False | — | Whether to fine-tune the base IV-PKAN weights during joint training. When **False** (v96 default): freeze the base PKAN weights only, but continue to train `phys_delta` (29 physical micro-delta parameters), `cv_pair_cpar`, `cgg_common`, `cgg_tail`, `cv_gate_coupling_raw`, and the IV/CV residual KANs. This is more than "only train the residual path" — it freezes just the KAN spline weights while still training physical calibration parameters. When **True**: the base PKAN splines also train alongside. **Set True only for warm-start resume** with `warm_start_base_pkan_lr_mult` < 1.0. |
+| `finetune_base_pkan` | bool | False | — | Whether to fine-tune the base IV-PKAN weights during joint training. INI default is `False` (the pipeline always passes this explicitly: `--finetune-base-pkan` if INI says True else `--no-finetune-base-pkan`). Note: the engine's standalone argparse default is `True`, but this is overridden in pipeline context by the INI-supplied value. When **False**: freeze the base PKAN weights only, but continue to train `phys_delta` (29 physical micro-delta parameters, see below), `cv_pair_cpar`, `cgg_common`, `cgg_tail`, `cv_gate_coupling_raw`, and the IV/CV residual KANs. When **True**: the base PKAN splines also train alongside. **In warm-start mode** (resume from prior fit, `reset_base_from_physical_fit=False`): uses `warm_start_base_pkan_lr_mult=0.035` instead of `base_pkan_lr_mult=1.0` — a 29× smaller learning rate to protect the pretrained PKAN from early destruction when CV loss is introduced. |
 | `early_stop_patience` | int | 5 | [2, 30] | Number of consecutive epochs with no validation loss improvement before early stopping activates. **Increase to 10-15 if**: the loss curve shows slow but steady decline that patience=5 would prematurely cut off. **Decrease to 2-3 if**: runtime is a bottleneck and convergence is fast. |
 | `early_stop_min_epochs` | int | 220 | [50, 500] | Minimum epochs before early stopping is allowed to trigger. This ensures the model has a baseline of training regardless of loss trajectory. The staged loss schedule needs time to ramp through its phases. **Increase if**: model is under-trained at epoch 220 (check if loss is still declining steeply). **Decrease if**: loss plateaus by epoch 100 and runtime matters. |
 | `symbolic_training_weight` | float | 0.05 | [0.0, 0.1] | Weight for the symbolic training loss term, which regularizes KAN edges toward deploying Top-1 symbolic formulas. Higher values push KAN edges to learn functions that can be replaced by analytic primitives (sin, exp, tanh, polynomial) without degrading accuracy. **Increase to 0.08-0.10 if**: symbolic equivalence gate fails (edge MSE > `base_iv_max_top1_compatibility` after training). **Decrease to 0.0 if**: symbolic export is not required for this run. |
@@ -153,13 +153,13 @@ All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage 
 | `weight_decay` | float | 1e-6 | [1e-8, 1e-3] | AdamW weight decay (L2 regularization). Prevents large spline coefficients that cause non-monotonic IV curves. **Increase to 1e-5 if**: fitted IV curves show unrealistic wiggles (overfitting to noise). **Increase further to 1e-4 if**: spline knot coefficients are growing unbounded. |
 | `grad_clip` | float | 5.0 | [0.1, 50.0] | Maximum gradient norm for gradient clipping. Prevents exploding gradients that can cause loss spikes or NaN. **Decrease to 1.0-2.0 if**: training log shows `loss=nan` or `grad_norm=1e6+`. **Increase to 10.0 if**: gradients are consistently clipped (training stalls). |
 | `lr_eta_min_frac` | float | 0.02 | [0.001, 0.5] | Minimum learning rate as a fraction of initial LR (CosineAnnealingLR scheduler). The LR decays from `learning_rate` to `learning_rate × lr_eta_min_frac` over the full epoch budget. **Increase to 0.1 if**: the scheduler drops the LR too low and training stops improving before epochs are exhausted. **Decrease to 0.005 if**: you want a deeper annealing for fine convergence. |
-| `cv_train_subset` | string | primary_gate_cv | enum["primary_gate_cv","all_gate_cv"] | CV training data selection. `primary_gate_cv` uses only the quasi-static gate CV sheets (CBG, CTG, CGG). `all_gate_cv` includes VDS capacitance sheets. **Use `all_gate_cv` if**: VDS capacitance contains useful information and you want the model to fit it. Note: VDS capacitance is typically small/noisy; fitting it may degrade gate CV quality. |
+| `cv_train_subset` | string | primary_gate_cv | enum["all","representative","primary_gate_cv"] | CV training data selection. `primary_gate_cv` uses only the quasi-static gate CV sheets (CBG, CTG, CGG). `all` includes all gate capacitance sheets including VDS. `representative` selects representative CV series. **Use `all` if**: VDS capacitance contains useful information and you want the model to fit it. Note: VDS capacitance is typically small/noisy; fitting it may degrade gate CV quality. |
 
 ### [full_model] — Base IV PKAN Training (runs before residual/CV)
 
 | Parameter | Type | Default | Bounds | Description |
 |-----------|------|---------|--------|-------------|
-| `base_iv_epochs` | int | 700 | [100, 5000] | Epochs for the dedicated base IV-PKAN training phase. This trains the IV parameter KAN on the current device's IV data before any CV or residual training. The base IV PKAN has its own precision gate (`base_iv_max_top1_compatibility`) that must pass before proceeding. **Increase if**: base IV PKAN precision gate fails (MSE > 0.015). **Decrease if**: the device is similar to the pre-trained checkpoint and fewer epochs suffice. |
+| `base_iv_epochs` | int | 700 | [100, 5000] | Epochs for the dedicated base IV-PKAN training phase. This trains the IV parameter KAN on the current device's IV data before any CV or residual training. The base IV PKAN has its own precision gate (`base_iv_max_top1_compatibility`) that must pass before proceeding. **Increase if**: base IV PKAN precision gate fails (MSE > 0.015). **Decrease if**: the device is similar to the pre-trained checkpoint and fewer epochs suffice. **Note**: Engine standalone argparse default is 540, and run_model.py fallback uses `'540'`. The INI default (from param_defs) is 700. If the INI key is accidentally missing, the effective default drops to 540 epochs. |
 | `base_iv_restarts` | int | 1 | [1, 10] | Number of random restarts for base IV PKAN training. Each restart uses a different random seed and the best result (lowest Top-1 compatibility loss) is kept. **Increase to 3-5 if**: training converges to poor local minima (the Top-1 symbolic edge MSE varies significantly between runs). Each restart costs `base_iv_epochs` of training time. |
 | `base_iv_learning_rate` | float | 0.002 | [0.0001, 0.01] | Learning rate for base IV PKAN training (separate from the joint training `learning_rate`). **Decrease if**: base IV loss oscillates. **Increase if**: base IV loss plateaus at high values (>0.05 RMS). |
 | `base_iv_eval_every` | int | 20 | [5, 100] | Evaluation frequency during base IV training. Every N epochs, the PKAN is evaluated for Top-1 symbolic compatibility and RMS error. **Decrease to 10 if**: you want finer tracking to debug the precision gate. |
@@ -189,6 +189,8 @@ All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage 
 
 These parameters control the architecture of the CompactKAN networks. They affect all KAN instances (IV-PKAN, CV-PKAN, IV residual, CV residual) since all use the same base width/grid/k settings. Changes to these parameters require rebuilding KAN models — they cannot be hot-adjusted during training.
 
+**Important**: These `[base_pkan]` parameters are **NOT passed as CLI arguments** to the train-static subprocess by `run_model.py`. They are embedded in the pre-trained PKAN checkpoint (`pkan_torch_model.pt`). Adjusting them via `adjust_params` writes them to the INI but has **no effect on per-device train-static training**. They are only effective when building/retraining the pre-trained base PKAN from scratch (a separate workflow not using the orchestrator).
+
 | Parameter | Type | Default | Bounds | Description |
 |-----------|------|---------|--------|-------------|
 | `epochs_shared` | int | 500 | [100, 3000] | Shared KAN training epochs for the base PKAN network (used during the pre-trained model preparation, not the per-device training). **Increase if**: base PKAN symbolic formulas look under-fitted at the packaged checkpoint level. |
@@ -202,9 +204,7 @@ These parameters control the architecture of the CompactKAN networks. They affec
 
 ### [temperature] — Temperature KAN Control
 
-**INI key mapping**: `param_defs` defines `temperature_mode`, `temperature_kan_hidden`, etc., but the INI `[temperature]` section uses mode, kan_hidden, etc. without the `temperature_` prefix (configparser normalizes). When Agent C calls `adjust_params`, the parameter name from param_defs is used; `apply_agent_adjustments` writes it to the primary section (`[full_model]`). Only the primary section is written by the agent; `[temperature]` derives defaults from the shipped INI and engine-level argparse defaults.
-
-The shipped `model_config.ini` contains: `mode=auto`, `minimum_span_K=20.0`, `kan_scale=0.35`. The remaining params (`kan_hidden=8`, `kan_grid=3`, `kan_k=3`) use engine-level argparse defaults.
+**INI key mapping**: `param_defs.py` uses prefixed keys (`temperature_mode`, `temperature_kan_hidden`, etc.) as agent-facing names, with `ini_key` overrides mapping them to the actual INI keys (`mode`, `kan_hidden`, etc.). `apply_agent_adjustments` respects these overrides, so agent adjustments now correctly write to the INI keys that `run_model.py` reads.
 
 | Parameter | Type | Default | Bounds | Description |
 |-----------|------|---------|--------|-------------|
@@ -214,6 +214,30 @@ The shipped `model_config.ini` contains: `mode=auto`, `minimum_span_K=20.0`, `ka
 | `temperature_kan_hidden` | int | 8 | [4, 32] | Hidden layer size for the temperature KAN sub-network. This is a separate architecture from the main PKAN. **Increase to 12-16 if**: temperature dependence is complex (non-monotonic, different slopes for different regimes). |
 | `temperature_kan_grid` | int | 3 | [2, 20] | Grid resolution for temperature KAN B-splines. Since temperature is a 1D input (or 2D with device class), a small grid is usually sufficient. **Increase to 5 if**: temperature response is sharply non-linear. |
 | `temperature_kan_k` | int | 3 | [2, 5] | Spline degree for temperature KAN. k=3 is standard. **Increase to 4 if**: you need smoother temperature interpolation. |
+
+### [symbolic] — Symbolic Export Parameters
+
+These parameters control the symbolic optimization pipeline that converts trained KAN edges into Verilog-A-compatible analytic formulas. They are passed to the engine by `run_model.py` from the `[symbolic]` INI section.
+
+| Parameter | Type | Default | Bounds | Description |
+|-----------|------|---------|--------|-------------|
+| `edge_steps` | int | 180 | [10, 2000] | Optimization steps for edgewise symbolic replacement. More steps allow finer symbolic fitting. **Increase if**: Top-1 compatibility gate fails (MSE > threshold). |
+| `edge_topk` | int | 1 | [1, 3] | Top-K symbolic edge replacement (1=strict, 2=relaxed). Top-2 applies to CV/temperature edges; IV edges promote when `iv_adaptive_top2_mse > 0`. |
+| `iv_edge_topk` | int | 1 | [1, 3] | Top-K symbolic replacement for IV edges specifically. When >1, edges above `iv_adaptive_top2_mse` use Top-2. **Increase if**: IV symbolic edges fail precision gate. |
+| `iv_adaptive_top2_mse` | float | 0.0015 | [0.0, 0.1] | MSE threshold for adaptively promoting IV edges to Top-2. Set 0.0 for strict Top-1. **Increase to 0.005-0.01 if**: IV device has unusual transfer characteristics. |
+| `iv_calibration_max_terms` | int | 24 | [1, 100] | Max calibration terms in IV symbolic optimization. Higher = more fine-tuning terms in Verilog-A. **Increase if**: deployment fidelity targets are not met post-export. |
+| `edge_finetune_steps` | int | 80 | [10, 2000] | Steps for per-edge symbolic fine-tuning. **Increase if**: edge MSE marginally above `base_iv_max_top1_compatibility`. |
+| `network_finetune_steps` | int | 360 | [10, 5000] | Steps for full-network symbolic joint fine-tuning. **Increase if**: network-level observables degrade after edgewise replacement. |
+| `device_iv_finetune_steps` | int | 3000 | [100, 10000] | Steps for device-specific IV calibration against measured data. **Increase if**: device-level IV predictions show systematic errors post-export. |
+| `device_iv_measured_steps` | int | 5000 | [100, 20000] | Steps for measured-data IV symbolic calibration. Fine-tunes formulas against actual measurement curves. **Increase for**: stubborn IV prediction errors. |
+| `device_cv_finetune_steps` | int | 650 | [10, 5000] | Steps for CV symbolic calibration. **Increase if**: exported CV predictions have systematic shape errors. |
+
+### [validation] — Safety/Quality Scan Parameters
+
+| Parameter | Type | Default | Bounds | Description |
+|-----------|------|---------|--------|-------------|
+| `safe_scale_steps` | int | 8 | [2, 50] | Number of scale steps in safety scan for residual output scales. More steps = finer-grained safety envelope. **Increase if**: safe scale is coarsely estimated (large jumps). |
+| `joint_cv_safe_scale_search` | bool | False | — | Enable 2D grid search for (parameter_scale, residual_scale) combinations. **Set True if**: CV passivity gate fails with independently scanned scales. |
 
 ### minimal_run Override
 
@@ -258,7 +282,7 @@ These are `quality_guard.py` strategies, applied only when no modeling agent is 
 - **Why 0.06 vs 0.35 for IV**: CV is a derivative observable — the capacitance is `dQ/dV`. This means the CV error is naturally much smaller in log-space than IV error. A residual_cv_rms of 0.06 means ~15% relative error in capacitance, which is tight for physically consistent charge-based CV prediction.
 - **Which parameters typically affect it**:
   - **Primary**: `cv_weight` — the dominant lever for CV quality. Increasing cv_weight forces the optimizer to prioritize CV loss. But be careful: values > 30.0 can cause IV degradation.
-  - **Secondary**: `cv_residual_level` — higher levels (2 or 3) allow more CV correction degrees of freedom
+  - **Secondary**: `cv_residual_level` — higher levels (2) allow more CV correction degrees of freedom
   - **Tertiary**: `epochs`, `learning_rate`, `staged_loss_schedule` — more training or different scheduling
   - **CV polish stages**: `cv_residual_polish_epochs`, `cv_neural_polish_epochs`, `cv_level2_polish_epochs` — these run after main training and can rescue borderline CV fits
 - **Additional related metrics** (from `v93_safe_residual_metrics.json`):
@@ -361,7 +385,7 @@ Which internally constructs and runs:
 6. **Build diagnostic model** (`ResidualDiagnostic`): Creates the complete trainable model with:
    - Base physical kernel (UnifiedIVCVModel with IV-PKAN and CV-PKAN)
    - IV residual KAN (`diag.iv_resid`) — 1 output (dlog_id_residual)
-   - CV parameter residual KAN (`diag.cv_q_resid`) — 15 charge-level outputs
+   - CV parameter residual KAN (`diag.cv_q_resid`) — a single CompactKAN with 21 output slots, of which **only 7 are active in release** (see Architecture table above). The 14 frozen outputs have no effect regardless of KAN hyperparameters.
    - Temperature KAN (`diag.temperature_kan`) — if enabled
    - CV platform stabilizer (gentle strong-accumulation tail)
    - CV sheet calibration (measurement de-embedding)
@@ -383,6 +407,16 @@ The base IV precision gate checks: if any edge's Top-1 symbolic MSE > `base_iv_m
 
 If `--base-iv-only`: the pipeline exits after this phase (used for iterative base KAN development).
 
+**Beyond the quality gate — engine-internal precision gates that cause hard failures**:
+
+- **Base IV region precision gate**: 7 region-specific RMS checks (iv_nonzero_rms≤0.105, iv_on_rms≤0.060, iv_high_rms≤0.055, iv_off_rms≤0.450, iv_subthreshold_rms≤0.125, iv_transition_rms≤0.135, iv_nonzero_p95≤0.220). ANY failure raises RuntimeError.
+- **IV residual heldout gain gate**: `iv_residual_min_heldout_gain=8e-4` — residual must improve held-out data by at least this.
+- **IV residual region degradation gate**: `iv_residual_max_region_degradation=0.008` — no region may degrade more than this.
+- **KAN grid audit** (`assert_valid_grids`): All 4 KANs must pass grid integrity checks. Failure = corrupted model, unrecoverable.
+- **Charge conservation/passivity**: Multiple tolerance checks on charge sum, cross-reciprocity, diagonal negativity.
+
+Agent C must know WHICH gate failed to choose the right action: grid audit failure → fallback (unrecoverable); base IV region gate → adjust base_iv_epochs/restarts; IV residual gain gate → adjust iv_residual_stage_* params.
+
 **Phase 2 — Held-Out IV Residual Training** (`train_current_device_iv_residual`):
 
 The `diag.iv_resid` CompactKAN is trained on held-out IV data (stride-based cross-condition split). This stage:
@@ -402,6 +436,16 @@ The full diagnostic model is trained end-to-end (or with frozen base PKAN if `--
 - Gradient clipping at `grad_clip`
 - Weight decay `weight_decay`
 - Early stopping: patience=`early_stop_patience`, min_epochs=`early_stop_min_epochs`
+- **Training Phase Architecture** — Two independent scheduling mechanisms control training:
+
+  1. **Staged Loss Evaluation Schedule** (boundaries at 0.30/0.70 of total epochs): Controls **when** shape evaluation, CV derivatives, anchor loss, and reciprocity checks run — not what parameters are trained, but how frequently they're evaluated. `loss_schedule_early_end=0.30`, `loss_schedule_middle_end=0.70`.
+
+  2. **CV Training Phase Architecture** (boundaries controlled by 4 `full_model` parameters):
+     - `cv_parameter_ramp_start` (default=0.25) through `cv_parameter_ramp_end` (default=0.58): Trains **global CV physical parameters** (DOS, body, trap, platform, sheet calibration). Global CV physics parameters freeze and bias-dependent PKAN activates at `cv_parameter_ramp_start`.
+     - `cv_residual_ramp_start` (default=0.62) through `cv_residual_ramp_end` (default=0.82): **Freezes CV parameter KAN**, trains only residual output edges. At 0.62 onward, only `cv_q_resid` active outputs receive gradients.
+     - `cv_parameter_train_max_scale`: Controls maximum CV PKAN training amplitude.
+   Note: These 4 boundary parameters are engine-internal only (NOT in param_defs.py, NOT passed by run_model.py, NOT adjustable via `adjust_params`). They control critical CV convergence behavior but Agent C cannot tune them. If CV quality is persistently poor despite parameter changes, these hardcoded ramp boundaries may be the root cause.
+
 - Staged loss schedule (when `staged_loss_schedule=True`):
   - Early phase (0–30% epochs): focus on IV log-error, shape quality, base PKAN consistency. CV is present with a small ramp weight.
   - Middle phase (30–70% epochs): CV weight ramps up to `cv_weight`, symbolic regularization ramps from `symbolic_training_weight × ramp_start` to `symbolic_training_weight × ramp_end`
@@ -503,6 +547,27 @@ When train-static exits with non-zero code, keyword classification is applied:
 | Exit code = 0 but key artifacts missing | MISSING_ARTIFACT_ERROR | 0.9 |
 
 The stage suggestion: "Try adjusting static training hyperparameters or checking for NaN/inf in the training data."
+
+### Engine-Specific Error Messages
+
+The engine emits specific RuntimeError messages at different failure points. Agent C should recognize these and act accordingly:
+
+| Error Message | Root Cause Gate | Recovery | Agent Action |
+|---------------|----------------|----------|--------------|
+| `Top-1 compatibility MSE {x} > {threshold}` | `base_iv_max_top1_compatibility` — symbolic edge too inaccurate | Adjustable | `adjust_params`: relax `base_iv_max_top1_compatibility` or increase `base_iv_epochs`/`base_iv_top1_symbolic_weight` |
+| `iv_nonzero_rms {x} > {threshold}` | Base IV region precision gate — nonzero region RMS | Adjustable | `adjust_params`: increase `base_iv_epochs` / `base_iv_restarts` |
+| `iv_on_rms {x} > {threshold}` | Base IV region gate — on-region RMS | Adjustable | `adjust_params`: increase `base_iv_epochs` / `base_iv_restarts` |
+| `iv_off_rms {x} > {threshold}` | Base IV region gate — off-region RMS (hardest) | Adjustable | `adjust_params`: increase `base_iv_epochs` significantly; if persistent, `fallback` |
+| `iv_subthreshold_rms {x} > {threshold}` | Base IV region gate — subthreshold RMS | Adjustable | `adjust_params`: increase `base_iv_epochs` |
+| `iv_residual heldout gain {x} < min_gain {threshold}` | IV residual heldout gain gate | Adjustable | `adjust_params`: increase `iv_residual_stage_epochs` / `iv_residual_stage_linear_weight` |
+| `Region degradation {x} > max_degradation {threshold}` | IV residual region degradation gate | Adjustable | `adjust_params`: increase `iv_residual_stage_epochs`; check CV orientation |
+| `grid audit failed` / `invalid grid` | KAN grid integrity — corrupted spline knots | **Unrecoverable** | `fallback_to_previous` — KAN model state is corrupted, no parameter fix possible |
+| `CV charge sum exceeds tolerance` / `charge conservation` | Charge conservation gate | Hard to fix | `adjust_params`: reduce `cv_weight` or `cv_residual_level`; if persistent, `fallback` |
+| `negative capacitance` / `passivity violation` | CV passivity gate | Adjustable | `adjust_params`: reduce `cv_residual_level` to 1 or 0, or increase `safe_scale_steps` |
+| `CUDA out of memory` / `OOM` | Hardware resource | Adjustable | `adjust_params`: reduce `batch_iv`/`batch_cv`, reduce `kan_hidden` (needs checkpoint rebuild) |
+| `NaN` / `inf` in loss | Numerical instability | Adjustable | `adjust_params`: reduce `learning_rate`, increase `grad_clip` (tighter), reduce `cv_weight` |
+| `FileNotFoundError: data_dir` / `No such file` | Missing upstream data | **Unrecoverable** | `fallback_to_previous` — data integrity issue, not a parameter problem |
+| `CV gate orientation swap` | CV terminal misidentification | Adjustable if caught | Engine auto-corrects; if it fails, `fallback_to_previous` |
 
 ### Agent C Decision Framework
 

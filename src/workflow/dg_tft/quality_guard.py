@@ -73,7 +73,7 @@ _ADJUSTMENT_STRATEGIES: dict[str, list[dict[str, dict[str, object]]]] = {
     StageName.TRAIN_HYSTERESIS: [
         {"hysteresis": {"epochs": "+50%"}},
         {"hysteresis": {"hidden_capture": "+4", "hidden_emission": "+4"}},
-        {"hysteresis": {"amp_parameterization": "aggressive"}},
+        {"hysteresis": {"amp_parameterization": "independent"}},
     ],
 }
 
@@ -131,6 +131,12 @@ _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "shape_eval_period": (1, 20),
         "shape_early_period": (1, 50),
         "shape_middle_period": (1, 50),
+        "reset_base_from_physical_fit": (0, 1),
+        "train_base_iv_pkan": (0, 1),
+        "train_iv_residual_stage": (0, 1),
+        "freeze_iv_residual_after_stage": (0, 1),
+        "iv_residual_holdout_stride": (1, 20),
+        "iv_residual_off_anchor_weight": (0.0, 20.0),
     },
     "temperature": {
         "minimum_span_K": (1.0, 100.0),
@@ -143,9 +149,23 @@ _PARAMETER_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "epochs": (200, 5000),
         "hidden_capture": (4, 32),
         "hidden_emission": (4, 32),
-        "print_every": (1, 200),
         "fast_restarts": (1, 10),
         "slow_restarts": (1, 10),
+    },
+    "symbolic": {
+        "edge_steps": (10, 2000),
+        "edge_topk": (1, 3),
+        "iv_edge_topk": (1, 3),
+        "iv_adaptive_top2_mse": (0.0, 0.1),
+        "iv_calibration_max_terms": (1, 100),
+        "edge_finetune_steps": (10, 2000),
+        "network_finetune_steps": (10, 5000),
+        "device_iv_finetune_steps": (100, 10000),
+        "device_iv_measured_steps": (100, 20000),
+        "device_cv_finetune_steps": (10, 5000),
+    },
+    "validation": {
+        "safe_scale_steps": (2, 50),
     },
 }
 
@@ -205,13 +225,35 @@ _PARAMETER_WHITELIST: frozenset[str] = frozenset({
     "hysteresis.hidden_capture",
     "hysteresis.hidden_emission",
     "hysteresis.amp_parameterization",
-    "hysteresis.print_every",
     "hysteresis.fast_restarts",
     "hysteresis.slow_restarts",
     "hysteresis.fast_amp_parameterization",
     "hysteresis.slow_amp_parameterization",
     "hysteresis.fast_optimizer_policy",
     "hysteresis.slow_optimizer_policy",
+    # ── full_model boolean/string flags (newly exposed) ──
+    "full_model.reset_base_from_physical_fit",
+    "full_model.train_base_iv_pkan",
+    "full_model.train_iv_residual_stage",
+    "full_model.freeze_iv_residual_after_stage",
+    "full_model.iv_residual_holdout_stride",
+    "full_model.iv_residual_off_anchor_weight",
+    "full_model.disabled_iv_pkan",
+    "full_model.disabled_cv_pkan",
+    "full_model.disabled_cv_charge_pkan",
+    # ── symbolic export parameters ──
+    "symbolic.edge_steps",
+    "symbolic.edge_topk",
+    "symbolic.iv_edge_topk",
+    "symbolic.iv_adaptive_top2_mse",
+    "symbolic.iv_calibration_max_terms",
+    "symbolic.edge_finetune_steps",
+    "symbolic.network_finetune_steps",
+    "symbolic.device_iv_finetune_steps",
+    "symbolic.device_iv_measured_steps",
+    "symbolic.device_cv_finetune_steps",
+    # ── validation parameters ──
+    "validation.safe_scale_steps",
 })
 
 # ── Stage-specific console labels ───────────────────────────────────
@@ -464,17 +506,25 @@ def apply_agent_adjustments(
     config_path: str,
     adjustments: dict[str, object],
     ini_section: str,
+    param_table: dict[str, dict[str, object]] | None = None,
 ) -> str:
     """Write validated Agent adjustments to an INI config file.
 
     Writes each ``section.key`` pair to the INI, creating sections as needed.
+    When *param_table* is provided, per-param ``section`` and ``ini_key``
+    overrides are respected — each parameter is written to its declared INI
+    section using the declared INI key (if ``ini_key`` is set).
+
     Returns a snapshot string for the operation log.
 
     Args:
         config_path: Path to the target INI file.
         adjustments: Sanitized key→value dict (already validated by
                      :func:`validate_agent_adjustments`).
-        ini_section: INI section name (e.g. ``"physical_fit"``, ``"full_model"``).
+        ini_section: Default INI section name (fallback when param has no
+                     ``section`` in *param_table*).
+        param_table: Optional parameter definition table for resolving
+                     per-param ``section`` and ``ini_key`` overrides.
 
     Returns:
         A multi-line string of written adjustments (for logging).
@@ -485,19 +535,23 @@ def apply_agent_adjustments(
     cfg = _cp.ConfigParser()
     cfg.read(config_path, encoding="utf-8")
 
-    if not cfg.has_section(ini_section):
-        cfg.add_section(ini_section)
-
     snapshot_lines: list[str] = []
     for key, value in adjustments.items():
-        cfg.set(ini_section, key, str(value))
-        snapshot_lines.append(f"{ini_section}.{key} = {value}")
+        # Resolve target section and key from param_table if available
+        pdef = param_table.get(key, {}) if param_table else {}
+        target_section = pdef.get("section", ini_section) if isinstance(pdef, dict) else ini_section
+        ini_key = (pdef.get("ini_key", key) if isinstance(pdef, dict) else key)
+
+        if not cfg.has_section(target_section):
+            cfg.add_section(target_section)
+        cfg.set(target_section, ini_key, str(value))
+        snapshot_lines.append(f"{target_section}.{ini_key} = {value}")
 
     with open(config_path, "w", encoding="utf-8") as f:
         cfg.write(f)
 
     snapshot = "\n".join(snapshot_lines)
-    sys_log.info("Applied %d adjustments to [%s] in %s", len(adjustments), ini_section, config_path)
+    sys_log.info("Applied %d adjustments to %s", len(adjustments), config_path)
     return snapshot
 
 

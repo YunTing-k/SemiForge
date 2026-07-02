@@ -1527,7 +1527,7 @@ def _process_agent_decision(
             _console(ctx, f"  [bright_black]Reasoning: {reasoning[:120]}[/bright_black]")
 
         primary_section = sections[0]
-        snapshot = apply_agent_adjustments(config_path, sanitized, primary_section)
+        snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
 
         if op_log:
             op_log.append_attempt(sd.name, StageAttemptLog(
