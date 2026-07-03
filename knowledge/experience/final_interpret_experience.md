@@ -218,4 +218,105 @@ The 05-22 session (2026-05-22T07:59 to 2026-05-26T06:28, 102+ turns, ~3.5 days) 
 
 5. **Version explosion classification**: 50+ versions over 102 turns was NOT a trap — it was genuine structural evolution through 6 distinct architectural phases (data prep → physical kernel → KAN correction → CV kernel evolution → loss redesign → commercial CV restructure). Agent E should distinguish these from parametric churn.
 
+---
+
+## Engine Architecture Diagnostics (from B/C/D stage experience, 05-22 session)
+
+The following patterns were identified in the 05-22 development session. They are engine-level architectural concerns that Agents B/C/D cannot fix via their tools — only `fallback_to_previous` or `accept_quality`. They are documented here for **Agent E's diagnostic reference**: when you see these symptom patterns in a pipeline run, you can identify the structural root cause and advise the user accordingly.
+
+### Derivative Observables (gm/gds, dC/dV) Not in Training Loss → Model Fails Deployment Despite Good RMS
+
+**Symptom**: IV RMS and CV RMS metrics look acceptable, but output curves show physically implausible features: IDVTG on-region has unrealistic curvature (gm roll-off or sharp kinks), CV curves have local oscillations or multi-step transitions, residual KAN contributions visually "twist" curves in non-physical ways. These artifacts are invisible to RMS metrics.
+
+**Root Cause**: The training loss minimizes only point-wise log-error (`log(ID_pred/ID_meas)`, `log(C_pred/C_meas)`). Derivatives (transconductance `gm`, output conductance `gds`, `dC/dV`) are computed only during post-training diagnostics and safe-scale screening — not as training objectives. The residual KAN overfits local curvature to reduce pointwise error, producing jagged `gm` and oscillatory `dC/dV`. The safe-scale post-hoc filter then responds by setting scale=0 (disabling residual entirely) because any non-zero residual introduces derivative artifacts.
+
+**Why this blocks Agents B/C/D**: They cannot modify the loss function — it's engine code. They can only try `accept_quality` or `fallback_to_previous`.
+
+**What should be fixed in the engine**: 
+- Add `gm` and `gds` terms to IV loss (weight ~0.15-0.25 and ~0.05-0.10)
+- Add `dC/dV` and `d²C/dV²` terms to CV loss on smoothed reference curves (not raw noisy data)
+- Use base-aware relative constraints: `max(0, residual_derivative_worsening - base_derivative_worsening)`
+- Do NOT delegate derivative enforcement to post-hoc safe-scale selection — it will always pick scale=0
+
+**Evidence**: 05-22 TURN 82-83: "筛图没有任何意义，不是最终的结果，模型才是最终的结果...导数只用于晒图肯定不对" — user explicitly demanded derivatives enter main loss. This exact failure pattern repeated across v35-v36.
+
+### Physical Kernel Structurally Incomplete → KAN Produces Non-Physical Oscillations
+
+**Symptom**: CV fitting metrics remain poor (RMS > 0.20 dec) despite multiple rounds of adjusting KAN capacity, residual strength, and epoch count. Visual inspection reveals systematic patterns: CTG ~2x higher than measurement across all bias conditions; CBG low-capacitance plateau substantially above measured floor; CGG shows non-physical double-hump transitions. The KAN, instead of learning small device-specific corrections, compensates for fundamental model structure gaps — producing curves with oscillations, multi-step transitions, and false shoulders.
+
+**Root Cause**: The physical CV kernel was missing three structural elements:
+1. Measurement-configuration de-embedding — intrinsic terminal capacitance ≠ measured CV (includes parasitics, contact effects, AC participation ratios)
+2. Disorder/trap-induced transition broadening — EKV thermal kT/q sharpness is too narrow for IGZO TFTs
+3. OFF-state inter-gate coupling — gates are NOT electrostatically coupled through a depleted channel
+
+The KAN was asked to compensate for first-order global corrections (measurement de-embedding, disorder broadening) that should be in the physical kernel itself. Neural networks can add/subtract magnitude at given points but cannot structurally transform the output functional form.
+
+**What should be fixed in the engine**:
+- Add per-configuration `gain` + `offset` for each CV measurement type (cgg/cbg/ctg/vds), pre-extracted from OFF/ON plateaus and frozen before KAN training
+- Add disorder/trap broadening physics: `nfac`, `Cit_t/b`, `trap_width` as global device parameters with substantial tuning range (not micro-delta)
+- Add channel participation factor: smoothly transitions from weak (OFF, gates decoupled) to strong (ON, gates coupled through conductive sheet)
+
+**Evidence**: 05-22 TURN 37: "KAN 正在替物理模型擦屁股...物理核里有几个结构性缺口." TURN 84: CTG needed ~0.65x gain, VDS needed ~0.49x — confirming measurement-path, not device-physics, errors. Session spent 30+ turns (v5→v35) trying to fix CV through KAN hyperparameters with minimal improvement; largest improvement came from adding sheet-level calibration, not from stronger KAN.
+
+### CV Charge Model Multi-Step Transitions from Discrete Convolution
+
+**Symptom**: CV curves (especially CGG and CBG) show 2-3 distinct steps or "shoulders" in the OFF→ON transition. These appear as double-hump or triple-hump structures that don't correspond to any physical mechanism. Visible as multiple `dC/dV` peaks.
+
+**Root Cause**: Three mechanisms at different development stages:
+1. **Discrete Gaussian convolution (v45-v47)**: 3-point convolution on EKV sigmoid transition = 3 shifted copies = 3 visible steps
+2. **Multiple additive charge sub-components**: `Q_total = Q_inv + Q_trap_fast + Q_trap_slow + Q_tail` — if each activates at different voltages, produces staircase transitions
+3. **Residual KAN narrow branches**: Optimizer can discover parameter values producing multiple narrow capacitance bumps
+
+**What should be fixed in the engine**: The base capacitance function `C(V) = dQ(V)/dV` must produce exactly ONE transition by construction. Do NOT use discrete convolution (`cap_broad = sum(w_i * cap(V - dV_i))`). Use single continuous transition with global physical parameters (`nfac`, `Cit`, `trap_width`) controlling width. Each additive charge sub-component must share the SAME effective threshold voltage. After any kernel change, plot `dC/dV` — any curve with >1 peak indicates false multi-transition.
+
+**Evidence**: 05-22 TURN 103-106: "商业 CV compact model 根本不用 convolution." After replacing 3-point convolution with single-transition kernel, all curves reduced to exactly 1 derivative peak.
+
+### CV Measurement Configuration Calibration — Per-Sheet Gain/Offset
+
+**Symptom**: Systematic per-configuration bias — CTG and VDS consistently ~1.5-2.0x higher than measured across all bias points. Residual KAN wastes capacity trying to pull entire curves up/down.
+
+**Root Cause**: Physical kernel computes intrinsic terminal capacitance. Measured CV includes open/short de-embedding error, contact parasitics, effective area uncertainty, and AC frequency response — different for each measurement configuration.
+
+**Engine fix**: Pre-extract per-configuration `gain` + `offset` from OFF/ON plateaus before KAN training. Freeze these during training. Do NOT embed in Verilog-A device model — they're measurement-path properties. CTG typically 0.65x gain, VDS typically 0.49x gain.
+
+**Evidence**: 05-22 TURN 88: "CV RMS 从约 0.183 dec 降到 0.129 dec，CTG 从 0.121 dec 降到 0.034 dec" — single largest CV improvement in the entire 109-turn session.
+
+### Separate IV/CV Residual Scales — Global Scale Kills Both When One Fails
+
+**Symptom**: IV residual shows 50%+ improvement in IDVTG on-region, but safe-scale scan selects `scale = 0.0`, disabling all residuals. Per-scale table shows IV improves monotonically at every scale, but CV shape diagnostics flag minor artifacts.
+
+**Root Cause**: Single global residual scale selector sees "CV not strictly improving" and zeros everything — including IV residual which was working perfectly.
+
+**Engine fix**: Use two independent scales: `safe_iv_residual_scale` (IV metrics only) and `safe_cv_residual_scale` (CV metrics only). IV can be non-zero while CV stays at zero. Default CV residual to off — it provides marginal benefit (<0.005 dec RMS) for most devices.
+
+**Evidence**: 05-22 TURN 109: "CV 只要对 residual 稍微敏感，就会把整个 residual scale 压到 0，连 IV residual 也一起被关掉."
+
+### CV Shape Template Constraints — Beyond Monotonicity
+
+**Symptom**: CV curves pass monotonicity checks (`dC/dV >= 0`) but still have double-hump transitions, continued slow rise on high-voltage plateau, and residual KAN twist.
+
+**Root Cause**: Monotonicity and smoothness constraints are insufficient. The correct CV shape is "plateau-transition-plateau" — two flat regions connected by a single smooth rise. Without template-based loss, the optimizer finds monotonic but non-plateau solutions.
+
+**Engine fix**: Add template loss: unimodality penalty (exactly 1 peak in `dC/dV`), plateau flatness penalty (10x weight on `|dC/dV|` in top/bottom 25% of sweep), no continued rise penalty. Make shape loss base-aware: only penalize if residual is worse than base. Apply different weights by CV type (CGG/CBG highest priority).
+
+**Evidence**: 05-22 TURN 92-93: "CGG 的 double hump 基本不是器件物理，而是模型先验造成的假结构."
+
+### KAN Correction Form — Additive vs Multiplicative by Parameter Semantics
+
+**Symptom**: Using purely multiplicative KAN corrections causes threshold-sensitive parameters (τ, V-equivalent shifts) to retain non-physical voltage dependence. Using purely additive causes dimensionless parameters (coupling factors, partition ratios) to produce values outside [0,1].
+
+**Root Cause**: Different physical parameters have different natural ranges. Threshold shifts are additive (`Vth_corrected = Vth_base + ΔVth`). Mobility is multiplicative (`μ_corrected = μ_base × exp(dlog_μ)`). Partition ratios must stay in [0,1] (`p_corrected = sigmoid(logit(p_base) + dlogit_p)`).
+
+**Engine fix**: Use mixed correction forms. For hysteresis SRH-KAN: `log10(τ)` additive, `log10(amplitude)` additive, dimensionless ratios bounded sigmoid. This is a future architecture consideration — current code uses direct prediction (raw τ and A values).
+
+**Evidence**: 05-22 TURN 42-43: "KAN 修正物理参数，都是乘性修正，是不是有几个加性修正会好一些."
+
+### CBG/CTG Data Label Swap Detection
+
+**Symptom**: CBG capacitance span >> CTG span, but top gate has higher Cox and should show larger capacitance. Visual inspection: curves labeled "CBG" look like CTG curves and vice versa.
+
+**Detection**: Compute `R_Cox = Cox_t / Cox_b`. Compute `R_span = span_cbg / span_ctg`. If `(R_Cox > 1 and R_span < 1)` or `(R_Cox < 1 and R_span > 1)` → labels swapped.
+
+**Evidence**: 05-22 TURN 109: Cox_t/Cox_b = 2.92 but CBG_span/CTG_span = 3.27 — opposite of expected. After swap: CV RMS dropped from ~0.13 dec to 0.0745 dec. User confirmed: "有可能是我标反了." Engine already has auto-orientation at `v92_phase1_cv_gate_orientation.json` but relies on hardcoded thresholds (Cox ratio ≥1.40, span ratio ≥1.55).
+
 (End of file - total 273 lines)
