@@ -271,7 +271,7 @@ Oxide thickness defaults (derived from `Cox = ε0 × 3.9 / t_ox`):
     - Computes transition metadata (centroid, span, vhalf) and centered coordinates
     - Assigns `complete_fraction` relative to the longest series per sheet
 
-> **Silent Data Filtering**: During data loading, several filtering steps silently discard data points with no log warnings. NaN rows in required IV columns are dropped via `dropna()`. CV sheets with <3 rows are skipped. Non-positive capacitances are masked. XLSX files without 'long' sheet are skipped without any log. Agent B should NOT assume all data was loaded — compare loaded point counts with expected file counts if fit quality is unexpectedly poor.
+> **Silent Data Filtering**: During data loading, several filtering steps silently discard data points with no log warnings. NaN rows in required IV columns are dropped via `dropna()`. CV sheets with < 3 rows are skipped. Non-positive capacitances are masked. XLSX files without 'long' sheet are skipped without any log. Agent B should NOT assume all data was loaded — compare loaded point counts with expected file counts if fit quality is unexpectedly poor.
 
 5. **Step 4 — CV gate auto-orientation** (`auto_orient_cv_series`):
     - Swaps CBG↔CTG labels if **both** conditions are met: (1) `Cox_t/Cox_b ≥ 1.40` AND (2) CBG capacitance span / CTG span ≥ **1.55**
