@@ -1,4 +1,9 @@
-# Physical Kernel Experience (from 2026-06-29 session)
+# Physical Kernel Experience (from 2026-06-29 + 05-22 sessions)
+
+> **Agent B tools**: `adjust_params` (6 params: max_iv_points, max_cv_points, max_nfev_scale, iv_stage_alignment, iv_stage_max_shift_V, iv_stage_min_matches), `fallback_to_previous` (→ check-data), `accept_quality`, `inspect_xlsx`.  
+> **Can influence**: data subsampling budget, optimization iterations, IV stage alignment.  
+> **Cannot change**: engine internal thresholds (Rs/Rd solver, qsolve, Vmodsat bounds — all hardcoded), CV normalization, loss function weights.  
+> **Principle**: focus on what Agent B can adjust. For engine-hardcoded issues, the correct response is diagnostic recognition → `accept_quality` or `fallback_to_previous`.
 
 ## Principle Insights
 
@@ -45,23 +50,25 @@
 ### [REMOVED — Code Verification] qsolve(y) hard-clip at y=80 does not exist in current engine
 Code audit (2026-07-03) confirmed: `qsolve()` in `fit_physical_kernel.py` uses `np.clip(y, -80.0, 2.0)` — the `-80` is a **lower** bound for weak-inversion exp() underflow prevention, NOT an upper clip at y=80. Strong inversion uses `q = 0.5*y + 1e-12` with no upper clip. The session's claim of a `min(y, 80)` upper clip was factually incorrect — it has never existed in any commit. This entry was removed.
 
-### Contact Resistance Fixed-Point Iteration Produces Curve Jitter
-**Category**: Principle Insight
-**Stage(s)**: fit-physical (stages 1-5 when Rs0 or Rd0 > 10 Ω)
-**Symptom**: Fitted IV curves show visible non-physical "jitter" or "sawtooth" oscillations in the strong conduction region, especially in IDVD output curves at high VDS. The oscillations are small in magnitude (~few percent of Id) but clearly visible as unnatural zigzag patterns on smooth curves. The pure EKV intrinsic current is smooth — the jitter only appears in the external Ids after Rs/Rd correction.
-**Root Cause**: When Rs0 or Rd0 exceeds 10 Ω, the engine switches from direct Ids calculation to a 30-step fixed-point iteration with 0.55/0.45 relaxation factors (hardcoded in the engine, not INI-tunable). The iteration solves Vds_int = Vds_ext - Ids*(Rs+Rd) for the intrinsic drain voltage. This solver is not guaranteed to converge for all parameter combinations — when the optimizer pushes Rs0/Rd0 to large values or when the drain current is high, the relaxation may oscillate between solutions, producing non-monotonic voltage correction and thus jittery output current. The jitter is periodic with the 30-step iteration cycle and appears precisely in the region where Rs/Rd voltage drop is significant relative to VDS.
-**Evidence**: Turn 12, line 268 — agent identifies the root cause: "图里的抖动不是器件物理，而是拟合程序的问题：优化器把 Rd0 推到很大后，我用的快速固定点迭代在强导通区没有严格收敛，导致同一条平滑曲线被数值迭代抖成锯齿。" Turn 12, line 270 — the fix: "默认不再拟合 Rs/Rd，避免接触电阻数值解把曲线抖坏；加入可拟合的 Ioff0/Gleak_ds 来描述关态漏电/仪器地板。" Turn 12, line 274 — after fix: "这次改善很明显：全量 IV 的 RMS log 误差从约 1 dec 降到 0.24 dec，亚阈值 0.22 dec，开态 0.27 dec。关键是曲线应该不再有那种数值解造成的锯齿。"
-**Generalization**: This affects any device where source/drain contact resistance is non-negligible. The engine defaults Rs0=Rd0=0 (below the 10 Ω threshold), so the smooth path is used by default. But if a previous run's fitted_params.json set Rs0 or Rd0 > 10 Ω (e.g., from a prior Agent B adjustment or a different device), the iterative path activates silently. The jitter is NOT a fitting convergence issue — it's a numerical solver instability that gets worse with more optimization iterations (the optimizer may push Rs/Rd larger to reduce on-state error, which makes the jitter worse, creating a vicious cycle).
-**Actionable Advice**: If IV plots show localized zigzag patterns in the on-region (especially IDVD at VDS < 0.5V), check fitted_params.json: if Rs0 or Rd0 > 10 Ω, the iterative solver is active. Agent B options: (1) Set Rs0=Rd0=0 in the INI if the device is known to have negligible contact resistance (common for DG-TFT with large W/L). (2) If contact resistance is physically present but the jitter is unacceptable, accept slightly worse on-region RMS with reduced Rs/Rd values — the real contact resistance effect can be absorbed by KAN residual corrections downstream. (3) Do NOT increase max_nfev_scale — more iterations will worsen the jitter as the optimizer further exploits the unstable solver path. (4) Check the non-monotonicity diagnostic in fitted_params.json — if `fit_nonmonotonic_steps` is high (>10% of fit_checked_steps), Rs/Rd solver instability is the likely cause.
+### Contact Resistance Iteration Jitter → Recognition Only
 
-### Gate Saturation Parameters (Vmodsat/Vknee) Create IV-CV Shape Conflict
-**Category**: Principle Insight
-**Stage(s)**: fit-physical (stages 1-5), train-static
-**Symptom**: Setting Vmodsat_t or Vmodsat_b to non-zero values improves IV fit in the high-current saturation region (the "knee" region of output curves becomes sharper and more realistic), but simultaneously degrades CV predictions — CV curves develop artificial peaks followed by a decline in the strong inversion region, while the measured CV rises monotonically to a plateau. The conflict is systematic: any parameter that helps IV saturate more sharply also creates a non-physical feature in CV.
-**Root Cause**: The Vmodsat parameter introduces a gate overdrive saturation effect: above a certain overdrive voltage, the effective gate voltage stops increasing (Veff saturates). This is physically motivated for IV — it models velocity saturation and series resistance effects that limit current at high gate overdrive. But CV, computed from terminal charge derivatives (C = dQ/dV), relies on the gate voltage continuing to modulate the channel charge. When Veff saturates, the channel charge Qch(Veff) also saturates, and dQch/dV drops — producing capacitance that first rises to a peak then declines, rather than rising to a plateau. The measured CV (which shows monotonic rise-to-plateau) is incompatible with the saturated Veff that produces the best IV fit.
-**Evidence**: Turn 12, line 277 — during iterative model refinement: "现在图上 IV 已经平滑了，但 CV 图暴露出第二个原因：之前为了压住开态，优化器把顶栅的 Vmodsat_t 推到下限，等于让有效栅压在几伏后饱和；这会让 CV 预测出现尖峰后下降，而你的 CV 实测更像上升后平台。这说明用 Vknee/Vmodsat 去拟合修正后的 IV 会和 CV 冲突。我把这组栅过驱饱和默认固定成近似不生效，让开态主要由迁移率/CLM/漏电项来拟合。" Turn 14, line 352 — after fixing: "在不允许 CV 单独阈值/单独 Cox/单独 shift 的约束下，CV 误差只从 0.262 dec 降到 0.249 dec，不像经验 wrapper 那样能到 0.011 dec。这不是优化失败，而是说明当前 IV 统一阈值下，CV 的转折位置/平台形状和 IV 本征电荷模型并不完全一致。"
-**Generalization**: This conflict is fundamental to EKV-style models: gate overdrive saturation (for IV) and charge modulation (for CV) are coupled through the same Veff function. The engine defaults Vknee_t/b and Vmodsat_t/b to large values (effectively "no saturation"), prioritizing CV monotonicity over IV saturation fidelity. This is the correct default for TFTs where saturation is gradual. If a device has strong velocity saturation (short channel, high mobility), the IV-CV tradeoff becomes real and cannot be fully resolved within the EKV framework — the residual must be handled by downstream KAN corrections (train-static stage).
-**Actionable Advice**: Agent B should NOT attempt to tune Vknee/Vmodsat to improve IV saturation at the expense of CV shape. If IV output curves show insufficient saturation but CV looks good, accept the IV limitation at fit-physical stage — the train-static KAN can learn the saturation pattern as a VDS-dependent correction. If both IV and CV quality are poor, suspect a more fundamental model-data mismatch (wrong Cox ratio, incorrect W/L geometry, mislabeled measurement modes) rather than a parameter tuning issue. The fitted_params.json should be checked: if Vmodsat_t or Vmodsat_b are at non-default values (indicating the optimizer tried to use them), consider setting them back to their large defaults by overriding in the INI.
+**Diagnostic**: IV curves (especially IDVD) show sawtooth/zigzag oscillations in strong conduction region. Smooth intrinsic current, jagged external Ids.
+
+**Agent Impact**: **None.** Agent B cannot change Rs0/Rd0 via `adjust_params` (these are EKV model parameters fitted by scipy, not INI-tunable). The 10Ω threshold, 30-step iteration, and 0.55/0.45 relaxation are engine-hardcoded.
+
+**Correct Actions**: If you see IV jitter → check `fitted_params.json`. If Rs0 or Rd0 > 10Ω, the iterative solver is active and unstable. Options: (1) `accept_quality` if jitter is small and on-region RMS is acceptable, (2) `fallback_to_previous` (→ check-data) — the data may contain measurement artifacts that cause the optimizer to push Rs/Rd to unstable values. Do NOT increase `max_nfev_scale` — more iterations worsen the jitter.
+
+**Evidence**: TURN 12: optimizer pushed Rd0 large, 30-step solver oscillated → produced sawtooth IV. Fix was to stop fitting Rs/Rd and use Ioff0/Gleak_ds for off-state leakage instead. IV RMS dropped from ~1 dec to 0.24 dec.
+
+### Gate Saturation (Vmodsat/Vknee) IV-CV Conflict → Recognition Only
+
+**Diagnostic**: IV saturation improves but CV develops artificial peaks+decline in strong inversion instead of rising to plateau. Vmodsat values in `fitted_params.json` are at non-default low values.
+
+**Agent Impact**: **None.** Vmodsat/Vknee are fitted by scipy, not INI-tunable. The fundamental IV-CV tradeoff is structural — both share the same `one_sided_sat()` function.
+
+**Correct Actions**: If both IV saturation and CV shape are poor → `fallback_to_previous` (data/model mismatch). If only CV shape is compromised but IV is acceptable → `accept_quality` — downstream KAN can learn saturation pattern as a VDS-dependent correction. Do NOT attempt to override Vmodsat values via INI adjustments (no INI key exists for these).
+
+**Evidence**: TURN 12: optimizer pushed Vmodsat_t to lower bound → CV developed spurious peaks. Fix was to freeze Vmodsat at large defaults and let mobility/CLM handle saturation.
 
 ## Tuning Patterns
 

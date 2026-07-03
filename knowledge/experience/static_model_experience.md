@@ -1,75 +1,39 @@
-# Static Model Experience (from 2026-06-29 session)
+# Static Model Experience (from 2026-06-29 + 05-22 sessions)
+
+> **Agent C tools**: `adjust_params` (71 INI params in [full_model]/[base_pkan]/[temperature]/[symbolic]/[validation]), `fallback_to_previous` (→ fit-physical), `accept_quality`, `inspect_xlsx`.  
+> **Can influence**: epochs, LR, batch sizes, cv_weight, cv_residual_level, enable_cv_residual, symbolic budgets, freeze flags, warm-start LR multipliers.  
+> **Cannot change**: engine training order, optimizer parameter groups, loss function design, safety scan logic, symbolic export architecture.  
+> **Principle**: the majority of the actionable advice below focuses on what Agent C can influence via `adjust_params` + correct tool choice. Entries where Agent C's only option is `fallback_to_previous` or `accept_quality` are marked accordingly.
 
 ## Principle Insights
 
-### KAN Grid Knot Non-Monotonicity: Frozen Grids Becoming Trainable
-**Category**: Principle Insight
-**Stage(s)**: train-static (affects all downstream stages that rely on trained PKAN checkpoints)
-**Symptom**: IV curves show sharp stair-step discontinuities in the IDVD saturation region and abrupt kinks in IDVG/IDVBG high-bias regions. The artifact is visible in `results/plot/*.png` as discrete jumps, not smooth interpolation. IDVD max local 2nd-order jump reaches ~0.12 dex; IDVTG reaches ~0.07 dex.
-**Root Cause**: The independent base IV-PKAN training phase calls `base.kan.parameters()` with `requires_grad=True` for all parameters, which inadvertently unfreezes the pykan `grid` and `mask` tensors (designed to be frozen in v96 architecture). AdamW then modifies the B-spline knot positions. Since B-splines require strictly monotonic knot grids, any inversion (e.g., VDS grid `…, -0.8332, -0.9464, …` with descending order, or qbar grid reverse-sorted) causes certain spline edges to abruptly deactivate/reactivate as the input voltage sweeps, producing visible stair-steps.
-**Evidence**:
-  - TURN 26: "B-spline knot grid 出现了非单调节点（例如 VDS 网格 … -0.8332, -0.9464 …，qbar 网格也倒序）" (diagnostic.md:918)
-  - TURN 26: "独立 IV base-PKAN 阶段把 base.kan.parameters() 全部重新设为可训练，误把 pykan 原本冻结的 grid、mask、node metadata 也交给 Adam" (diagnostic.md:923)
-  - TURN 28: Fix — after monotonicity restoration, "IDVD 最大局部二阶跳变从 0.12175 dex 降到 0.001244 dex（下降 98.98%），IDVTG 从 0.07071 dex 降到 0.002966 dex（下降 95.81%）" (diagnostic.md:948)
-  - TURN 28: v95 checkpoint had 9 inverted knot positions in base IV KAN + 4 in IV residual KAN; v90 grids were all strictly monotonic (diagnostic.md:923)
-**Generalization**: This is a code-level bug (not dataset-specific). Any fresh device training that runs `train_current_device_base_iv_pkan` with the v96 frozen-grid architecture will trigger this if the optimizer's parameter group includes grid tensors. It is invisible to the precision gates (RMS may stay reasonable) because the model can still achieve low aggregate error via compensation, but the resulting IV curves have physically implausible discontinuities.
-**Actionable Advice**:
-  1. **Prevention (code fix)**: When constructing AdamW optimizer groups for KAN training, explicitly exclude `grid`, `mask`, and `node_*` named parameters. Only `fc.weight`, `activation_fn.*`, and `symbolic.*` should be trainable.
-  2. **Detection (post-training)**: After base IV-PKAN training, verify all KAN grids are strictly monotonic via `assert_valid_grids()` (already exists in engine as `grid audit`). If the gate passes but visual inspection shows jumps, run a supplementary check: compute max 2nd-order finite difference across each IV curve trace; any local jump >0.01 dex indicates knot damage even if the aggregate audit passes.
-  3. **Recovery**: Grid monotonicity failure is NOT recoverable by parameter tuning — the KAN model state is corrupted (`knowledge/static_model.md:564` row "grid audit failed"). Fallback to fit-physical and restart training with the code fix applied. Do NOT attempt to "reproject" or "repair" grids via post-processing — this only masks the issue and keeps degraded edge representations.
-  4. **What NOT to do**: Do not apply this fix as a post-hoc grid projection on an already-trained checkpoint and then re-verify. Evidence: the projection approach kept IV nonzero RMS at 0.080191 dex (vs 0.079164 pre-fix, +0.00103 dex) and only masked the grid corruption without fixing root cause (diagnostic.md:948).
+### KAN Grid Knot Non-Monotonicity → Identification + Correct Tool Choice
+
+**Diagnostic Signal**: IV curves have sharp stair-step jumps (IDVD ~0.12 dex, IDVTG ~0.07 dex) rather than smooth interpolation. RMS metrics may be unchanged — the corruption is invisible to aggregate scores.
+
+**Agent Impact**: **None.** This is an engine optimizer bug (frozen grid tensors incorrectly made trainable). Agent C cannot fix it via `adjust_params`.
+
+**Correct Action**: If you see stair-step IV artifacts + aggregate RMS looks normal → **immediately `fallback_to_previous`** (→ fit-physical). Do NOT waste retries on `adjust_params` (epochs, LR, etc.) — no parameter change can repair non-monotonic B-spline grids. Do NOT attempt post-hoc grid reprojection.
+
+**Evidence**: TURN 26-28: v95 checkpoint had 9 inverted knots (base) + 4 (residual); v90 grids all monotonic. After fix: IDVD jump 0.12175→0.001244 dex (-98.98%), IDVTG 0.07071→0.002966 dex (-95.81%).
 
 ---
 
-### Training Order: Independent IV Base → IV Residual → Frozen IV → CV
-**Category**: Principle Insight
-**Stage(s)**: train-static (also informs Agent D for train-hysteresis: never joint-train with static IV)
-**Symptom**: IV degradation after joint IV+CV training completes. Specifically: `residual_iv_rms` increases after the joint phase compared to the base IV PKAN phase, even though the loss formula appears unchanged. The CV-dominated global checkpoint selector picks epochs based on a weighted metric where CV_weight=10 dominates, selecting epochs where IV has drifted from its optimum. Additionally, `residual_cv_rms` shows CV residual with negative net contribution (e.g., CV RMS goes from 0.02073 base to 0.020995 after adding charge residual).
-**Root Cause**: Two interacting mechanisms:
-  1. **Optimizer competition**: CV is a derivative observable (dQ/dV) — its loss terms involve second-order autograd through the charge model. The gradient magnitudes from CV loss can be 10-100× larger than IV loss gradients (even with cv_weight=1), overwhelming the shared parameter updates and pulling the base IV-PKAN away from its pre-trained optimal point.
-  2. **Checkpoint selection bias**: The joint training checkpoint selector uses a combined metric with `cv_weight=10.0`. Epochs where CV improves by 0.001 but IV degrades by 0.005 are incorrectly ranked higher than epochs with good IV and adequate CV.
-**Evidence**:
-  - TURN 7: "退化主要来自当前把 IV residual 与高权重 CV 联合训练、再用 CV 主导的全局 checkpoint 选择" (diagnostic.md:186)
-  - TURN 7: v90 vs current parameter comparison: "v90: 700 epoch, LR=0.002, linear weight=0.25, 36 derivative curves, shape period=3. Current: 160 epoch, LR=0.0012, linear weight=0.34, 24 curves, shape period=5" (diagnostic.md:192)
-  - TURN 8: After restoring independent IV base→residual with v90 parameters: held-out balanced score improved from 0.09918 (base) to 0.09097 at epoch 180, and to 0.08796 at epoch 340 — an 11.3% held-out improvement (diagnostic.md:236-241)
-  - TURN 8: "冻结 IV 后，CV base RMS 0.02073，加入 charge residual 后为 0.020995，出现退化" (diagnostic.md:266)
-  - TURN 15: User explicit instruction: "服用v90 iv训练的流程，损失函数设计，拟合顺序，和符号化的流程！而cv用现在的" (diagnostic.md:483)
-  - **Additional Evidence from 05-22 session**: The 05-22 session independently converged on the same staged isolation principle. Turn 16: "CV不再有单独阈值、单独Cox、单独面积缩放、单独电压shift" — enforcing that CV shares physical parameters with IV rather than having independent ones. Turn 34: "把CV trap从'直接加电容'改成'先定义trap charge，再用有限差分得到CV'" — recognizing that CV = dQ/dV requires the same charge equations as IV, confirming gradient competition as a real phenomenon when joint training is attempted. (05-22 diagnostic.md:329-334, 729-731)
-**Generalization**: The staged isolation principle applies universally: for any device where the model separates into IV and CV prediction branches sharing a physical kernel, gradient competition from CV (derivative observable) will dominate IV (direct observable) unless CV is trained only after IV is frozen. This is physics-rooted: CV ≡ dQ/dV requires second-order derivatives through the EKV charge model, creating loss surfaces with steep ridges that IV gradients cannot navigate.
-**Actionable Advice**:
-  1. **Correct training order**: `fit-physical` → `train_current_device_base_iv_pkan` (independent, 700 epoch, LR=0.002) → `train_current_device_iv_residual` (independent, 700 epoch, LR=0.002, held-out split) → **freeze entire IV branch** (base PKAN weights + phys_delta parameters + IV residual KAN) → train CV/charge branch (base CV-PKAN + CV charge residual + CV platform/sheet params).
-  2. **Parameter values for IV base phase**: `base_iv_epochs=700`, `base_iv_learning_rate=0.002`, `base_iv_restarts=1` (with data-driven multiple initialization if budget allows). Evidence: v90's 700-epoch base consistently achieved nonzero RMS ~0.09-0.10 dex range; 240 epochs were sufficient but 700 provided margin (diagnostic.md:224-226).
-  3. **Parameter values for IV residual phase**: `iv_residual_stage_epochs=700`, `iv_residual_stage_learning_rate=0.002`, `iv_residual_stage_linear_weight=0.25`, `iv_residual_stage_deriv_curves=36`, `iv_residual_stage_shape_period=3`. Evidence: these v90 parameters produced consistent held-out gains across multiple training runs (diagnostic.md:192, 256).
-  4. **Freezing strategy**: Set `finetune_base_pkan=False` (already v96 default), AND additionally ensure that `--freeze-iv-residual-after-stage` is passed (not `--joint-finetune-iv-residual`). The CV stage should train only: CV PKAN, CV charge residual, CV platform, CV sheet calibration, temperature KAN (if enabled).
-  5. **Checkpoint selection during CV-only phase**: Use a single-objective selector (lowest CV RMS on training data with passivity check) — do NOT include IV metrics since IV is frozen. A combined metric with cv_weight>1 will still produce biased selection.
-  6. **What NOT to do**: Do not use a combined IV+CV checkpoint selector during CV training — even if IV is nominally frozen, the selector's tie-breaking will prefer CV-optimal epochs that may show slightly different IV due to random batching noise. Do not set `iv_residual_stage_linear_weight` to 0.34 (the drifted default) — evidence shows 0.25 (v90) produced better held-out gains (diagnostic.md:192).
+### Training Order: Prevent IV Degradation During CV Training
 
----
+**Diagnostic**: `residual_iv_rms` increases after CV phase vs base IV phase. CV checkpoint selector (weighted by cv_weight=10) picks epochs where CV improved but IV drifted. CV residual may produce negative net contribution (RMS degrades from 0.02073 → 0.020995).
 
-### Symbolic Distillation: Edge-Local MSE Does Not Guarantee Terminal Accuracy
-**Category**: Principle Insight
-**Stage(s)**: train-static (symbolic phase in Phase 6 of engine execution)
-**Symptom**: The Top-1 symbolic edge compatibility gate (`base_iv_max_top1_compatibility=0.015`) passes — all individual KAN edges are replaced by analytic primitives with edge-level MSE <0.015. However, when the full symbolic model predicts IV current on held-out measured curves, the terminal-level (observable) RMS error is dramatically higher: `0.122 dex` vs the numeric model's `0.082 dex`, and on-region RMS degrades from `0.0287 dex` to `0.1133 dex`. The Python→HSPICE grid verification also shows large errors (e.g., 12.94% max relative error) that appear to be a "deployment implementation error" but are actually the cumulative effect of edge-level symbolic approximation.
-**Root Cause**: Three compounding factors:
-  1. **Error propagation through physics**: The 6 input features to the KAN (`Ut_V, Ub_V, Veff_V, VDS_V, qbar0, qbar0×VDS`) are not independent — they are all functions of the same raw terminal voltages (`Vtg, Vbg, Vds`). A small edge approximation error on, e.g., the `Veff_V → dVth_t_eff_V` edge propagates into the output parameter correction, which then feeds into the EKV drain current equation involving exponential and power-law terms. The resulting current error is amplified by orders of magnitude compared to the edge-local MSE.
-  2. **Covariance ignored**: The edges that produce the 11 IV parameter corrections (`dpsi_V, dVth_t_eff_V, dVth_b_eff_V, ...`) are replaced independently. If edge A systematically overestimates by +0.005 and edge B by +0.005, their errors cancel in edge space (both look fine), but add constructively in current space (both bias the same physical parameter direction).
-  3. **Training constraint mismatch**: The `base_iv_top1_symbolic_weight` regularizer pushes KAN edges toward Top-1 primitives *during numeric training*, but measures success as edge-local compatibility. The terminal current quality is never directly constrained by the symbolic regularization loss — only edge MSE matters. So the optimizer can find numeric edge shapes that have low edge-Top-1-MSE but poor terminal current performance after symbolic replacement.
-**Evidence**:
-  - TURN 5: "Top-1 基础 PKAN 的内部 spline 已学得过于复杂...校准后最大误差反而为 26.3%" (diagnostic.md:135)
-  - TURN 10: "数值 KAN 的单边误差并不大，但多个相关 edge 经过逐边替换后在终端电流上累积" (diagnostic.md:409)
-  - TURN 12: "训练时的 top-1 约束主要约束 latent edge，而不是符号化后的整条 IV；同时 Ut/Ub/Veff/qbar0 高度相关，使逐边最优不等于终端最优" (diagnostic.md:409)
-  - TURN 19: "Top‑1 student 相对数值 teacher 的全曲线等效误差是 0.122 dex，开态 RMS 从 0.0287 退化到 0.1133 dex" (diagnostic.md:570)
-  - TURN 6: "fresh base 的 top-1 边兼容损失从物理初始化的 0.00309 上升到 0.01856，说明数值训练把样条边推向了难以用单一解析基函数表示的形状" (diagnostic.md:146)
-**Generalization**: This gap between edge-local and terminal-level accuracy is inherent to KAN-based symbolic distillation for physics models where KAN outputs are intermediate quantities (parameter corrections) that feed into non-linear physics equations. The gap widens when (a) multiple KAN edges contribute to the same output correction, (b) the downstream physics involves exponentials or power laws, and (c) input features are highly correlated.
-**Actionable Advice**:
-  1. **Do NOT use edge-local MSE as the sole symbolic gate**. Keep `base_iv_max_top1_compatibility` for structural edge validation only. The primary symbolic acceptance gate MUST be terminal-level: compare symbolic model predictions against numeric model predictions on the full 35,220-point measured IV dataset, broken down by region (non-zero, on-region, subthreshold, transition, off, high-current).
-  2. **Add terminal-level terms to the symbolic fine-tuning loss**. After edgewise replacement, the `network_finetune_steps` and `device_iv_finetune_steps` must include: (a) teacher-manifold log-RMS on all IV points, (b) on-region p95 relative error (not just log-RMS), (c) per-curve worst-case error. Evidence: adding terminal on-region p95 to the loss improved from 0.266 to 0.243 dex (diagnostic.md:590-591).
-  3. **Validation-set best-state rollback during symbolic finetuning**: The measured finetune stage must save and restore the best validation-set state (not the last training step). Evidence: "后续 measured finetune 没有验证集最佳状态回滚" caused overfitting to training points while worsening held-out curves (diagnostic.md:572).
-  4. **Calibration amplitude bounds**: Default calibration sigmoid amplitude bound of ±0.16 dex may be too restrictive for devices where the symbolic→numeric gap is large. Relax to ±0.24 dex for the smooth terminal calibration layer ONLY (not for edge-level symbolic formulas). Evidence: a key sigmoid term hit the ±0.16 bound, preventing necessary correction (diagnostic.md:591). But beware: relaxing too far (to unrestricted) triggers complexity selection to drop too many terms, causing full-curve RMS regression (diagnostic.md:596).
-  5. **Remove measured-only finetune phase from default pipeline**: The extra 1600-step post-symbolic measured-only finetune (not present in v90) was the cause of the HSPICE error increase from 0.956% to 4.886%. Evidence: removing it and using only the v90 sequence (edge+network+device finetune, then calibration) reduced HSPICE IV max error from 4.886% to 0.956% (diagnostic.md:522-523). The parameter `device_iv_measured_steps` should be set to 0.
-  6. **Layer error decomposition in reports**: The final manifest should report three separate layers: (a) numeric KAN vs measured data, (b) symbolic model vs numeric KAN, (c) HSPICE vs Python symbolic model. Evidence: previously HSPICE verification reported combined (b)+(c) error, misleadingly suggesting large "deployment errors" when the real issue was (b) (diagnostic.md:746).
+**Agent Impact**: **Partial.** Agent C cannot change the engine training order but CAN control which parameters train in each phase.
 
----
+**Correct Actions** (what Agent C can do via `adjust_params`):
+1. Set `finetune_base_pkan=False` (v96 default) to freeze base PKAN during CV training
+2. Request `--freeze-iv-residual-after-stage` to protect IV residual from CV gradients
+3. Reduce `cv_weight` to 5.0 during CV residual stage (from default 10.0) to reduce gradient competition
+4. If CV residual degrades results: set `enable_cv_residual=False` — CV residual is optional, not mandatory
+5. Do NOT set `iv_residual_stage_linear_weight` to 0.34 — use 0.25 (v90 proven)
+6. If IV degradation persists after all above → `fallback_to_previous` (→ fit-physical) — the physical kernel may need regeneration
+
+**Evidence**: TURN 7-8: restoring v90 parameter values (700 epoch, LR=0.002, linear=0.25, deriv=36, shape=3) produced 11.3% held-out IV improvement. TURN 8: freezing IV before CV training prevented regression. 05-22 session independently converged on same staged isolation principle.
 
 ### Native vs Warm-Start Learning Rate Multipliers
 **Category**: Principle Insight
@@ -90,42 +54,45 @@
 
 ---
 
-### HSPICE Validation Comparing Against Wrong Python Reference Model — OUTDATED (FIXED)
+### Symbolic Distillation: Budget and Parameter Tuning
+
+**Diagnostic**: HSPICE validation shows large errors (12.94% max relative) despite good numeric IV RMS. Edge-local Top-1 compatibility gate passes but terminal-level current accuracy is much worse.
+
+**Agent Impact**: **Partial.** Agent C controls symbolic budget parameters (edge_steps, network_finetune_steps, device_iv_finetune_steps, device_iv_measured_steps) but not the edge-local vs terminal validation approach.
+
+**Correct Actions**:
+1. Increase symbolic budget: `edge_steps=180`, `network_finetune_steps=360`, `device_iv_finetune_steps=3000` (v90 values). Do NOT reduce below these.
+2. Set `device_iv_measured_steps=0` — the extra 1600-step measured-only phase causes HSPICE error increase (4.886%→0.956% when removed).
+3. Restore v90 IV parameters if drifted: `iv_residual_stage_linear_weight=0.25`, `iv_residual_stage_deriv_curves=36`, `iv_residual_stage_shape_period=3`. (Note: these defaults are already restored in current param_defs.py.)
+4. Increase `base_iv_top1_symbolic_weight` to 0.35 (from 0.05) if edge-level compatibility is poor — pushes KAN edges toward simpler shapes during training.
+5. Relax `base_iv_max_top1_compatibility` to 0.02-0.03 if terminal accuracy is borderline — but only AFTER restoring v90 symbolic budget.
+6. If HSPICE errors persist after all above → `accept_quality` with documentation. The numeric model is accurate; deployment errors may be acceptable for some use cases.
+
+**Evidence**: TURN 17: restoring v90 parameters reduced HSPICE IV error from 4.886% → 0.956%. TURN 19: edge-local gate passed (all <0.015) but terminal accuracy was 0.122 dex vs numeric 0.082 dex.
+
+---
+
+### HSPICE Validation Reference Model — OUTDATED (FIXED)
 **Status**: FIXED as of current engine. The HSPICE validation function at `dg_tft_full_model.py:16285` wraps its computation inside `with _temporary_deployment_symbolic_nets(diag):`, which explicitly swaps in `_deployment_base_iv_symbolic_net`, `_deployment_iv_residual_symbolic_net`, and `_deployment_cv_symbolic_net` — the **symbolic** KAN students, NOT the numerical spline nets. The smoke report self-documents: `"python_reference_model": "deployed_symbolic_students"`. **This entry is retained for historical reference only — the reference model mismatch has been resolved.**
 
 ---
 
 ## Tuning Patterns
 
-### Residual Safety Scan: Absolute-Zero Requirement Blocking Valid Deployments
-**Category**: Tuning Pattern
-**Stage(s)**: train-static (Phase 5 — Safety Evaluation, specifically `choose_safe_residual_scales`)
-**Context**: Agent C observes that `safe_iv_residual_scale=0` in the metrics JSON (residual is disabled), but held-out IV residual training showed real improvement (e.g., balanced score improved from 0.09918 to 0.08796). The base model passes all numerical gates, but the residual is rejected. The failure log shows "extrapolation warning count > 0" or similar absolute-zero safety condition.
-**Pattern**:
-  1. **Check whether base already has extrapolation warnings**: Read `v92_safe_shape_diagnostics.csv` or the `base_iv_training` block in the metrics JSON. The column `ext_bad` or equivalent counts non-monotonic/extrapolation violations. If base > 0, the absolute-zero requirement will reject any non-zero residual.
-  2. **Understand the gate logic**: The `choose_safe_residual_scales` function iterates residual scales from 0.0 to 2.0. At each scale, it checks shape quality and passivity on a safety holdout split. The original logic required `ext_bad == 0` (ABSOLUTE zero extrapolation alerts) for acceptance — but this is wrong when the base model itself already has extrapolation alerts. Any residual adjustment, even beneficial, will inherit the base alerts.
-  3. **Apply the relative-degradation fix**: Change the acceptance criterion from absolute-zero (`ext_bad == 0`) to relative-non-degradation (`candidate_ext_bad <= base_ext_bad`). The residual is accepted if: (a) it does not introduce NEW extrapolation alerts beyond the base count, AND (b) held-out balanced score improves, AND (c) no individual region degrades by more than `iv_residual_max_region_degradation`.
-  4. **Re-run safety scan with fixed gate**: The scan should now select a non-zero residual scale (typically 0.5 or 1.0) if the residual provides genuine held-out improvement without new shape issues.
-  5. **Validate that the selected scale actually helps**: After acceptance, verify that the residual at the selected scale produces held-out gain AND the shape diagnostics show no increase in `ext_bad` count.
-**Key Parameters**:
-  - `iv_residual_stage_epochs`: If residual training shows consistent held-out gain but safety scan rejects it, increase this (e.g., 700→1000) before re-running.
-  - `iv_residual_max_region_degradation` (engine-internal, default 0.008): If tightened too much (e.g., 0.001), even beneficial residuals will fail. Keep at 0.008.
-  - `safe_scale_steps`: Default 8 is sufficient. Do not increase — the scan is expensive.
-**Success Indicator**: 
-  - `safe_iv_residual_scale` is non-zero (e.g., 0.5 or 1.0) after safety scan.
-  - Balance score in `iv_residual_training.heldout_balanced_score` shows improvement vs base.
-  - Shape diagnostics show no NEW extrapolation alerts beyond base count.
-  - CV passivity (charge sum, cross-reciprocity) passes at the selected scale.
-**Pitfalls**:
-  - Do NOT set `safe_iv_residual_scale` manually or force it to 1.0. The safety scan exists because non-zero residuals at large scales can introduce non-physical IV curve shapes (negative resistance, non-monotonic gm slopes). Always go through the scan.
-  - If the base model has many (>10) extrapolation alerts, the relative-criterion fix may still accept a residual that makes things marginally worse. In this case, investigate whether the base training itself has issues (insufficient epochs, poor physical kernel).
-  - Do not confuse "safety scan rejected residual" with "residual training failed". The residual training may have produced a good model, but the safety scan found deployment risks at certain scales. The fix is the scan logic, not the residual training.
+### Residual Safety Scan Rejecting Valid Deployments
 
-**Evidence**:
-  - TURN 19: "最终 safety scan 要求'外推绝对零告警'；base 自身已有 4 个外推形状告警，因此所有非零 residual 都被拒绝。这是门控逻辑错误" (diagnostic.md:612)
-  - TURN 20: "基线外推本身有 4 个形状告警，旧逻辑却要求 residual 候选 ext_bad == 0，因此任何非零 residual 都不可能入选" (diagnostic.md:622)
-  - TURN 20: After fix — "改为'候选告警数不高于基线，且不新增相对异常'" (diagnostic.md:622)
-  - TURN 20: Final result — "安全扫描结果已明确选中 IV=0.5、CV=0.5，说明 residual 在真实全曲线收益和不新增异常条件下已恢复贡献" (diagnostic.md:632)
+**Diagnostic**: `safe_iv_residual_scale=0` despite held-out IV residual showing real improvement (e.g., balanced score 0.09918→0.08796). Base model has extrapolation warnings (ext_bad > 0), and the safety scan requires `ext_bad == 0` (absolute zero) — which no residual can achieve if the base already has warnings.
+
+**Agent Impact**: **None.** Agent C cannot change the safety scan logic (engine code). The main IV-CV joint scan has been partially fixed (now uses `ext_bad <= base_ext_bad`), but CV sub-scans still use absolute-zero.
+
+**Correct Actions**:
+1. Check `safe_iv_residual_scale` in metrics JSON. If 0 but residual training logs show improvement → suspect this bug.
+2. If residual provides genuine held-out gains → `accept_quality` with justification (document the base model's extrapolation count).
+3. Try increasing `iv_residual_stage_epochs` (700→1000) to give the residual more time to reduce extrapolation alerts — small chance of passing the scan.
+4. Do NOT waste retries on repeated `adjust_params` — the scan logic is the bottleneck, not parameter values.
+5. If residual is essential for deployment quality → **`fallback_to_previous`** (→ fit-physical). A better physical kernel baseline may have fewer shape warnings, allowing the residual to pass.
+
+**Evidence**: TURN 19-20: base had 4 extrapolation alerts, all non-zero residuals rejected. After fix to relative criterion: residual accepted at scale 0.5.
 
 ---
 

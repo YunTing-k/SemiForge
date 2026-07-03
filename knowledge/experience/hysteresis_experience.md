@@ -1,4 +1,9 @@
-# Hysteresis Experience (from 2026-06-29 session)
+# Hysteresis Experience (from 2026-06-29 + 05-22 sessions)
+
+> **Agent D tools**: `adjust_params` (12 INI params: epochs, hidden_capture, hidden_emission, amp_parameterization, fast/slow_restarts, fast/slow_amp_parameterization, fast/slow_optimizer_policy), `fallback_to_previous` (→ train-static), `accept_quality`, `inspect_xlsx`.  
+> **Can influence**: training budget, KAN capacity, optimizer policy, amplitude parameterization, restart count.  
+> **Cannot change**: acceptance gate thresholds, loss function, pre-analysis logic, Verilog-A export code, metadata serialization format.  
+> **Principle**: focus on what Agent D can adjust. Engine-hardcoded issues are marked with correct tool choice (usually `fallback_to_previous` or `accept_quality`).
 
 ## Principle Insights
 

@@ -1,4 +1,10 @@
-# Data Inspection Experience (from 2026-06-29 session)
+# Data Inspection Experience (from 2026-06-29 + 05-22 sessions)
+
+> **Agent A tools**: `fallback_to_previous` (→ Verifier), `read_file`, `glob_file`, `bash`, `grep_file`. **No `adjust_params`** — check-data has no INI parameters.  
+> **Can influence**: ONLY the fallback decision — is the error in the data (→ fallback to Verifier/Preparer) or environmental (→ no fallback, terminate)?  
+> **Principle**: all experience below is organized around the single question Agent A must answer: fallback or not?
+
+## Insights
 
 No generalizable experience patterns found in the 06-29 session.
 
