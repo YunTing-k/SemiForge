@@ -41,16 +41,16 @@
 **Symptom**: A freshly trained base IV-PKAN (no pre-existing checkpoint for this device) converges extremely slowly or plateaus at high loss when using `base_iv_learning_rate=0.002` multiplied by `warm_start_base_pkan_lr_mult=0.035` (effective LR = 7×10⁻⁵). The base PKAN effectively learns nothing, and subsequent residual training cannot compensate because the base under-represents the physical corrections. Conversely, using `LR=1.0` (i.e., `warm_start_base_pkan_lr_mult=1.0`) on a fine-tuning scenario from a good pre-trained checkpoint destroys the learned weights in ~15% of epochs.
 **Root Cause**: The `warm_start_base_pkan_lr_mult` parameter exists specifically for the case where the pre-trained base PKAN checkpoint already contains good device corrections, and the joint training phase should only make small adjustments. A multiplier of 0.035 means the effective LR = base LR × 0.035 — appropriate for protection. But for a `reset_base_from_physical_fit=True` scenario (fresh device, no prior KAN weights), the base PKAN correction heads are initialized to zero and need to learn from scratch. The 0.035 multiplier starves the optimizer. The v90 workflow avoided this because v90 never did fresh-start — it always fine-tuned from a pre-trained checkpoint. The v93+ workflow introduced fresh-start capability but kept the warm-start multiplier as the default, causing regression.
 **Evidence**:
-  - TURN 16: "Fresh-start 的 LR 保持 1.0 是必要差异，因为 v90 的 0.035 只适用于已训练 warm-start" (diagnostic.md:490)
-  - TURN 18: "唯一不应照抄的是 v90 对已有 checkpoint 的 warm-start 倍率 0.035；新器件 fresh-start 必须用 1.0，否则正是此前退化来源" (diagnostic.md:534)
-  - TURN 3: Fresh base training at LR=1.0 reduced high-current RMS from ~0.22 to 0.0388 in ~40 seconds, showing the correct rate for fresh-start (diagnostic.md:55)
-  - TURN 7: v90's effective base IV LR was 0.002 × 1.0 = 0.002 for warm-start with pre-trained checkpoint; this was the correct fine-tuning rate (diagnostic.md:192)
+  - TURN 16: "Fresh-start 的 LR 保持 1.0 是必要差异，因为 v90 的 0.035 只适用于已训练 warm-start" (06-29 session)
+  - TURN 18: "唯一不应照抄的是 v90 对已有 checkpoint 的 warm-start 倍率 0.035；新器件 fresh-start 必须用 1.0，否则正是此前退化来源" (06-29 session)
+  - TURN 3: Fresh base training at LR=1.0 reduced high-current RMS from ~0.22 to 0.0388 in ~40 seconds, showing the correct rate for fresh-start (06-29 session)
+  - TURN 7: v90's effective base IV LR was 0.002 × 1.0 = 0.002 for warm-start with pre-trained checkpoint; this was the correct fine-tuning rate (06-29 session)
 **Generalization**: Any pipeline that supports both `reset_base_from_physical_fit=True` (fresh start) and `reset_base_from_physical_fit=False` (resume/warm-start) MUST switch the effective base PKAN learning rate between the two modes. The warm-start multiplier is a *protection* mechanism (not an optimization parameter): it exists to prevent CV loss gradients from destroying pre-trained base PKAN weights in the first 15% of joint training epochs. It has no useful role in fresh-start training.
 **Actionable Advice**:
   1. **When `reset_base_from_physical_fit=True`**: Set `warm_start_base_pkan_lr_mult=1.0` (or omit it entirely — same effect). Set `base_iv_learning_rate=0.002` (v90 proven value) and do not apply any LR multiplier during base IV PKAN phase. During the later joint CV phase, since `finetune_base_pkan=False` (v96 default), the base PKAN will be frozen anyway — the warm_start multiplier is irrelevant.
   2. **When `reset_base_from_physical_fit=False`** (resume from checkpoint): Set `warm_start_base_pkan_lr_mult=0.035` and `finetune_base_pkan=True`. This protects the pre-trained PKAN from early destruction when CV loss is introduced. The multiplier ramps from 0.035 to `base_pkan_lr_mult` over the warm-up period.
-  3. **Automatic detection**: The engine/pipeline should auto-detect the mode and set the multiplier. If `reset_base_from_physical_fit` is True (or `--reset-base-from-physical-fit` flag is present), override `warm_start_base_pkan_lr_mult` to 1.0 regardless of INI value. Evidence: the session spent multiple turns debugging LR mismatch because the INI had the wrong default for the fresh-start scenario (diagnostic.md:490-534).
-  4. **What NOT to do**: Do not blindly copy v90's INI config (which has `warm_start_base_pkan_lr_mult=0.035`) to a fresh-start deployment. This is the exact "copy v90, get worse results" problem the user identified. Do not set `base_iv_learning_rate` above 0.005 — even for fresh-start, rates >0.005 caused oscillations (diagnostic.md:55 shows LR=1.0 was used for a quick test, but the final settled value was 0.002).
+  3. **Automatic detection**: The engine/pipeline should auto-detect the mode and set the multiplier. If `reset_base_from_physical_fit` is True (or `--reset-base-from-physical-fit` flag is present), override `warm_start_base_pkan_lr_mult` to 1.0 regardless of INI value. Evidence: the session spent multiple turns debugging LR mismatch because the INI had the wrong default for the fresh-start scenario (06-29 session).
+  4. **What NOT to do**: Do not blindly copy v90's INI config (which has `warm_start_base_pkan_lr_mult=0.035`) to a fresh-start deployment. This is the exact "copy v90, get worse results" problem the user identified. Do not set `base_iv_learning_rate` above 0.005 — even for fresh-start, rates >0.005 caused oscillations (06-29 session: LR=1.0 was used for a quick test, but the final settled value was 0.002).
 
 ---
 
@@ -73,7 +73,7 @@
 ---
 
 ### HSPICE Validation Reference Model — OUTDATED (FIXED)
-**Status**: FIXED as of current engine. The HSPICE validation function at `dg_tft_full_model.py:16285` wraps its computation inside `with _temporary_deployment_symbolic_nets(diag):`, which explicitly swaps in `_deployment_base_iv_symbolic_net`, `_deployment_iv_residual_symbolic_net`, and `_deployment_cv_symbolic_net` — the **symbolic** KAN students, NOT the numerical spline nets. The smoke report self-documents: `"python_reference_model": "deployed_symbolic_students"`. **This entry is retained for historical reference only — the reference model mismatch has been resolved.**
+**Status**: FIXED as of current engine. The HSPICE validation function at `dg_tft_full_model.py` wraps its computation inside `with _temporary_deployment_symbolic_nets(diag):`, which explicitly swaps in `_deployment_base_iv_symbolic_net`, `_deployment_iv_residual_symbolic_net`, and `_deployment_cv_symbolic_net` — the **symbolic** KAN students, NOT the numerical spline nets. The smoke report self-documents: `"python_reference_model": "deployed_symbolic_students"`. **This entry is retained for historical reference only — the reference model mismatch has been resolved.**
 
 ---
 
@@ -97,7 +97,7 @@
 ---
 
 ### CV Finalize Polish Silently Degrading Accepted Models — OUTDATED (FLAG EXISTS)
-**Status**: FIXED as of engine v96. The `--skip-post-train-cv-polish` flag exists at `dg_tft_full_model.py:17641` and is actively used in the non-finalize train path (line 18775). The orchestrator should pass this flag during finalize/resume modes. **This entry is retained for historical reference only — the flag is available and should be used.**
+**Status**: FIXED as of engine v96. The `--skip-post-train-cv-polish` flag exists at `dg_tft_full_model.py` and is actively used in the non-finalize train path (line 18775). The orchestrator should pass this flag during finalize/resume modes. **This entry is retained for historical reference only — the flag is available and should be used.**
 
 ---
 
@@ -114,7 +114,7 @@ There is NO separate "coarse pass then fine pass" two-stage architecture. `choos
   1. **Understand the two-stage scan**: The `joint_cv_safe_scale_search` runs a coarse 2D grid over (parameter_scale × residual_scale) using a reduced set of passivity checkpoints (48 points). At each grid point, it checks charge sum, cross-reciprocity (`max_cross_reciprocity_error`), and diagonal negativity. The coarse scan selects the best (parameter_scale, residual_scale) pair.
   2. **Identify the rejection bug**: After coarse scan accepts a pair, the fine scan (full 96-point passivity grid) is run on just that pair. If the fine scan finds violations (e.g., `max_cross_reciprocity_error` exceeds tolerance), the OLD code immediately sets residual_scale=0 instead of searching downward for a smaller-but-nonzero scale. This is the "zero-out on fine rejection" bug.
   3. **Apply the rescan fix**: Change the scan logic to: (a) run coarse scan to select parameter_scale (ignore coarse residual_scale), (b) fix parameter_scale at the selected value, (c) on the FULL 96-point passivity grid, scan all residual_scale values from 0.0 upward, (d) select the LARGEST residual_scale that passes fine-grid passivity. This ensures the scan finds the true maximal safe scale rather than yielding binary 1.0 or 0.0.
-  4. **Check for parameter_scale issues**: If even with the rescan fix, no non-zero residual scale passes fine-grid passivity, the problem may be that the coarse scan selected a parameter_scale that already violates passivity on the fine grid. Evidence: "即使 residual=0，联合粗扫选出的 parameter scale=0.3 已使最大交叉互易误差达到 6.53e‑15，超过完整门槛" (diagnostic.md:281). In this case, re-run with a more conservative parameter_scale scan (smaller upper bound).
+  4. **Check for parameter_scale issues**: If even with the rescan fix, no non-zero residual scale passes fine-grid passivity, the problem may be that the coarse scan selected a parameter_scale that already violates passivity on the fine grid. Evidence: "即使 residual=0，联合粗扫选出的 parameter scale=0.3 已使最大交叉互易误差达到 6.53e‑15，超过完整门槛" (06-29 session). In this case, re-run with a more conservative parameter_scale scan (smaller upper bound).
   5. **Use parameter-only scan as backup**: If the joint scan consistently fails, fall back to parameter-only safety scan (`safe_cv_parameter_scale` selection) with `joint_cv_safe_scale_search=False`, then separately scan CV residual scale with fixed parameter_scale.
 **Key Parameters**:
   - `joint_cv_safe_scale_search`: Set to `True` only if CV passivity is likely marginal. In most cases, `False` (parameter-then-residual sequential scan) is more robust.
@@ -131,15 +131,15 @@ There is NO separate "coarse pass then fine pass" two-stage architecture. `choos
   - The cross-reciprocity tolerance is physics-based (charge conservation): violation means the model's charge function is non-conservative in a way that would cause SPICE convergence failures. Relaxing the tolerance is never acceptable.
 
 **Evidence**:
-  - TURN 8: "联合粗扫在 48 点 passivity 上接受 CV residual=1，但后续 96 点复核发现最大交叉互易误差超限，于是旧代码直接回退到 0，而没有搜索较小 residual scale。这正是 residual 被错误压到 0 的路径" (diagnostic.md:276)
-  - TURN 8: "修复为：联合粗扫确定 parameter scale/模式，随后在完整 passivity 网格上重新搜索所有 residual scale，只有真实通过者才保留" (diagnostic.md:276)
-  - TURN 8: "即使 residual=0，联合粗扫选出的 parameter scale=0.3 已使最大交叉互易误差达到 6.53e‑15，超过完整门槛。因此必须回退 parameter scale，而不是把 residual 归零" (diagnostic.md:281)
-  - TURN 8: Final routed fix — "改用完整 parameter-only 安全选择（已选 0.1），再在该 parameter scale 上搜索非零 residual" (diagnostic.md:281)
+  - TURN 8: "联合粗扫在 48 点 passivity 上接受 CV residual=1，但后续 96 点复核发现最大交叉互易误差超限，于是旧代码直接回退到 0，而没有搜索较小 residual scale。这正是 residual 被错误压到 0 的路径" (06-29 session)
+  - TURN 8: "修复为：联合粗扫确定 parameter scale/模式，随后在完整 passivity 网格上重新搜索所有 residual scale，只有真实通过者才保留" (06-29 session)
+  - TURN 8: "即使 residual=0，联合粗扫选出的 parameter scale=0.3 已使最大交叉互易误差达到 6.53e‑15，超过完整门槛。因此必须回退 parameter scale，而不是把 residual 归零" (06-29 session)
+  - TURN 8: Final routed fix — "改用完整 parameter-only 安全选择（已选 0.1），再在该 parameter scale 上搜索非零 residual" (06-29 session)
 
 ---
 
 ### v90 Symbolic Pipeline: Key Default Parameter Differences — OUTDATED (ALL RESTORED)
-**Status**: FIXED as of current `param_defs.py`. All three "drifted" defaults have been restored to v90 values: `iv_residual_stage_linear_weight=0.25` (param_defs.py:391), `iv_residual_stage_deriv_curves=36` (param_defs.py:403), `iv_residual_stage_shape_period=3` (param_defs.py:415). Engine argparse defaults also match (e.g., line 17234: `default=0.25`). **This entry is retained for historical reference only — the parameter values are already corrected.**
+**Status**: FIXED as of current `param_defs.py`. All three "drifted" defaults have been restored to v90 values: `iv_residual_stage_linear_weight=0.25` (param_defs.py), `iv_residual_stage_deriv_curves=36` (param_defs.py), `iv_residual_stage_shape_period=3` (param_defs.py). Engine argparse defaults also match (e.g., line 17234: `default=0.25`). **This entry is retained for historical reference only — the parameter values are already corrected.**
 
 ---
 
@@ -168,16 +168,16 @@ There is NO separate "coarse pass then fine pass" two-stage architecture. `choos
   - Do NOT blindly increase `cv_residual_level` to 2. Level 2 enables inter-gate reciprocal coupling — a correction that applies to both VTG and VBG sweeps simultaneously. If the base KAN already handles per-gate corrections well, adding coupling can introduce crosstalk degradation.
 
 **Evidence**:
-  - TURN 8: "冻结 IV 后，CV base RMS 0.02073，加入 charge residual 后为 0.020995，出现退化" (diagnostic.md:266)
-  - TURN 8: "安全门后续会把它压低或置零，因此这仍不满足'CV residual 有真实贡献'" (diagnostic.md:266)
-  - TURN 8: Agent correctly handled: "先做 CV-only 状态 ablation，比较现有当前 CV checkpoint 与这次新训练的 parameter/residual 分支，选择不会触碰 IV 的最小组合" (diagnostic.md:266)
-  - TURN 8: Final result — CV parameter held-out improved from 0.0205225 to 0.0201922 with parameter KAN only; residual was not needed and correctly not forced (diagnostic.md:270)
-  - **Additional Evidence from 05-22 session**: Turns 108-110 independently confirmed that PKAN+residual had almost no effect on CV curve shapes — the safe scale mechanism was zeroing CV residual because CV shape gates triggered on minor non-physical artifacts. Turn 65 residual diagnostic showed IV residual KAN provided 50%+ improvement in IDVTG on-region, but CV residual KAN produced oscillatory behavior. The lesson from the earlier session is the same: CV residual is a marginal contributor that can easily cause more harm than good when CV shape constraints are active. (05-22 diagnostic.md:2670-2684)
+  - TURN 8: "冻结 IV 后，CV base RMS 0.02073，加入 charge residual 后为 0.020995，出现退化" (06-29 session)
+  - TURN 8: "安全门后续会把它压低或置零，因此这仍不满足'CV residual 有真实贡献'" (06-29 session)
+  - TURN 8: Agent correctly handled: "先做 CV-only 状态 ablation，比较现有当前 CV checkpoint 与这次新训练的 parameter/residual 分支，选择不会触碰 IV 的最小组合" (06-29 session)
+  - TURN 8: Final result — CV parameter held-out improved from 0.0205225 to 0.0201922 with parameter KAN only; residual was not needed and correctly not forced (06-29 session)
+  - **Additional Evidence from 05-22 session**: Turns 108-110 independently confirmed that PKAN+residual had almost no effect on CV curve shapes — the safe scale mechanism was zeroing CV residual because CV shape gates triggered on minor non-physical artifacts. Turn 65 residual diagnostic showed IV residual KAN provided 50%+ improvement in IDVTG on-region, but CV residual KAN produced oscillatory behavior. The lesson from the earlier session is the same: CV residual is a marginal contributor that can easily cause more harm than good when CV shape constraints are active. (05-22 session)
 
 ---
 
-### Engine Architecture Diagnostics — See Agent E
-The following patterns were identified in the 05-22 session but are **engine-level architectural concerns** that Agent C cannot address via `adjust_params`. They have been moved to `knowledge/experience/final_interpret_experience.md` for Agent E's diagnostic reference:
+### Engine Architecture Diagnostics — Beyond Agent C's Control
+The following patterns were identified in the 05-22 session but are **engine-level architectural concerns** that Agent C cannot address via `adjust_params`:
 - **Derivative observables (gm/gds, dC/dV) not in training loss** → post-hoc safe-scale picks scale=0 because residual was never trained to respect derivatives
 - **Physical kernel structurally incomplete before KAN** → KAN compensates for missing physics with non-physical oscillations
 - **CV charge model using discrete convolution** → produces false multi-step transitions
@@ -185,7 +185,7 @@ The following patterns were identified in the 05-22 session but are **engine-lev
 - **Separate IV/CV residual scale selection** → single global scale zeros both when CV shape gate triggers
 - **CV shape template constraints** → plateau-transition-plateau design vs monotonicity-only loss
 
-Agent C's role: if you observe these symptom patterns → `fallback_to_previous` or `accept_quality`. Do not attempt to fix via parameter tuning. See Agent E experience for the full diagnostic context.
+Agent C's role: if you observe these symptom patterns → `fallback_to_previous` or `accept_quality`. Do not attempt to fix via parameter tuning. 
 
 ## Session Meta-Notes (05-22)
 

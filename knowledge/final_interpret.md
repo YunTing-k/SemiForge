@@ -41,7 +41,7 @@ optionally call the single `contribute_knowledge` tool. The report is printed to
 (not automatically appended to RUN_SUMMARY.md).
 
 **Output truncation**: Agent E's console output is truncated to the first 15 lines
-(`result.strip().splitlines()[:15]` at orchestrator.py:1718). Everything beyond line 15
+(`result.strip().splitlines()[:15]` at orchestrator.py). Everything beyond line 15
 is silently discarded. The output is NOT saved to file and NOT appended to RUN_SUMMARY.md.
 Agent E should place the path recommendation and root cause diagnosis in the FIRST 15
 lines; detailed metric breakdowns should follow but may be truncated.
@@ -49,9 +49,9 @@ lines; detailed metric breakdowns should follow but may be truncated.
 **Important behavior notes**:
 
 1. **minimal_run skip**: When `[runtime] minimal_run = yes`, Agent E is **skipped entirely**
-   (`_is_minimal_run` check at orchestrator.py:1615-1617). No report is produced, no knowledge
-   is contributed. **Bug note**: The `_is_minimal_run` guard at orchestrator.py:1615 only
-   works when `config_path` is provided. On the FAILURE path (orchestrator.py:529),
+   (`_is_minimal_run` check at orchestrator.py). No report is produced, no knowledge
+   is contributed. **Bug note**: The `_is_minimal_run` guard at orchestrator.py only
+   works when `config_path` is provided. On the FAILURE path (orchestrator.py),
    `_spawn_agent_e` is called without `config_path`, so `config_path and _is_minimal_run(...)`
    evaluates to False — Agent E runs even during minimal_run on failure. The skip only works
    on the SUCCESS path.
@@ -130,7 +130,7 @@ relying on these hardcoded values.
 
 ### Stage Optionality
 
-- **data-prep** is `required=False` — if data-prep fails, the pipeline continues to Verifier (orchestrator.py:299-301 skips non-required failures).
+- **data-prep** is `required=False` — if data-prep fails, the pipeline continues to Verifier (orchestrator.py skips non-required failures).
 - **check-data** is `required=True` — if check-data fails, all downstream script stages are affected.
 - **train-hysteresis** is `required=False` — skipped when `DatasetProfile.has_hysteresis` is False
   (no I-t measurement data). Its absence is normal, not a failure.
@@ -211,13 +211,13 @@ not report cascade victims as separate failures.
 
 **Common triggers in operation_log**:
 - `trigger=initial` + `n=1`: first execution with default parameters
-- `trigger=agent_adjust` + `n>=2`: agent called `adjust_params`, INI was updated, stage re-ran (for Agents B/C/D). `trigger=quality_fail`: emitted only by Agent A's fallthrough case (orchestrator.py:754).
+- `trigger=agent_adjust` + `n>=2`: agent called `adjust_params`, INI was updated, stage re-ran (for Agents B/C/D). `trigger=quality_fail`: emitted only by Agent A's fallthrough case (orchestrator.py).
 - `trigger=fallback_sent`: agent called `fallback_to_previous`, recorded at the stage that initiated the fallback
 - `trigger=agent_accept`: agent called `accept_quality`, stage continues without retry
-- `trigger=fallback_received`: Preparer retry triggered by upstream Verifier fallback (used at orchestrator.py:579)
+- `trigger=fallback_received`: Preparer retry triggered by upstream Verifier fallback (used at orchestrator.py)
 - `trigger=verifier_fail`: data-prep worker retry after Verifier rejection
 
-**Note**: The `PREP_RETRY` trigger exists in the AttemptTrigger enum (operation_log.py:36) but is never emitted in production code — data-prep retries use `VERIFIER_FAIL` instead.
+**Note**: The `PREP_RETRY` trigger exists in the AttemptTrigger enum (operation_log.py) but is never emitted in production code — data-prep retries use `VERIFIER_FAIL` instead.
 
 **Note**: The `upstream_changed` trigger exists in the `AttemptTrigger` enum but is **never emitted** by the orchestrator.
 When a script stage re-runs because upstream changed (e.g., fit-physical falls back to check-data, then

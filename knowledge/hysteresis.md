@@ -428,7 +428,7 @@ Agent D has four tools and must call EXACTLY ONE:
   executable path). The Verilog-A files are still valid — the HSPICE check is
   a deployment validation, not a training gate. Use `accept_quality` to proceed.
   **Important**: HSPICE failures do NOT cause the stage to fail — the subprocess
-  handles missing HSPICE by printing a warning and continuing (`run_model.py:809-813`).
+  handles missing HSPICE by printing a warning and continuing (`run_model.py`).
   Agent D should never call `fallback_to_previous` for HSPICE-only failures.
 
 ### Diagnostic Tools Available to Agent D

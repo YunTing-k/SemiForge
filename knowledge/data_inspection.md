@@ -323,7 +323,7 @@ When check-data hard-fails:
 
 Note: `_run_stage_diagnosis()` does NOT run for check-data failures — the check-data hard-failure path uses `break` before reaching the diagnosis code. Only Agent A's fallback decision runs.
 
-**Agent A prompt content**: Agent A's prompt (orchestrator.py:692) includes only `stage_result.error` (stderr, truncated to 2000 chars), NOT `stage_result.summary` (stdout last 10 lines which contains validate_dataset.py's JSON output). The agent must proactively `read_file dataset_validation.json` to see the actual validation results — the prompt alone is insufficient for diagnosis.
+**Agent A prompt content**: Agent A's prompt (orchestrator.py) includes only `stage_result.error` (stderr, truncated to 2000 chars), NOT `stage_result.summary` (stdout last 10 lines which contains validate_dataset.py's JSON output). The agent must proactively `read_file dataset_validation.json` to see the actual validation results — the prompt alone is insufficient for diagnosis.
 
 ### Edge Case: Artifact Stage Resume
 

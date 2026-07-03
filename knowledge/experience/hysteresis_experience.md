@@ -8,7 +8,7 @@
 ## Principle Insights
 
 ### Slow-Bank Amplitude Parameterization Metadata — PARTIALLY MITIGATED
-**Status**: The combined summary still stores `amp_parameterization` as a nested dict (`compose_v95_hysteresis_banks.py:161-168`). However, the VA export script (`export_srh_top2_regime_banked_va.py:819-826`) now INFERS the amplitude policy from formula output names rather than reading the metadata field — avoiding the silent `conservative` default bug. **The recommended pre-export assertion (`assert isinstance(bank['amp_parameterization'], str)`) has NOT been added.** Any downstream consumer that reads `amp_parameterization` from the combined summary and expects a scalar string will still encounter the nested dict. The advice to add the pre-export assertion remains valid.
+**Status**: The combined summary still stores `amp_parameterization` as a nested dict (`compose_v95_hysteresis_banks.py`). However, the VA export script (`export_srh_top2_regime_banked_va.py`) now INFERS the amplitude policy from formula output names rather than reading the metadata field — avoiding the silent `conservative` default bug. **The recommended pre-export assertion (`assert isinstance(bank['amp_parameterization'], str)`) has NOT been added.** Any downstream consumer that reads `amp_parameterization` from the combined summary and expects a scalar string will still encounter the nested dict. The advice to add the pre-export assertion remains valid.
 
 ### Single Random Initialization Can Account for ~0.0002 dex Gap in Non-Convex SRH-KAN Training
 **Category**: Principle Insight  
@@ -20,10 +20,10 @@
 **Actionable Advice**: Agent D should compare the gap magnitude: if `Δ(student_teacher_rmse_dec_mean) < 0.001` dex between fresh and baseline, increase `slow_restarts` by 2 (up to max 5). If `Δ > 0.003` dex, the gap is structural — investigate `slow_amp_parameterization` or `hidden_emission` instead. Do NOT waste retries on `epochs` or `slow_optimizer_policy` for sub-0.001 dex gaps.
 
 ### SRH State-Port Interface Versioning — FIXED (auto-detection exists)
-**Status**: FIXED. `validate_complete_device_hspice.py:40-65` (`state_access_contract()`) reads the deployed `.inc` file at runtime and detects 4-state vs 8-state by checking which subckt names are present. The port list is injected via `{state_ports}` f-string into the SPICE deck. **This entry is retained for historical reference.**
+**Status**: FIXED. `validate_complete_device_hspice.py` (`state_access_contract()`) reads the deployed `.inc` file at runtime and detects 4-state vs 8-state by checking which subckt names are present. The port list is injected via `{state_ports}` f-string into the SPICE deck. **This entry is retained for historical reference.**
 
 ### Missing amp_blend Submodule — FIXED (module exists)
-**Status**: FIXED. The `dg_tft_amp_blend` module exists in `dg_tft_portable_glue.va:5-11` and is included in all HSPICE complete-device validation decks (`validate_complete_device_hspice.py:104-106`). **This entry is retained for historical reference.**
+**Status**: FIXED. The `dg_tft_amp_blend` module exists in `dg_tft_portable_glue.va` and is included in all HSPICE complete-device validation decks (`validate_complete_device_hspice.py`). **This entry is retained for historical reference.**
 
 ### KAN Training on Pointwise Log-RMSE Alone Produces Non-Physical Oscillations in Predicted Waveforms
 **Category**: Principle Insight  
@@ -53,8 +53,8 @@
 **Generalization**: For hysteresis, this maps directly to the pre-analysis quality: if `step_log_rmse_median` is high (>0.08), the two-trap teacher fits are unreliable for some segments. The `it_step_response_fit.csv` should be examined for: (a) segments where `ok == False`, (b) segments where `log_rmse > 0.15`, (c) segments where `amp_fast` and `amp_slow` have same sign and similar magnitude (indicating the two-trap model collapsed to single-trap). Segments with these characteristics should be excluded or downweighted before SRH-KAN training.  
 **Actionable Advice**: Agent D should distinguish between two failure modes: (1) `step_log_rmse_median` near threshold (0.08-0.10) — the teacher fits are borderline; increasing `epochs` or `slow_restarts` may help the KAN generalize from imperfect labels; (2) `step_log_rmse_median` far above threshold (>0.12) — the teacher labels are structurally unreliable; parameter tuning will NOT help, and `fallback_to_previous` to re-generate the static model with corrected voltage alignment is the correct action. If many individual segments have `ok == False` or `log_rmse > 0.15` in `it_step_response_fit.csv`, the I-t data itself may need re-preparation — adjusting hysteresis training parameters cannot fix bad teacher labels.
 
-### KAN Correction Form — Engine Architecture → See Agent E
-Agent D cannot change the KAN correction architecture (additive vs multiplicative). The full diagnostic context has been moved to `final_interpret_experience.md` § Engine Architecture Diagnostics. In brief: different physical parameters need different correction forms — additive for thresholds/time-constants, multiplicative for mobility/gain, bounded sigmoid for dimensionless ratios. This is a future engine architecture consideration.
+### KAN Correction Form — Engine Architecture (Beyond Agent D's Control)
+Agent D cannot change the KAN correction architecture (additive vs multiplicative). In brief: different physical parameters need different correction forms — additive for thresholds/time-constants, multiplicative for mobility/gain, bounded sigmoid for dimensionless ratios. This is a future engine architecture consideration.
 
 ## Tuning Patterns
 

@@ -41,7 +41,7 @@ On failure, **Agent B** is spawned with four stage-specific tools: `adjust_param
 `accept_quality`, and `inspect_xlsx`. It also has all standard SubAgent tools (`read_file`, `glob_file`,
 `bash`, `grep_file`, `write_file`, `edit_file`). Agent B's fallback target is **check-data**.
 
-> **CRITICAL — Knowledge Injection Status**: This knowledge file is currently NOT injected into Agent B's system prompt. `_spawn_modeling_agent_inner` (orchestrator.py:1376) builds a generic prompt with error text and tool options but contains zero engine-specific knowledge. Agent B starts blind — it must discover everything through `read_file` calls. Until the knowledge loader is integrated (TODO Step 9), this document's tuning guidance is for human reference only.
+> **CRITICAL — Knowledge Injection Status**: This knowledge file is currently NOT injected into Agent B's system prompt. `_spawn_modeling_agent_inner` (orchestrator.py) builds a generic prompt with error text and tool options but contains zero engine-specific knowledge. Agent B starts blind — it must discover everything through `read_file` calls. Until the knowledge loader is integrated (TODO Step 9), this document's tuning guidance is for human reference only.
 
 ### Principles: EKV Level-2 Parameter Extraction
 

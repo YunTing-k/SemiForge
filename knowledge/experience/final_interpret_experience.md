@@ -21,7 +21,7 @@
 3. Agent E should recommend a two-tier delivery model: **always save numerical checkpoints and metrics** (Tier 1), and separately gate the Verilog-A/HSPICE deployment artifacts (Tier 2). Tier 1 should never be empty regardless of gate status.
 
 ### Deployment Error Decomposition: Three-Layer vs Conflated — FIXED (reference model corrected)
-**Status**: FIXED. The HSPICE validation at `dg_tft_full_model.py:16285` now uses `_temporary_deployment_symbolic_nets` context manager to swap in symbolic students as the Python reference. The smoke report documents `"python_reference_model": "deployed_symbolic_students"`. **The three-layer decomposition advice remains valuable for Agent E's reporting and is retained below.**
+**Status**: FIXED. The HSPICE validation at `dg_tft_full_model.py` now uses `_temporary_deployment_symbolic_nets` context manager to swap in symbolic students as the Python reference. The smoke report documents `"python_reference_model": "deployed_symbolic_students"`. **The three-layer decomposition advice remains valuable for Agent E's reporting and is retained below.**
 
 ### Method Reuse vs Artifact Reuse: Process Portability ≠ Result Portability
 **Category**: Principle Insight
@@ -76,7 +76,7 @@
 3. Agent E should recommend that the pipeline implement **artifact staging**: save intermediate checkpoints after each major phase (base-PKAN, residual, CV, symbolization pre-HSPICE) so that later fixes don't require re-running earlier phases whose inputs haven't changed.
 
 ### Pipeline Self-Standing Verification — FIXED (hardcoded paths removed)
-**Status**: FIXED. Grep for `meizikang` across the entire `src/` directory returns zero matches. `assemble_release.py:94` proactively sanitizes any residual absolute paths: `if text.startswith("C:\\Users\\")` → replaces with `<historical_provenance_path_not_required_for_runtime>`. **This entry is retained for historical reference.**
+**Status**: FIXED. Grep for `meizikang` across the entire `src/` directory returns zero matches. `assemble_release.py` proactively sanitizes any residual absolute paths: `if text.startswith("C:\\Users\\")` → replaces with `<historical_provenance_path_not_required_for_runtime>`. **This entry is retained for historical reference.**
 
 ---
 
