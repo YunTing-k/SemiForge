@@ -834,4 +834,4 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 
 - When modifying `param_defs` or engine argparse → sync `knowledge/*.md` + check `knowledge/experience/*.md` for outdated entries
 - New Codex session JSONL → run Pass 1-3 pipeline, 5-agent parallel extraction
-- Entries marked `[REMOVED]`/`[OUTDATED]`/`[FIXED]` in experience files are retained for historical context, not used as agent operational guidance
+- Outdated entries in experience files are **deleted**, never retained. `[REMOVED]`/`[OUTDATED]`/`[FIXED]` markers are transitional only.

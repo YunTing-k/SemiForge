@@ -886,4 +886,4 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 
 - 改 `param_defs` 或引擎 argparse → 同步更新 `knowledge/*.md` + 检查 `knowledge/experience/*.md` 有无过时条目
 - 新 Codex 会话 JSONL → 用 Pass 1-3 pipeline 提取，5-agent parallel 写入
-- experience 中标注 `[REMOVED]`/`[OUTDATED]`/`[FIXED]` 的条目保留历史上文，不作为 Agent 操作依据
+- experience 中过时条目（问题已被引擎修复）**直接删除**，不保留。`[REMOVED]`/`[OUTDATED]`/`[FIXED]` 仅作过渡标记。

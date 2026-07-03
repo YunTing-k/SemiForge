@@ -47,29 +47,6 @@ The manual scipy least_squares fit (similar structure to the pipeline engine) al
 **Generalization**: This affects any device where the off-state current hits the measurement system's noise/resolution floor. The EKV model's exponential off-state behavior is physically correct for an ideal device, but the measurement system adds a constant floor. The fitting engine already has Ioff0 and Gleak_ds to model this, and they are active regardless of the 10 Ω Rs0/Rd0 threshold — the threshold only gates whether the iterative contact-resistance solver runs, not whether leakage terms are included. The issue is more severe when subthreshold weighting is high (default weight = 2.35 for |ID| in [-12.3, -8.7] range) because the optimizer is told to prioritize fitting a region where the model has limited expressivity.
 **Actionable Advice**: Agent B should NOT increase max_nfev_scale to fix high subthreshold RMS — more iterations cannot overcome the measurement floor. Instead: (1) Check iv_subthreshold_rms_log10_error_dec vs iv_on_rms_log10_error_dec in fitted_params.json. If only the subthreshold metric is high (>0.5) while on-region is fine (<0.15), the floor is the issue. (2) Check if fitted Ioff0 is at its lower bound — if so, the optimizer could not find a useful leakage floor within the parameter bounds (Ioff0: [1e-16, 5e-11]). (3) Accept subthreshold error if it's solely from the deep-off floor region (-12.5 to -13.5 log|ID|). The quality threshold (0.35) was set with the total IV RMS in mind — a subthreshold-only contribution should not block progress if on-region fit is excellent. Use `accept_quality` with justification. (4) Consider setting iv_stage_alignment to "off" if alignment shifts are artificially bringing off-region points into the subthreshold weighting window.
 
-### [REMOVED — Code Verification] qsolve(y) hard-clip at y=80 does not exist in current engine
-Code audit confirmed: `qsolve()` in `fit_physical_kernel.py` uses `np.clip(y, -80.0, 2.0)` — the `-80` is a **lower** bound for weak-inversion exp() underflow prevention, NOT an upper clip at y=80. Strong inversion uses `q = 0.5*y + 1e-12` with no upper clip. The claim of a `min(y, 80)` upper clip was factually incorrect — it has never existed in any commit. This entry was removed.
-
-### [OUTDATED — Engine No Longer Fits Rs0/Rd0] Contact Resistance Iteration Jitter
-
-**Diagnostic**: (Historical — cannot occur with current engine.) IV curves (especially IDVD) show sawtooth/zigzag oscillations in strong conduction region. Smooth intrinsic current, jagged external Ids.
-
-**Agent Impact**: **None.** Rs0/Rd0 default to 1.0 and are NOT in any fitting stage parameter list — they are held fixed, not fitted by scipy. The direct calculation path (no iterative solver) is always used since both are < 10Ω. The 10Ω threshold, 30-step iteration, and 0.55/0.45 relaxation are engine-hardcoded.
-
-**Why Outdated**: The engine historically allowed fitting Rs0/Rd0, which could push them above the 10Ω threshold and activate an unstable iterative solver path. The fix was to remove them from all fitting stages and hold them at fixed defaults (1.0). This entry is retained to document the pathology in case someone re-adds Rs0/Rd0 to a stage parameter list.
-
-**Evidence**: The optimizer pushed Rd0 large, the 30-step solver oscillated → produced sawtooth IV. Fix was to stop fitting Rs/Rd and use Ioff0/Gleak_ds for off-state leakage instead. IV RMS dropped from ~1 dec to 0.24 dec.
-
-### [OUTDATED — Engine No Longer Fits Vmodsat/Vknee] Gate Saturation IV-CV Conflict
-
-**Diagnostic**: (Historical — cannot occur with current engine.) IV saturation improves but CV develops artificial peaks+decline in strong inversion instead of rising to plateau. Vmodsat values in `fitted_params.json` are at non-default low values.
-
-**Agent Impact**: **None.** Vmodsat_t/b and Vknee_t/b default to 1.0e6 (effectively "no saturation" — `one_sided_sat()` returns x unchanged) and are NOT in any fitting stage parameter list. They are held fixed, not fitted by scipy. No INI key exists for them.
-
-**Why Outdated**: The engine historically included Vmodsat in fitting stages, which allowed the optimizer to lower the saturation knee and produce unphysical CV peaks. The fix was to freeze them at large defaults (1e6) and let mobility/CLM handle saturation through the intrinsic current equation. The `one_sided_sat()` function is structurally shared between IV and CV paths, but with Vmodsat at 1e6 it acts as a pass-through.
-
-**Evidence**: The optimizer pushed Vmodsat_t to lower bound → CV developed spurious peaks. Fix was to freeze Vmodsat at large defaults and let mobility/CLM handle saturation.
-
 ## Tuning Patterns
 
 ### When to Reduce max_cv_points (Not Increase max_nfev_scale) for IV Quality
@@ -101,9 +78,5 @@ Code audit confirmed: `qsolve()` in `fit_physical_kernel.py` uses `np.clip(y, -8
 **Evidence**: The user explicitly deprioritized vds — cgg should be fitted first, then cbg and ctg, with vds considered lower priority. A systematic data quality audit revealed: cgg and cbg raw data were clean; ctg had two minor issues (especially VBG=3V with two large jump points, VBG=0V with a few non-monotonic points); all three vds curves were noticeably rough with many negative slopes and large jumps. The core CV problem was not that all data was bad, but that vds and the gate-CV charge kernel target different measurement objects — forcing them together would degrade the general model. The refined strategy was to exclude vds data (port-mismatched) and down-weight rather than delete ctg/cbg/cgg curves with jump points.
 **Generalization**: This applies whenever CV data includes measurement configurations beyond simple gate-to-channel capacitance (Cgg, Cbg, Ctg): VDS-terminal transcapacitance, split-CV with floating terminals, or pulsed CV with different pulse conditions. The engine's terminal_charges() model is designed for quasi-static gate CV — it cannot represent drain-coupled transcapacitance without a full non-quasi-static (NQS) model or explicit transcapacitance matrix. Including incompatible CV data will degrade ALL CV metrics, not just the mismatched curves.
 **Actionable Advice**: Agent B should: (1) Use `inspect_xlsx` on CV_train.xlsx to identify sheet types. VDS sheets (where VDS is a sweep variable) are transcapacitance measurements — they will always fit poorly with the current gate-CV model. (2) Check v92_phase1_cv_data_decisions.csv — the engine already applies automatic filtering (drops incomplete series, single steps >20% span). If VDS sheets were kept by the filter, they are still being included in the fitting objective. (3) If CV RMS is high but cgg/cbg/ctg individually have reasonable RMS, the problem is concentrated in vds — use `accept_quality` with documentation. (4) If CV RMS is high across ALL sheets, the problem is not data quality but model mismatch — the Cox ratio, Vth values, or trap model parameters are wrong. Check v92_phase1_cv_gate_orientation.json for potential auto-swap errors.
-
-## Session Meta-Notes
-
-Key observations from manual development sessions mirroring the engine's fit-physical approach: (a) the manual scipy fitting methodology (EKV formalism, 6-stage sequential optimization, CV shared trap fit) mirrors the engine's pipeline approach, making optimizer behavior, CV/IV coupling, and numerical stability insights directly transferable; (b) ~50 CV model iterations covered trap charge, terminal parasitic, DOS broadening, and distributed charge — yet the IV core remained stable at ~0.24 dec RMS throughout, confirming fit-physical IV robustness; (c) KAN correction effectiveness depends on physical kernel quality — when the physical baseline is inaccurate, downstream KAN cannot reliably recover and may introduce non-physical oscillations.
 
 (End of file)

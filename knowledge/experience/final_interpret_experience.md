@@ -14,9 +14,6 @@
 2. Agent E should check whether key artifacts (checkpoints, Verilog-A files, plots) exist in the output directory. Missing artifacts indicate hard failure (subprocess crash), not gate failure — flag these as real failures.
 3. Agent E should recommend that future pipeline designs use a two-tier delivery model: **always save numerical checkpoints and metrics** (Tier 1), and separately gate the Verilog-A/HSPICE deployment artifacts (Tier 2).
 
-### Deployment Error Decomposition: Three-Layer vs Conflated — FIXED (reference model corrected)
-**Status**: FIXED. The HSPICE validation at `dg_tft_full_model.py` now uses `_temporary_deployment_symbolic_nets` context manager to swap in symbolic students as the Python reference. The smoke report documents `"python_reference_model": "deployed_symbolic_students"`. **The three-layer decomposition advice remains valuable for Agent E's reporting and is retained below.**
-
 ### Method Reuse vs Artifact Reuse: Process Portability ≠ Result Portability
 **Category**: Principle Insight
 **Stage(s)**: final-report (Agent E), all stages with modeling agents (B/C/D)
@@ -52,9 +49,6 @@
 1. Agent E should explicitly track the **iteration count** and **cumulative wall-clock time** of optimization attempts (sum per-attempt `duration_s` from `operation_log.json` via bash). If the same stage has been retried >5 times or cumulative time >4 hours, Agent E should recommend delivery with current state and explicit documentation of which gates marginally failed.
 2. Agent E should distinguish between **blocking failures** (no trained model exists, training crashed) and **marginal failures** (model trained, gates missed by <10% of threshold margin). Marginal failures on non-deployment gates should trigger a recommendation to deliver with caveats, not to retrain.
 3. Agent E should recommend that the pipeline implement **artifact staging**: save intermediate checkpoints after each major phase (base-PKAN, residual, CV, symbolization pre-HSPICE) so that later fixes don't require re-running earlier phases whose inputs haven't changed.
-
-### Pipeline Self-Standing Verification — FIXED (hardcoded paths removed)
-**Status**: FIXED. Grep for `meizikang` across the entire `src/` directory returns zero matches. `assemble_release.py` proactively sanitizes any residual absolute paths: `if text.startswith("C:\\Users\\")` → replaces with `<historical_provenance_path_not_required_for_runtime>`. **This entry is retained for historical reference.**
 
 ---
 
