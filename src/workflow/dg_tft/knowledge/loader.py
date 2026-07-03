@@ -10,17 +10,18 @@ Description: Expert knowledge loader for DG-TFT modeling agents.
     Reads pre-written knowledge .md files and builds agent system prompts
     with user preferences and expert knowledge blocks injected.
 
-    load_knowledge(stage) → raw pre-written knowledge text
-    build_agent_prompt(stage, user_preferences) → preferences + knowledge blocks
-    load_discovered_summaries(stage) → aggregated discovered-summary text (progressive disclosure)
+    Two knowledge sources, injected separately:
+      · knowledge/*.md        — code-derived reference (parameters, engine behavior, decision frameworks)
+      · knowledge/experience/*.md — practical patterns from real sessions (diagnostic signals, tuning recipes)
 
-    Two knowledge types, different injection strategies:
-      · Pre-written (knowledge/*.md)        — curated, bounded → full text in system prompt
-      · Discovered (knowledge/_discovered/) — grows with runs   → summaries injected, details on-disk (Agent read_file)
+    load_knowledge(stage)   → raw pre-written knowledge text
+    load_experience(stage)  → raw experience text
+    build_agent_prompt(stage, user_preferences) → preferences + knowledge + experience blocks
 
 Revision:
 ---------
 2026.6.30      Yu Huang      1.0      Initial implementation (3.5)
+2026.7.03                  1.1      Add experience/ directory support (Step 8+)
 """
 from __future__ import annotations
 
@@ -37,6 +38,14 @@ _STAGE_KNOWLEDGE_MAP: dict[str, str] = {
     "final-report": "final_interpret.md",
 }
 
+_STAGE_EXPERIENCE_MAP: dict[str, str] = {
+    "check-data": "data_inspection_experience.md",
+    "fit-physical": "physical_kernel_experience.md",
+    "train-static": "static_model_experience.md",
+    "train-hysteresis": "hysteresis_experience.md",
+    "final-report": "final_interpret_experience.md",
+}
+
 # ── Prompt block templates ──────────────────────────────────────────
 
 _USER_PREFERENCES_BLOCK = """\
@@ -46,15 +55,21 @@ _USER_PREFERENCES_BLOCK = """\
 """
 
 _EXPERT_KNOWLEDGE_BLOCK = """\
-==== EXPERT KNOWLEDGE (DO NOT OUTPUT THIS SECTION) ====
+==== EXPERT KNOWLEDGE (code-derived reference — parameters, engine behavior, decision frameworks) ====
 {expert_knowledge}
 ==== END EXPERT KNOWLEDGE ====
+"""
+
+_EXPERIENCE_BLOCK = """\
+==== EXPERIENCE (practical patterns from real sessions — diagnostic signals, tuning recipes, tool choices) ====
+{experience}
+==== END EXPERIENCE ====
 """
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def _default_knowledge_dir() -> Path:
-    """Project-root knowledge/ directory (expert + discovered knowledge)."""
+    """Project-root knowledge/ directory (expert + experience knowledge)."""
     return Path(__file__).resolve().parent.parent.parent.parent.parent / "knowledge"
 
 
@@ -62,12 +77,14 @@ def load_knowledge(
     stage: str,
     knowledge_dir: Optional[str | Path] = None,
 ) -> str:
-    """Load expert knowledge text for a given pipeline stage.
+    """Load code-derived expert knowledge text for a given pipeline stage.
+
+    Reads from ``knowledge/*.md``.
 
     Args:
         stage: Stage name (e.g. "fit-physical", "train-static").
         knowledge_dir: Path to the knowledge directory. If None, uses
-                       the directory containing this loader module.
+                       the project-root knowledge/ directory.
 
     Returns:
         Knowledge file content as a string, or empty string if the
@@ -85,30 +102,58 @@ def load_knowledge(
     return file_path.read_text(encoding="utf-8").strip()
 
 
+def load_experience(
+    stage: str,
+    knowledge_dir: Optional[str | Path] = None,
+) -> str:
+    """Load practical experience patterns for a given pipeline stage.
+
+    Reads from ``knowledge/experience/*.md``.
+
+    Args:
+        stage: Stage name (e.g. "fit-physical", "train-static").
+        knowledge_dir: Path to the knowledge directory. If None, uses
+                       the project-root knowledge/ directory.
+
+    Returns:
+        Experience file content as a string, or empty string if the
+        stage has no mapped experience file or the file does not exist.
+    """
+    filename = _STAGE_EXPERIENCE_MAP.get(stage)
+    if filename is None:
+        return ""
+
+    root = Path(knowledge_dir) if knowledge_dir else _default_knowledge_dir()
+    file_path = root / "experience" / filename
+    if not file_path.is_file():
+        return ""
+
+    return file_path.read_text(encoding="utf-8").strip()
+
+
 def build_agent_prompt(
     stage: str,
     user_preferences: str = "",
     knowledge_dir: Optional[str | Path] = None,
     discovered_dir: Optional[str | Path] = None,
 ) -> str:
-    """Build the preferences + expert knowledge portion of an agent system prompt.
+    """Build the preferences + knowledge + experience portion of an agent system prompt.
 
-    Returns a string containing the USER PREFERENCES and EXPERT KNOWLEDGE
+    Returns a string containing the USER PREFERENCES, EXPERT KNOWLEDGE, and EXPERIENCE
     blocks (only including non-empty sections), suitable for injection
     into a stage-specific agent prompt template.
 
-    The EXPERT KNOWLEDGE block combines:
-      1. Pre-written knowledge (knowledge/*.md) — full text, always loaded
-      2. Discovered knowledge summaries (knowledge/_discovered/*_summary.md)
-         — aggregated per-stage, injected for progressive disclosure
+    Block order:
+      1. USER PREFERENCES — modelling priorities from the user
+      2. EXPERT KNOWLEDGE — code-derived reference (knowledge/*.md)
+      3. EXPERIENCE — practical patterns from real sessions (knowledge/experience/*.md)
 
     Args:
         stage: Stage name.
         user_preferences: User-specified modeling priorities. If empty,
                           the USER PREFERENCES block is omitted.
         knowledge_dir: Optional knowledge directory path.
-        discovered_dir: Optional discovered knowledge directory path. If
-                        provided, summaries are aggregated and appended.
+        discovered_dir: Optional discovered knowledge directory path (reserved for 4.4).
 
     Returns:
         Formatted string for injection into an agent system prompt.
@@ -121,24 +166,26 @@ def build_agent_prompt(
             user_preferences=user_preferences.strip(),
         ))
 
-    # ── pre-written knowledge (full text) ──
+    # ── code-derived knowledge ──
     pre_written = load_knowledge(stage, knowledge_dir=knowledge_dir)
+    if pre_written:
+        parts.append(_EXPERT_KNOWLEDGE_BLOCK.format(
+            expert_knowledge=pre_written,
+        ))
 
-    # ── discovered knowledge summaries (progressive disclosure) ──
+    # ── practical experience patterns ──
+    experience = load_experience(stage, knowledge_dir=knowledge_dir)
+    if experience:
+        parts.append(_EXPERIENCE_BLOCK.format(
+            experience=experience,
+        ))
+
+    # ── discovered knowledge summaries (progressive disclosure, reserved for 4.4) ──
     discovered = ""
     if discovered_dir:
         discovered = load_discovered_summaries(stage, discovered_dir=discovered_dir)
-
-    combined = pre_written or ""
     if discovered:
-        if combined:
-            combined += "\n\n## Discovered Knowledge (from previous runs)\n\n"
-        combined += discovered
-
-    if combined:
-        parts.append(_EXPERT_KNOWLEDGE_BLOCK.format(
-            expert_knowledge=combined,
-        ))
+        parts.append(discovered)
 
     if not parts:
         return ""
