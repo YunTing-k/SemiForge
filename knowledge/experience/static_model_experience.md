@@ -49,7 +49,7 @@
 **Actionable Advice**:
   1. **When `reset_base_from_physical_fit=True`**: Set `warm_start_base_pkan_lr_mult=1.0` (or omit it entirely — same effect). Set `base_iv_learning_rate=0.002` (v90 proven value) and do not apply any LR multiplier during base IV PKAN phase. During the later joint CV phase, since `finetune_base_pkan=False` (v96 default), the base PKAN will be frozen anyway — the warm_start multiplier is irrelevant.
   2. **When `reset_base_from_physical_fit=False`** (resume from checkpoint): Set `warm_start_base_pkan_lr_mult=0.035` and `finetune_base_pkan=True`. This protects the pre-trained PKAN from early destruction when CV loss is introduced. The multiplier ramps from 0.035 to `base_pkan_lr_mult` over the warm-up period.
-   3. **Automatic detection**: The engine/pipeline should auto-detect the mode and set the multiplier. If `reset_base_from_physical_fit` is True (or `--reset-base-from-physical-fit` flag is present), override `warm_start_base_pkan_lr_mult` to 1.0 regardless of INI value. Evidence: multiple turns were spent debugging LR mismatch because the INI had the wrong default for the fresh-start scenario.
+   3. **Detection**: When `reset_base_from_physical_fit` is True, the effective LR must be 1.0 regardless of INI value — multiple iterations were wasted debugging LR mismatch caused by the wrong default.
    4. **What NOT to do**: Do not blindly copy v90's INI config (which has `warm_start_base_pkan_lr_mult=0.035`) to a fresh-start deployment. This is the exact "copy v90, get worse results" problem the user identified. Do not set `base_iv_learning_rate` above 0.005 — even for fresh-start, rates >0.005 caused oscillations. LR=1.0 was used for a quick test, but the final settled value was 0.002.
 
 ---
@@ -97,7 +97,7 @@
 ---
 
 ### CV Finalize Polish Silently Degrading Accepted Models — OUTDATED (FLAG EXISTS)
-**Status**: FIXED as of engine v96. The `--skip-post-train-cv-polish` flag exists at `dg_tft_full_model.py` and is actively used in the non-finalize train path (line 18775). The orchestrator should pass this flag during finalize/resume modes. **This entry is retained for historical reference only — the flag is available and should be used.**
+**Status**: FIXED as of engine v96. The `--skip-post-train-cv-polish` flag exists at `dg_tft_full_model.py` and is actively used in the non-finalize train path. The orchestrator should pass this flag during finalize/resume modes. **This entry is retained for historical reference only — the flag is available and should be used.**
 
 ---
 
@@ -111,11 +111,8 @@
 There is NO separate "coarse pass then fine pass" two-stage architecture. `choose_safe_joint_cv_scales` runs a single exhaustive 2D grid search over `(parameter_scale × mode × residual_scale)` using `joint_cv_passivity_scan_points=80`.
 **Context**: Agent C observes that `safe_cv_residual_scale=0` despite `residual_cv_rms` appearing reasonable in intermediate training logs. The scan report shows that a joint scan accepted a `cv_residual_scale` value, but the final report has `selected_cv_residual_mode="off"` and `safe_cv_residual_scale=0.0`. The charge conservation / passivity check on the full grid found violations.
 **Pattern**:
-  1. **Understand the two-stage scan**: The `joint_cv_safe_scale_search` runs a coarse 2D grid over (parameter_scale × residual_scale) using a reduced set of passivity checkpoints (48 points). At each grid point, it checks charge sum, cross-reciprocity (`max_cross_reciprocity_error`), and diagonal negativity. The coarse scan selects the best (parameter_scale, residual_scale) pair.
-  2. **Identify the rejection bug**: After coarse scan accepts a pair, the fine scan (full 96-point passivity grid) is run on just that pair. If the fine scan finds violations (e.g., `max_cross_reciprocity_error` exceeds tolerance), the OLD code immediately sets residual_scale=0 instead of searching downward for a smaller-but-nonzero scale. This is the "zero-out on fine rejection" bug.
-  3. **Apply the rescan fix**: Change the scan logic to: (a) run coarse scan to select parameter_scale (ignore coarse residual_scale), (b) fix parameter_scale at the selected value, (c) on the FULL 96-point passivity grid, scan all residual_scale values from 0.0 upward, (d) select the LARGEST residual_scale that passes fine-grid passivity. This ensures the scan finds the true maximal safe scale rather than yielding binary 1.0 or 0.0.
-   4. **Check for parameter_scale issues**: If even with the rescan fix, no non-zero residual scale passes fine-grid passivity, the problem may be that the coarse scan selected a parameter_scale that already violates passivity on the fine grid. Evidence: even with residual=0, joint coarse scan selected parameter scale=0.3 which already had max cross-reciprocity error of 6.53e‑15. In this case, re-run with a more conservative parameter_scale scan (smaller upper bound).
-  5. **Use parameter-only scan as backup**: If the joint scan consistently fails, fall back to parameter-only safety scan (`safe_cv_parameter_scale` selection) with `joint_cv_safe_scale_search=False`, then separately scan CV residual scale with fixed parameter_scale.
+   1. **Detect the bug**: If the scan report accepts a `cv_residual_scale` value but the final metrics show `safe_cv_residual_scale=0` and `selected_cv_residual_mode="off"`, the rejection-without-downward-search bug is active.
+   2. **Agent Impact**: **None.** Agent C cannot change the scan logic (engine code). The corrective action is `fallback_to_previous` or `accept_quality`.
 **Key Parameters**:
   - `joint_cv_safe_scale_search`: Set to `True` only if CV passivity is likely marginal. In most cases, `False` (parameter-then-residual sequential scan) is more robust.
   - `safe_scale_steps`: Default 8. For the fine-grid rescan after parameter_scale selection, use the same number of steps but with a finer range (0.0 to 1.0) to avoid wasting time on scales that already failed.
@@ -139,7 +136,7 @@ There is NO separate "coarse pass then fine pass" two-stage architecture. `choos
 ---
 
 ### v90 Symbolic Pipeline: Key Default Parameter Differences — OUTDATED (ALL RESTORED)
-**Status**: FIXED as of current `param_defs.py`. All three "drifted" defaults have been restored to v90 values: `iv_residual_stage_linear_weight=0.25` (param_defs.py), `iv_residual_stage_deriv_curves=36` (param_defs.py), `iv_residual_stage_shape_period=3` (param_defs.py). Engine argparse defaults also match (e.g., line 17234: `default=0.25`). **This entry is retained for historical reference only — the parameter values are already corrected.**
+**Status**: FIXED as of current `param_defs.py`. All three "drifted" defaults have been restored to v90 values: `iv_residual_stage_linear_weight=0.25` (param_defs.py), `iv_residual_stage_deriv_curves=36` (param_defs.py), `iv_residual_stage_shape_period=3` (param_defs.py). Engine argparse defaults also match. **This entry is retained for historical reference only — the parameter values are already corrected.**
 
 ---
 

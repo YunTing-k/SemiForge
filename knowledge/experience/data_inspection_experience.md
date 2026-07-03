@@ -1,6 +1,6 @@
 # Data Inspection Experience
 
-> **Agent A tools**: `fallback_to_previous` (→ Verifier), `read_file`, `glob_file`, `bash`, `grep_file`. **No `adjust_params`** — check-data has no INI parameters.  
+> **Agent A tools**: `fallback_to_previous` (→ Verifier), `read_file`, `glob_file`. **No `adjust_params`** — check-data has no INI parameters.  
 > **Can influence**: ONLY the fallback decision — is the error in the data (→ fallback to Verifier/Preparer) or environmental (→ no fallback, terminate)?  
 > **Principle**: all advice below answers one question: fallback or not?
 

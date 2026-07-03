@@ -8,7 +8,11 @@
 ## Principle Insights
 
 ### Slow-Bank Amplitude Parameterization Metadata — PARTIALLY MITIGATED
-**Status**: The combined summary still stores `amp_parameterization` as a nested dict (`compose_v95_hysteresis_banks.py`). However, the VA export script (`export_srh_top2_regime_banked_va.py`) now INFERS the amplitude policy from formula output names rather than reading the metadata field — avoiding the silent `conservative` default bug. **The recommended pre-export assertion (`assert isinstance(bank['amp_parameterization'], str)`) has NOT been added.** Any downstream consumer that reads `amp_parameterization` from the combined summary and expects a scalar string will still encounter the nested dict. The advice to add the pre-export assertion remains valid.
+**Status**: The combined summary still stores `amp_parameterization` as a nested dict. However, the VA export script now infers the amplitude policy from formula output names rather than reading the metadata field, avoiding the silent `conservative` default bug. The recommended pre-export assertion has not been added.
+
+**Agent Impact**: **None.** Agent D cannot fix the serialization code or add assertions.
+
+**Correct Action**: If HSPICE dynamic transparency check fails but the export script should have inferred the correct policy → `fallback_to_previous` (→ train-static). Metadata corruption is structural, not fixable by parameter tuning.
 
 ### Single Random Initialization Can Account for ~0.0002 dex Gap in Non-Convex SRH-KAN Training
 **Category**: Principle Insight  
@@ -34,15 +38,16 @@ Pure physical kernel CV curves were smooth and monotonic; adding a parameter-KAN
 **Generalization**: For the hysteresis SRH-KAN, this means: the student-teacher RMSE metric (`student_teacher_rmse_dec_mean`) is a necessary but NOT sufficient quality indicator. A low RMSE with high `endpoint_drift_error` or with visibly oscillatory I(t) predictions indicates that the KAN is "cheating" — using spline flexibility to fit noise rather than learning the physical tau/amplitude relationship.  
 **Actionable Advice**: Agent D must not rely solely on `student_teacher_rmse_dec_mean` for quality decisions. When evaluating whether to accept quality or adjust parameters, also check: (a) `endpoint_drift_error_mean`/`p95` — if these are near threshold while RMSE is excellent, the KAN may be oscillating; (b) the per-segment metrics in `srh_top2_regime_bank_metrics.csv` — look for segments where the KAN prediction has higher local curvature than the teacher fit; (c) increase `slow_restarts` rather than `epochs` if shape quality is the concern, since multi-restart selects for deployment-quality rather than pure RMSE. The existing `deployment_score` (waveform RMSE + shape + distill quality + teacher fidelity) already partially addresses this — Agent D should trust it over raw RMSE.
 
-### Edge-Level Symbolic MSE Does Not Predict Terminal-Level Waveform Quality After Replacement
+### Edge-Level Symbolic MSE Does Not Predict Terminal Waveform Quality After Replacement
 **Category**: Principle Insight  
-**Stage(s)**: train-hysteresis (symbolic export phase), train-static (symbolic export phase)  
-**Symptom**: The per-edge Top-1 (or Top-2 for hysteresis) symbolic MSE values all pass their thresholds (e.g., <0.015 per edge), but after symbolic replacement, the terminal-level predicted I(t) waveform diverges significantly from the numeric KAN prediction — especially at bias extremes or regime boundaries. The per-edge metric appears healthy, but the cumulative symbolic approximation error creates a qualitatively different waveform.  
-**Root Cause**: Each KAN edge operates on intermediate features that are nonlinear combinations of bias voltages. The edge-level MSE measures the difference between the raw spline edge and its symbolic surrogate evaluated at the same intermediate feature value. However, these feature values are produced by the preceding layer, which is ALSO being symbolically replaced. The errors compound through the 2-layer KAN: a small edge-MSE in layer 0 changes the feature, which shifts the input to layer 1, which then evaluates a different symbolic edge at a different point than the one it was fitted at. The terminal-level waveform quality (measured in log10(ID) or log10(τ)) reflects this compounding, not individual edge quality.  
-Top-1 symbolization showed clear degradation — terminal error increased despite passing edge-level gates. The KAN spline edges were not yet closely approximating single common functions, and the cumulative approximation error through the 2-layer network degraded output quality. The solution was: ① After edge-wise symbolic replacement, re-evaluate on full measured data (terminal-level gate), ② Apply L-BFGS + Adam fine-tuning on the symbolic model with the same loss function used for training, ③ Reject symbolic replacements that increase terminal error by more than a threshold vs the numeric model.  
-In the static model, edge-level Top-1 MSE gate passed (all edges <0.015), but terminal current RMS degraded from 0.082 dex to 0.122 dex — a 49% increase.  
-**Generalization**: For hysteresis, the existing `strict_top2_symbolic_topology` acceptance gate only verifies that edges CAN be replaced, not that the replacement preserves waveform quality. The SRH-KAN's deployment checkpoint should include a terminal-level gate: compare numeric-KAN and symbolic-KAN predictions on held-out I-t step transients.  
-**Actionable Advice**: When Agent D sees `strict_top2_symbolic_topology` pass but deployment waveforms look wrong (or HSPICE equivalence fails), the problem is likely cumulative symbolic approximation error. Increase `epochs` to train edge shapes that are more "single-function-like" (higher similarity to symbolic primitives during training), then redo symbolic replacement. Do NOT increase `hidden_capture`/`hidden_emission` — larger networks have MORE edges, making cumulative error worse, not better. The existing `symbolic_training_weight` and similarity loss in the static model are the right pattern; the hysteresis engine should apply the same approach.
+**Stage(s)**: train-hysteresis (symbolic export phase)  
+**Symptom**: Per-edge Top-2 symbolic MSE values pass thresholds but terminal-level I(t) waveform diverges significantly from numeric KAN predictions, especially at bias extremes or regime boundaries.
+
+**Root Cause**: Cumulative approximation error through the 2-layer KAN — edge-level MSE in layer 0 changes feature values, which shifts inputs to layer 1's symbolic edges, producing compounding errors invisible to per-edge metrics.
+
+**Agent Impact**: **None.** Agent D cannot add terminal-level quality gates to the symbolic export engine.
+
+**Correct Action**: If symbolic export passes edge-level gates but HSPICE equivalence fails → `accept_quality` (the numeric model is accurate; symbolic deployment error may be acceptable). Do NOT increase `epochs` for this — more training of numeric KAN does not reduce cumulative symbolic approximation error. Do NOT increase `hidden_capture`/`hidden_emission` — larger networks have MORE edges, making cumulative error worse.
 
 ### Physical Model Insufficiency Causes KAN to Produce Non-Physical Corrections, Not Training Failure
 **Category**: Principle Insight  
@@ -78,36 +83,33 @@ Agent D cannot change the KAN correction architecture (additive vs multiplicativ
 ### Amplitude Policy Validation Must Occur Before VA Export, Not After HSPICE Failure
 **Category**: Tuning Pattern  
 **Stage(s)**: train-hysteresis (assembly → VA export transition)  
-**Context**: The combined hysteresis summary (`srh_top2_regime_bank_summary.json`) is written by the training script, then read by the export script. The export script reads amplitude parameterization metadata to generate the Verilog-A module body. If the metadata is malformed, the generated VA uses the wrong amplitude equations but outputs no error — the failure only surfaces when HSPICE detects Python→VA mismatch. This wastes a full HSPICE run (~several minutes).  
-**Pattern**:
-1. After training completes, read `srh_top2_regime_bank_summary.json` and inspect the per-group `amp_parameterization` field.
-2. Assert each group's value is a flat string: `"independent"` or `"conservative"`. If any value is a dict, nested object, or missing: refuse export.
-3. Cross-check: the per-regime slow groups should all have identical `amp_parameterization` in the combined summary. If one slow group is `"independent"` and another is `"conservative"`, there's a metadata merge bug.
-4. Only after these assertions pass, proceed to VA export and HSPICE.
-**Key Parameters**: N/A — this is a metadata validation pattern, not a parameter tuning pattern.  
-**Success Indicator**: All per-group `amp_parameterization` fields are flat strings. Export proceeds without defensive defaults.  
-**Pitfalls**: Relying on the VA exporter's default fallback (`conservative`) when metadata is ambiguous. The fallback silences the error and produces syntactically valid but semantically incorrect VA — HSPICE will compile but produce wrong transient currents.
+**Symptom**: HSPICE detects Python→VA mismatch only after a full HSPICE run, wasting several minutes. The root cause is malformed metadata in `srh_top2_regime_bank_summary.json`.
+
+**Agent Impact**: **Partial.** Agent D can read the summary JSON to validate metadata before export, but cannot fix the serialization code.
+
+**Correct Action**: After training, read `srh_top2_regime_bank_summary.json` and inspect per-group `amp_parameterization`. If values are nested dicts → `fallback_to_previous` (→ train-static). Metadata encoding errors are structural, not fixable by parameter tuning. Do NOT proceed to HSPICE with malformed metadata.
 - Metadata serialization bugs are insidious: the training script writes valid data, but the assembly/export path re-interprets it differently. The `Cgg_common` parasitic extraction faced a similar issue — OFF-window parameters extracted correctly but the frozen/unfrozen status was silently overwritten by later training phases. The pre-export validation principle is identical: validate that what was written is what will be read.
 
 ### Pre-HSPICE Checklist for Dynamic Model Assembly
 **Category**: Tuning Pattern  
 **Stage(s)**: train-hysteresis (pre-assembly audit)  
-**Context**: After both static (IV/CV) and hysteresis training complete, the assembly step combines static, fast-SRH, and slow-SRH modules into a complete device. Multiple independent failures (interface mismatch, missing blend module, metadata encoding) can each cause assembly failure, and they compound — fixing one exposes the next.  
-**Pattern**:
-1. **Module inventory**: List all Verilog-A `.va` and `.inc` files in the static model directory (typically 5 files for top-1 static) and hysteresis directory. Compare against a known-good manifest (v90 reference). Any missing file (especially `amp_blend`, `srh_combiner`, `port_wrapper`) indicates a portability gap.
-2. **Interface audit**: Check the number of SRH state ports in the fast-bank, slow-bank, and combined module definitions. They must match between Python wrapper and VA netlist template. If the template is parametric ({4-state / 8-state}), verify the detection logic.
-3. **Metadata flatness**: Validate all string-enum fields in the combined summary JSON are flat scalars, not nested dicts. Key fields: `amp_parameterization`, `optimizer_policy`, `regime` for each trained group.
-4. **HSPICE reference model**: The Python reference model for HSPICE equivalence must use the **deployed symbolic KAN** (post-calibration), NOT the numerical spline KAN. Using the spline KAN as reference inflates the reported HSPICE error by mixing "numerical→symbolic" error into "Python→HSPICE" error. This was confirmed in the session: after fixing the reference, IV HSPICE max relative error dropped from 2.42% to 0.564%, max log error from 0.00951 dex to 0.00208 dex.
-5. **I-t data audit before training** (from 05-22 session evidence): Before launching the SRH-KAN, inspect `it_measurement_audit.json` for: (a) per-file issues (noise, missing segments, voltage alignment), (b) repeat-bias spread (same bias condition across multiple curves should produce similar transients), (c) segments where the two-trap fit RMS is >0.15 dex (these are unreliable teacher labels). If >30% of segments have `ok == False`, the training data quality, not the training parameters, is the bottleneck.
-**Key Parameters**: N/A — verification pattern.  
-**Success Indicator**: All 5 checklist items pass before HSPICE is run. HSPICE IV max relative error < 3%, CV < 5%, transient log-RMSE < 1×10⁻⁶ dex.  
-**Pitfalls**: The most insidious pitfall is item 4 — using the numerical KAN as the HSPICE reference model. This inflates deployment error by 4-5× and causes Agent D to attempt unnecessary parameter tuning or top-k relaxation when the Verilog-A implementation is actually correct.
+**Checks before assembly**:
+1. Module inventory: verify `.va`/`.inc` files exist for static model and hysteresis (typically 5 files for top-1 static + per-regime bank outputs). Missing files → `fallback_to_previous`.
+2. Interface audit: verify SRH state port count matches between Python wrapper and VA netlist template. Mismatch → `fallback_to_previous`.
+3. Metadata flatness: verify `amp_parameterization` fields are flat strings in combined summary JSON. Nested dict → `fallback_to_previous`.
+4. HSPICE reference model: Python reference for equivalence must use deployed symbolic KAN, not numerical spline KAN. If uncertain → `accept_quality` (numeric model accuracy is validated independently).
+
+**Agent Impact**: **Partial.** Agent D can read summary JSON and output files to verify, but cannot fix assembly code.
+
+**Success Indicator**: All 4 checks pass before HSPICE runs. HSPICE IV max error <3%, CV <5%, transient log-RMSE <1e-6 dex.
+
+**Pitfalls**: The most insidious is item 4 — using numerical KAN as HSPICE reference inflates deployment error 4-5x, causing unnecessary parameter tuning or top-k relaxation when the Verilog-A is correct.
 
 ### I-t Data Quality Audit Precedes Parameter Tuning for High step_log_rmse_median
 **Category**: Tuning Pattern  
 **Stage(s)**: train-hysteresis (pre-analysis → training boundary)  
 **Context**: When `step_log_rmse_median > 0.08` (threshold), Agent D's default diagnostic path is to inspect `it_hysteresis_analysis_summary.json` and the audit report. However, even with moderate RMSE, certain I-t measurement pathologies are invisible to aggregate metrics.  
-**Pattern from 05-22 session** (CV data audit methodology, generalized to I-t):
+**Pattern** (CV data audit methodology, generalized to I-t):
 1. **Curve-level monotonicity check**: For each I-t transient segment, verify that the smoothed current is monotonic in the expected direction (emission: monotonically decreasing; capture: monotonically increasing). Non-monotonic points indicate measurement noise or incomplete settling.
 2. **Duration consistency**: Check that all segments within the same regime (fast: <50 ms, slow: ≥50 ms) have consistent time bases. Segments with too few time points (<16) cannot produce reliable teacher fits.
 3. **Amplitude sign consistency**: Within each process group (capture/emission), verify that the fitted trap amplitudes have consistent signs. A capture segment with negative amplitude or an emission segment with positive amplitude indicates a mislabeled or mis-segmented transient.
@@ -120,7 +122,7 @@ Agent D cannot change the KAN correction architecture (additive vs multiplicativ
 ### Caution with Residual-KAN: Better MSE Can Mean Worse Physical Behavior
 **Category**: Tuning Pattern  
 **Stage(s)**: train-hysteresis (SRH-KAN student training)  
-**Context**: This pattern emerges from the 05-22 session's extensive experimentation with residual KAN for IV/CV, where a secondary KAN (trained on top of a frozen parameter-KAN) consistently reduced MSE but introduced non-physical oscillations. The pattern is directly relevant to hysteresis because the SRH-KAN's student-teacher training is structurally analogous to residual learning.  
+**Context**: This pattern emerges from extensive experimentation with residual KAN for IV/CV, where a secondary KAN (trained on top of a frozen parameter-KAN) consistently reduced MSE but introduced non-physical oscillations. The pattern is directly relevant to hysteresis because the SRH-KAN's student-teacher training is structurally analogous to residual learning.  
 **Pattern**:
 1. Observe that `student_teacher_rmse_dec_mean` decreases with more epochs or larger hidden sizes — this is expected and positive.
 2. Observe that `endpoint_drift_error_mean` or `endpoint_drift_error_p95` remains unchanged or increases — this is the warning sign. The KAN is improving pointwise fit at the expense of waveform correctness.
