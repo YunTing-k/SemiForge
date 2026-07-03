@@ -773,3 +773,65 @@ un_{run_id:04d}_{timestamp}.md (cross-session collision, meaningless) to {title_
 | final_interpret.md | operation_log coverage gaps documented (hard failures + successful retries not logged), PREP_RETRY trigger never-emitted note, quality_fail trigger usage clarification (Agent A only), inline prompt ok-vs-quality_pass conflation warning, error text absence from prompt documented, Agent E full tool list (bash/grep_file/web_search/web_fetch), 15-line console truncation warning, minimal_run skip broken on failure path note, agent_reasoning/ini_snapshot fields documented, quality threshold source note (configurable via agent_configs, not constants) |
 
 **Audit Reports Archived**: `doc/audit_r1/` `doc/audit_r2/` (Round 1 claims + Round 2 verification + Round 3 reverse scan results — can be cleaned up later)
+
+---
+
+## 2026-07-03 — Expert Experience Extraction (Codex Session JSONL → knowledge/experience/)
+
+### Pass 0-3 Pipeline
+
+**Background**: Two Codex session JSONL files in `ref/` (42MB 06-29 modeling diagnostics + 566MB 05-22 full lifecycle development). Goal: extract generalizable expert experience into `knowledge/experience/*.md`.
+
+**Pass 0 — Density Comparison**: Python keyword-density sampling. File 2 (06-29, 42MB) has high modeling diagnostic density (127 meaningful/11232 lines). File 1 (05-22, 566MB) numerically denser but content is Origin plotting/CSV conversion. Start with File 2 for iteration.
+
+**Pass 1 — JSONL → Compressed Dialog**: Python streaming, keep `[USER]` + `[AGENT:commentary/final_answer]` full text, `[TOOL:name/call_id]` + `[OUTPUT:call_id]` linked via call_id tag. File 2: 42MB→601KB (1.4%), 28 turns, 207 agent msgs. File 1: 566MB→3.6MB (0.6%), 328 turns, 2840 agent msgs.
+
+**Pass 2 — CD → Diagnostic Extracts**: Keyword filtering (root cause/fix/根因/定位/参数 etc.), tool sequences >5 pairs compressed to `[... N tool calls ...]`. File 2: 601KB→98KB, 28/28 turns all diagnostic. File 1: 3.6MB→1.0MB, 327/328 turns.
+
+**Pass 3 — Subagent extraction → experience/*.md**: 5 parallel subagents (one per stage to avoid richest-stage focus). Two rounds:
+- **Round 1 (06-29 session)**: 11 entries, 177 lines (single-agent extraction)
+- **Round 2 (06-29, 5-agent parallel re-extraction)**: 21 entries, 488 lines. Quality improvement: +91% entries, +176% lines. Key gains: hysteresis 3→6 entries (new: amp_blend missing, 4/8-state incompatibility), final_interpret 3→6 entries (new: quality gate convergence trap, hardcoded paths)
+- **Round 3 (05-22 session, 5-agent parallel incremental)**: New principle insights appended, `Additional Evidence` sub-bullets only (no duplication)
+
+### Codebase Cross-Verification
+
+Verified all 5 experience/*.md claims against actual code (4 explore agents parallel):
+- ❌ **1 wrong claim removed**: qsolve(y) hard-clip at y=80 — never existed in code (`-80` is weak-inversion lower bound, not upper clip)
+- ❌ **4 outdated entries removed**: `--skip-post-train-cv-polish` already implemented, v90 defaults already restored, I-t hardcoded filenames (glob fallback exists), column T recognition (already fixed)
+- ✏️ **Numbers corrected**: CV passivity scan 48/96→80/160/1200 points, no separate coarse/fine two-pass architecture
+- 📝 **7 items annotated**: HSPICE reference model (now uses symbolic KAN), hardcoded paths (zero matches in source), amp_blend (restored), 4/8-state (auto-detection exists), amp metadata dict (partially mitigated), residual safety scan ext_bad (main scan fixed, CV sub-scan still absolute-zero), checkpoint-diagnostic-only (reader cascade-fallback exists, writer still uses v92)
+
+### Actionability Restructuring
+
+**Core Principle**: Agent B/C/D experience must be actionable via their tools.
+
+- **Agent capability prefaces**: Each experience file now opens with "Agent X tools", "Can influence", "Cannot change" declarations
+- **Non-actionable trimmed**: Engine-code entries compressed to "diagnostic signal + correct tool choice" (e.g., contact resistance jitter → `accept_quality` or `fallback_to_previous`)
+- **Engine architecture moved to Agent E**: static_model's Derivative Observables/Physical Kernel Completeness/CV Charge Model + hysteresis's KAN Additive/Multiplicative → `final_interpret_experience.md` § Engine Architecture Diagnostics (8 entries total)
+- **Agent E detailed**: 14 entries (6 pipeline-level + 8 engine structural diagnostics). Has largest context budget, can include "what's structurally wrong at engine level" from B/C/D perspective
+- **Cross-reference cleanup**: Batch-removed diagnostic.md line numbers (intermediate files gitignored, inaccessible), cross-agent "See Agent E" pointers (agent isolation), code file:line references (version drift). All files now self-contained
+
+### Loader Upgrade
+
+`src/workflow/dg_tft/knowledge/loader.py` v1.1:
+- Added `_STAGE_EXPERIENCE_MAP`: 5 stages → `knowledge/experience/*_experience.md`
+- Added `load_experience(stage)`: reads from `knowledge/experience/` subdirectory
+- `build_agent_prompt()` three-block order: `USER PREFERENCES` → `EXPERT KNOWLEDGE` (code-derived) → `EXPERIENCE` (practical patterns)
+- 7 new tests (T15-T21): load_experience all stages + experience injection + order verification. 21/21 pass, 963 total pass (no regressions)
+
+### Git Commits
+
+```
+caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/experience/*.md (5 agents parallel, 21 entries)
+85b9e08 fix: cross-verify experience/*.md vs codebase — remove 1 wrong claim, remove 4 outdated, fix numbers, annotate 7
+2125d38 refactor: restructure experience/*.md for agent actionability — add capability prefaces, trim non-actionable
+5374f4d refactor: move engine architecture diagnostics from B/C/D to Agent E — keep B/C/D actionability-focused
+4977526 fix: remove all fragile cross-references — diagnostic line numbers, cross-agent pointers, code file:line
+280ff5e feat: add load_experience() + _STAGE_EXPERIENCE_MAP to loader — EXPERIENCE block in build_agent_prompt()
+```
+
+### Maintenance Conventions
+
+- When modifying `param_defs` or engine argparse → sync `knowledge/*.md` + check `knowledge/experience/*.md` for outdated entries
+- New Codex session JSONL → run Pass 1-3 pipeline, 5-agent parallel extraction
+- Entries marked `[REMOVED]`/`[OUTDATED]`/`[FIXED]` in experience files are retained for historical context, not used as agent operational guidance

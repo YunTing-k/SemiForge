@@ -825,3 +825,65 @@ un_{run_id:04d}_{timestamp}.md（跨 session 碰撞、无意义）改为 {title_
 | final_interpret.md | operation_log 覆盖缺口（尝试硬失败/成功重跑不记录）、PREP_RETRY trigger 从未发射说明、quality_fail trigger 实际使用澄清（仅 Agent A 用）、inline prompt ok 字段与 quality_pass 混淆警告、error text 不注入标注、Agent E 工具完整列表（bash/grep_file/web_search/web_fetch）、15 行输出截断警告、minimal_run 跳过在失败路径已损坏、新增 agent_reasoning/ini_snapshot 字段文档、质量阈值来源说明（agent_configs 可配置非固定常量） |
 
 **审计报告存档**：`doc/audit_r1/` `doc/audit_r2/`（Round 1 清单 + Round 2 验证 + Round 3 反向扫描结果可于后续 cleanup 删除）
+
+---
+
+## 2026-07-03 — 专家经验提取（Codex 会话 JSONL → knowledge/experience/）
+
+### Pass 0-3 Pipeline
+
+**背景**：`ref/` 下有 2 个 Codex 会话 JSONL（42MB 06-29 建模诊断 + 566MB 05-22 全生命周期开发）。需从中提取泛化专家经验，补充到 `knowledge/experience/*.md` 尾部。
+
+**Pass 0 — 密度比较**：Python 脚本对两文件做关键词密度抽样。File 2（06-29, 42MB）建模诊断密度高（127 meaningful/11232 行），File 1（05-22, 566MB）虽数值密度高但内容为 Origin 画图/CSV 转换。先从 File 2 实验。
+
+**Pass 1 — JSONL → Compressed Dialog**：Python streaming 脚本逐行处理，保留 `[USER]` + `[AGENT:commentary/final_answer]` 全文，`[TOOL:name/call_id]` + `[OUTPUT:call_id]` 用 call_id tag 链接。File 2：42MB → 601KB（1.4%），28 turns, 207 agent msgs。File 1：566MB → 3.6MB（0.6%），328 turns, 2840 agent msgs。
+
+**Pass 2 — CD → Diagnostic Extracts**：关键词过滤（root cause/fix/根因/定位/参数 etc.），tool 序列 >5 对压缩为 `[... N tool calls ...]`。File 2：601KB → 98KB，28/28 turns 全有诊断内容。File 1：3.6MB → 1.0MB，327/328 turns。
+
+**Pass 3 — Subagent 提取 → experience/*.md**：5 个 parallel subagent 各管一个 stage（避免单 agent 聚焦 richest stage 忽略其他）。两轮提取：
+- **Round 1（06-29 session）**：11 条目 177 行（单 agent 提取）
+- **Round 2（06-29 session, 5-agent parallel 重新提取）**：21 条目 488 行，质量显著提升（+91% 条目，+176% 行数）。关键提升：hysteresis 从 3 条→6 条（新增 amp_blend 缺失、4/8-state 接口不兼容），final_interpret 从 3 条→6 条（新增 quality gate 收敛陷阱、硬编码路径）
+- **Round 3（05-22 session, 5-agent parallel 增量提取）**：新增 principle insights 到各文件，仅追加 `Additional Evidence` 子条目防重复
+
+### 交叉验证 vs 代码库
+
+对 5 个 experience/*.md 逐条核实（4 个 explore agent parallel）：
+- ❌ **删除 1 条**：qsolve(y) 在 y=80 硬截断——代码中从未存在（`-80` 是弱反型下界 clip，非上界）
+- ❌ **删除 4 条过时**：`--skip-post-train-cv-polish` 已实现、v90 三个默认值已恢复、I-t 硬编码文件名（glob 回退已存在）、列 T 不识别（已修复）
+- ✏️ **修正数字**：CV passivity scan 48/96→80/160/1200 点，无双阶段粗/细架构
+- 📝 **标注 7 条**：HSPICE 参考模型（已切到符号化 KAN）、硬编码路径（源码零匹配）、amp_blend（已恢复）、4/8-state（自动检测存在）、amp 元数据 dict（部分缓解）、残差安全扫描 ext_bad（主扫描已修 CV 子扫描仍是绝对零）、checkpoint-diagnostic-only（读端已级联回退 写端仍 v92）
+
+### 可操作性重构
+
+**核心原则**：Agent B/C/D 的经验必须是他们能用工具影响的。
+
+- **Agent 能力声明**：每个 experience 文件开头添加 "Agent X tools"、"Can influence"、"Cannot change" 声明
+- **非可操作条目精简**：引擎代码级内容压缩为"诊断信号 + 正确工具选择"（如 contact resistance jitter → `accept_quality` 或 `fallback_to_previous`）
+- **引擎架构知识搬家**：static_model 的 Derivative Observables/Physical Kernel Completeness/CV Charge Model + hysteresis 的 KAN Additive/Multiplicative → 移到 `final_interpret_experience.md` § Engine Architecture Diagnostics（共 8 条）
+- **Agent E 详实**：最终 14 条目（6 个 pipeline 级 + 8 个引擎结构诊断），上下文余量最大，可包含从 B/C/D 角度看到的"引擎层面结构性缺陷"
+- **交叉引用清理**：批量删除 diagnostic.md 行号（中间文件 gitignored 不存在）、跨 agent "See Agent E" 指针（agent 隔离）、代码文件行号（版本漂移）。全量文件自包含化
+
+### Loader 升级
+
+`src/workflow/dg_tft/knowledge/loader.py` v1.1：
+- 新增 `_STAGE_EXPERIENCE_MAP`：5 stage → `knowledge/experience/*_experience.md`
+- 新增 `load_experience(stage)`：从 `knowledge/experience/` 子目录读取
+- `build_agent_prompt()` 三 block 顺序：`USER PREFERENCES` → `EXPERT KNOWLEDGE（code-derived）` → `EXPERIENCE（practical patterns）`
+- 测试 7 条新增（T15-T21）：load_experience 全阶段 + experience 注入 + 顺序验证。21/21 pass，963 total pass（无回归）
+
+### Git Commits
+
+```
+caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/experience/*.md (5 agents parallel, 21 entries)
+85b9e08 fix: cross-verify experience/*.md vs codebase — remove 1 wrong claim, remove 4 outdated, fix numbers, annotate 7
+2125d38 refactor: restructure experience/*.md for agent actionability — add capability prefaces, trim non-actionable
+5374f4d refactor: move engine architecture diagnostics from B/C/D to Agent E — keep B/C/D actionability-focused
+4977526 fix: remove all fragile cross-references — diagnostic line numbers, cross-agent pointers, code file:line
+280ff5e feat: add load_experience() + _STAGE_EXPERIENCE_MAP to loader — EXPERIENCE block in build_agent_prompt()
+```
+
+### 维护约定
+
+- 改 `param_defs` 或引擎 argparse → 同步更新 `knowledge/*.md` + 检查 `knowledge/experience/*.md` 有无过时条目
+- 新 Codex 会话 JSONL → 用 Pass 1-3 pipeline 提取，5-agent parallel 写入
+- experience 中标注 `[REMOVED]`/`[OUTDATED]`/`[FIXED]` 的条目保留历史上文，不作为 Agent 操作依据
