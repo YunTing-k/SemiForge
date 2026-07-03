@@ -34,6 +34,7 @@
   - TURN 8: After restoring independent IV base→residual with v90 parameters: held-out balanced score improved from 0.09918 (base) to 0.09097 at epoch 180, and to 0.08796 at epoch 340 — an 11.3% held-out improvement (diagnostic.md:236-241)
   - TURN 8: "冻结 IV 后，CV base RMS 0.02073，加入 charge residual 后为 0.020995，出现退化" (diagnostic.md:266)
   - TURN 15: User explicit instruction: "服用v90 iv训练的流程，损失函数设计，拟合顺序，和符号化的流程！而cv用现在的" (diagnostic.md:483)
+  - **Additional Evidence from 05-22 session**: The 05-22 session independently converged on the same staged isolation principle. Turn 16: "CV不再有单独阈值、单独Cox、单独面积缩放、单独电压shift" — enforcing that CV shares physical parameters with IV rather than having independent ones. Turn 34: "把CV trap从'直接加电容'改成'先定义trap charge，再用有限差分得到CV'" — recognizing that CV = dQ/dV requires the same charge equations as IV, confirming gradient competition as a real phenomenon when joint training is attempted. (05-22 diagnostic.md:329-334, 729-731)
 **Generalization**: The staged isolation principle applies universally: for any device where the model separates into IV and CV prediction branches sharing a physical kernel, gradient competition from CV (derivative observable) will dominate IV (direct observable) unless CV is trained only after IV is frozen. This is physics-rooted: CV ≡ dQ/dV requires second-order derivatives through the EKV charge model, creating loss surfaces with steep ridges that IV gradients cannot navigate.
 **Actionable Advice**:
   1. **Correct training order**: `fit-physical` → `train_current_device_base_iv_pkan` (independent, 700 epoch, LR=0.002) → `train_current_device_iv_residual` (independent, 700 epoch, LR=0.002, held-out split) → **freeze entire IV branch** (base PKAN weights + phys_delta parameters + IV residual KAN) → train CV/charge branch (base CV-PKAN + CV charge residual + CV platform/sheet params).
@@ -89,22 +90,8 @@
 
 ---
 
-### HSPICE Validation Comparing Against Wrong Python Reference Model
-**Category**: Principle Insight
-**Stage(s)**: train-static (Phase 6 — HSPICE validation)
-**Symptom**: HSPICE validation reports large "deployment implementation errors" — IV max relative error 12.94% (vs 3% gate), log RMSE 0.03199 dex — suggesting the Verilog-A export or HSPICE simulation has a bug. Subsequent investigation shows the Verilog-A is actually correct; the validation function was comparing HSPICE output against the *numeric spline KAN model* instead of the *Python symbolic model* (which is what the Verilog-A implements). CV shows the same pattern but with smaller magnitude (smaller errors but same systematic bias).
-**Root Cause**: The HSPICE validation function's reference computation (`python_ids`) was calling the numeric KAN's `forward()` method (spline-based), not the symbolic KAN's (analytic formula-based). Since the symbolic model has a ~0.04-0.12 dex discrepancy from the numeric model (see Principle Insight on edge-local vs terminal accuracy), this discrepancy was incorrectly attributed to HSPICE/Verilog-A implementation error. The actual Python-symbolic to HSPICE error is far smaller: 0.564% max relative IV error (vs the misreported 12.94%), 0.0935% median, 0.00477 dex max log error.
-**Evidence**:
-  - TURN 22: "HSPICE 导出的是符号化 KAN，但验证函数的所谓 python_ids 实际仍在调用数值 spline KAN，因此报告混入了'数值→符号化'误差，并不是真正的'Python 符号表达式→HSPICE'误差" (diagnostic.md:746)
-  - TURN 22: After fix — "IV 的 Python 符号模型→HSPICE 最大相对误差从原报告的 2.42% 降为 0.564%，中位数从 0.534% 降为 0.0935%，最大对数误差仅 0.00477 dex" (diagnostic.md:766)
-  - TURN 5: Early misdiagnosis — "HSPICE 检查已暴露...符号化 IV 在 13 点网格上的最大 Python–HSPICE 相对误差为 12.94%" led to incorrect conclusion that symbolic export was broken and triggered wasteful re-training (diagnostic.md:88)
-  - TURN 24: Final corrected result — "Python 符号模型到 HSPICE 的 IV 网格误差由 0.00951 dex 进一步降到 0.00208 dex" (diagnostic.md:825)
-**Generalization**: This is a validation pipeline bug, not a modeling issue. Any pipeline that generates both numeric (spline) and symbolic (analytic) model variants and then validates HSPICE against Python must ensure the reference model matches the exported format. The bug persists silently because both variants produce similar (not identical) outputs — the error is small enough to not trigger NaN/inf but large enough to cause false HSPICE validation failures.
-**Actionable Advice**:
-  1. **Code fix**: The HSPICE validation function must construct its Python reference model from the same symbolic network that was exported to Verilog-A, not from the original numeric KAN. Specifically, after symbolic export, the reference model should use `SymbolicKANNet.forward()` (or the post-calibration wrapped symbolic network), not `CompactKAN.forward()`.
-  2. **Detection**: If HSPICE validation consistently fails with errors in the 2-15% range while the Python numeric→measured error is <5%, suspect this reference mismatch. A quick check: call the exported symbolic model on the same HSPICE grid points and compare against HSPICE output; this should show errors <1% if the Verilog-A is correct.
-  3. **Reporting**: All reports must decompose the error into three layers and label each: (a) numeric KAN vs measured (training error), (b) symbolic model vs numeric KAN (compression error), (c) HSPICE vs symbolic Python model (implementation error). Evidence: the session spent multiple turns debugging a false "HSPICE bug" because layer (b) was conflated with layer (c) (diagnostic.md:88, 746, 766).
-  4. **What NOT to do**: Do not increase `base_iv_max_top1_compatibility`, `edge_steps`, `network_finetune_steps`, or `device_iv_finetune_steps` in response to inflated HSPICE validation errors — first verify the reference model is correct. Evidence: the early session turns wasted complete training budgets on fixing a "symbolic accuracy" problem that was actually a validation reference problem.
+### HSPICE Validation Comparing Against Wrong Python Reference Model — OUTDATED (FIXED)
+**Status**: FIXED as of current engine. The HSPICE validation function at `dg_tft_full_model.py:16285` wraps its computation inside `with _temporary_deployment_symbolic_nets(diag):`, which explicitly swaps in `_deployment_base_iv_symbolic_net`, `_deployment_iv_residual_symbolic_net`, and `_deployment_cv_symbolic_net` — the **symbolic** KAN students, NOT the numerical spline nets. The smoke report self-documents: `"python_reference_model": "deployed_symbolic_students"`. **This entry is retained for historical reference only — the reference model mismatch has been resolved.**
 
 ---
 
@@ -142,38 +129,20 @@
 
 ---
 
-### CV Finalize Polish Silently Degrading Accepted Models
-**Category**: Tuning Pattern
-**Stage(s)**: train-static (Phase 4 — Post-Training CV Polish and Phase 6 finalize)
-**Context**: Agent C has an accepted static model that passes all numerical gates. The pipeline then runs `finalize` to produce the deployment artifacts (symbolic export, HSPICE, checkpoint save, VA export). After finalize, the agent observes that `residual_cv_rms` has increased (e.g., from 0.020324 to 0.020383), even though no training should have occurred. The perturbation is small but violates the "no regression" principle.
-**Pattern**:
-  1. **Identify that polish is running during finalize**: Check the engine logs for lines containing `polish_cv_*`, `finalize polish`, or `cv polish`. If the `finalize` subcommand is being passed (or is the default action), the post-training CV polish stages may execute even with `--resume` or `--finalize-only` flags.
-  2. **Disable all polish stages during finalize**: Add `--skip-post-train-cv-polish` to the engine call whenever running in `finalize` or `resume` mode. The polish stages (`polish_cv_neural_corrections`, `polish_cv_charge_residual`, `polish_cv_level2_intergate`, `polish_cv_held_gate_coupling`) are designed to run as part of the initial training pipeline, not as re-entrant correction passes. They use different optimizer settings (higher LR, shorter epochs) that can perturb settled weights.
-  3. **Verify that the finalize path does not also trigger warm-start CV prefit**: When `resume` mode is used with a checkpoint, the engine may re-execute CV warm-start prefit (CV platform parameters, sheet calibration, reciprocal charge mapping) before loading the checkpoint state_dict. These prefits are then overwritten by the checkpoint, wasting time and creating a window where the model briefly exists in an intermediate state.
-  4. **Check the `finalize` subcommand defaults**: In at least one version, the default `finalize` behavior included polish stages. The fix is to explicitly pass `--skip-post-train-cv-polish` and ensure the code path checks for resume mode before running prefits.
-**Key Parameters**:
-  - `cv_residual_polish_epochs` (engine-internal): If polish cannot be skipped (legacy code requirement), set this to 0. Evidence shows polish with even 1 epoch can perturb CV RMS.
-  - `cv_neural_polish_epochs`, `cv_level2_polish_epochs` (engine-internal): Same — set to 0 if a polish pass is unavoidable.
-  - Pipeline-level flag: Ensure `--no-finetune-base-pkan` and `--freeze-iv-residual-after-stage` are passed during finalize to further constrain what can be modified.
-**Success Indicator**:
-  - `residual_cv_rms` after finalize matches the pre-finalize value to 6+ decimal places.
-  - Engine log contains no `polish_cv_*` lines between checkpoint load and artifact save during finalize.
-  - The `v93_safe_residual_metrics.json` written by finalize has identical `residual_iv_rms` and `residual_cv_rms` to the pre-finalize metrics.
-**Pitfalls**:
-  - Do not simply accept the degradation as "small" (e.g., 0.020324→0.020383). This accumulates across multiple pipeline stages. If the user has a CV RMS hard gate of 0.020, a 0.000059 degradation could be the difference between pass and fail.
-  - The polish stages do NOT improve CV quality when applied to an already-converged model — they are designed to bootstrap a pre-convergence model. Running them on a converged checkpoint can only perturb.
-
-**Evidence**:
-  - TURN 5: "finalize-only 的默认值仍会启动 CV polish，这会改动已验收 checkpoint，而且此前实测该 polish 使 CV 从 0.020324 退化到 0.020383" (diagnostic.md:120)
-  - TURN 6: "直接入口的 finalize polish 默认仍会额外训练，和配置层预期不一致" (diagnostic.md:156)
-  - TURN 5: "第二个无效步骤也已定位：finalize-only 的默认值仍会启动 CV polish...现在禁止所有 finalize polish，确保终验只读重载并评估" (diagnostic.md:119-120)
+### CV Finalize Polish Silently Degrading Accepted Models — OUTDATED (FLAG EXISTS)
+**Status**: FIXED as of engine v96. The `--skip-post-train-cv-polish` flag exists at `dg_tft_full_model.py:17641` and is actively used in the non-finalize train path (line 18775). The orchestrator should pass this flag during finalize/resume modes. **This entry is retained for historical reference only — the flag is available and should be used.**
 
 ---
 
-### CV Passivity Scan: Coarse Grid Accepting Residual, Fine Grid Rejecting → Residual Zeroed
+### CV Passivity Scan: Joint Scan Defaults and Zero-Out Bug — PARTIALLY FIXED
 **Category**: Tuning Pattern
 **Stage(s)**: train-static (Phase 5 — Joint CV safe scale search)
-**Context**: Agent C observes that `safe_cv_residual_scale=0` despite `residual_cv_rms` appearing reasonable in intermediate training logs. The scan report shows that a coarse pass at 48 charge-passivity checkpoints accepted `cv_residual_scale=1.0`, but the final report has `selected_cv_residual_mode="off"` and `safe_cv_residual_scale=0.0`. The charge conservation / passivity check on the full 96-point grid found violations that the coarse grid missed.
+**Code Reality (verified 2026-07-03)**: The actual defaults are:
+- `joint_cv_passivity_scan_points`: **80** (not 48)
+- `safe_passivity_scan_points`: **160** (not 96)  
+- `passivity_max_points`: **1200** (not 96)
+There is NO separate "coarse pass then fine pass" two-stage architecture. `choose_safe_joint_cv_scales` runs a single exhaustive 2D grid search over `(parameter_scale × mode × residual_scale)` using `joint_cv_passivity_scan_points=80`.
+**Context**: Agent C observes that `safe_cv_residual_scale=0` despite `residual_cv_rms` appearing reasonable in intermediate training logs. The scan report shows that a joint scan accepted a `cv_residual_scale` value, but the final report has `selected_cv_residual_mode="off"` and `safe_cv_residual_scale=0.0`. The charge conservation / passivity check on the full grid found violations.
 **Pattern**:
   1. **Understand the two-stage scan**: The `joint_cv_safe_scale_search` runs a coarse 2D grid over (parameter_scale × residual_scale) using a reduced set of passivity checkpoints (48 points). At each grid point, it checks charge sum, cross-reciprocity (`max_cross_reciprocity_error`), and diagonal negativity. The coarse scan selects the best (parameter_scale, residual_scale) pair.
   2. **Identify the rejection bug**: After coarse scan accepts a pair, the fine scan (full 96-point passivity grid) is run on just that pair. If the fine scan finds violations (e.g., `max_cross_reciprocity_error` exceeds tolerance), the OLD code immediately sets residual_scale=0 instead of searching downward for a smaller-but-nonzero scale. This is the "zero-out on fine rejection" bug.
@@ -202,40 +171,8 @@
 
 ---
 
-### v90 Symbolic Pipeline: Key Default Parameter Differences That Cause Symbolic Regression
-**Category**: Tuning Pattern
-**Stage(s)**: train-static (base IV PKAN Phase 1, IV residual Phase 2, symbolic Phase 6)
-**Context**: Agent C observes that numerical IV results are good (base RMS ~0.08 dex, residual held-out gain confirmed) but symbolic export fails with large HSPICE errors or terminal accuracy gaps. The training loss formulas and edge-level symbolic library appear identical to a known-good baseline (v90), yet results are worse. Agent C has already verified that the reference model for HSPICE validation is correct (see tuning pattern on HSPICE reference mismatch).
-**Pattern**:
-  1. **Check the three drifted defaults**: Compare the current `[full_model]` INI values against the v90 baseline for three critical parameters:
-     - `iv_residual_stage_linear_weight`: v90=0.25, drifted to 0.34
-     - `iv_residual_stage_deriv_curves`: v90=36, drifted to 24
-     - `iv_residual_stage_shape_period`: v90=3, drifted to 5
-  2. **Check for extra symbolic phases**: v90's symbolic pipeline was: (a) edgewise replacement (180 steps), (b) edge finetune (80 steps), (c) network finetune (360 steps), (d) device IV finetune (3000 steps). Later versions added a 5th phase: (e) `device_iv_measured_steps=5000` — post-symbolic measured-data finetune. This phase is the single largest contributor to symbolic degradation.
-  3. **Restore v90 parameter values**: Set `iv_residual_stage_linear_weight=0.25`, `iv_residual_stage_deriv_curves=36`, `iv_residual_stage_shape_period=3`. Set `device_iv_measured_steps=0` to disable the extra measured finetune.
-  4. **Verify symbolic calibration budget**: v90 used `device_iv_finetune_steps=3000` (not 2200) and `edge_steps=180`, `network_finetune_steps=360`. Ensure these are not reduced. The symbolic budget parameters (`edge_steps`, `network_finetune_steps`, `device_iv_finetune_steps`) were reduced to ~1/4-1/6 of v90 in some configurations — this directly caused the edge-local MSE increase.
-  5. **Check iv_adaptive_top2_mse**: For strict Top-1 deployment, set `iv_adaptive_top2_mse=0.0` and `iv_edge_topk=1`. For adaptive Top-2 fallback, use `iv_adaptive_top2_mse=0.0015` with the constraint that Top-2 must improve edge MSE by >10% and is limited to edges exceeding the threshold.
-  6. **Re-run symbolic from existing numeric checkpoint**: If the numeric model is already good, re-run ONLY the symbolic phase (edge replacement + network finetune + device finetune + calibration) with restored parameters. Do not re-train the numeric model.
-**Key Parameters**:
-  - `iv_residual_stage_linear_weight`: 0.25 (restored from v90). Higher values (0.34) over-penalize the on-region, causing the residual to sacrifice shape quality in the transition region. This doesn't show in aggregate RMS but degrades symbolic compressibility.
-  - `iv_residual_stage_deriv_curves`: 36 (restored from v90). The reduced 24 curves omit VDS=0.1V and VDS=0.5V sheets that capture the transition from linear to saturation. Fewer derivative supervision curves → residual KAN learns less physically constrained shapes → harder to Symbolic-top-1.
-  - `iv_residual_stage_shape_period`: 3 (restored from v90). Every 3 epochs (vs 5) means shape monitoring runs ~230 times in 700 epochs instead of ~140. More frequent shape evaluation catches and penalizes non-monotonic edges before they become entrenched.
-  - `device_iv_measured_steps`: 0 (disable the extra phase).
-  - `device_iv_finetune_steps`: 3000 (v90 value, not reduced).
-**Success Indicator**:
-  - After symbolic re-export with restored parameters: HSPICE IV max relative error <3% (v90-compatible gate) or ideally <1% (post-fix reference model).
-  - Terminal symbolic RMS and p95 pass the full-curve gate.
-  - The symbolic model is strictly Top-1 for IV/CV/temperature (0 edges upgraded to Top-2 if `iv_adaptive_top2_mse=0.0`).
-**Pitfalls**:
-  - Do NOT copy v90's `warm_start_base_pkan_lr_mult=0.035` to the restored config — this applies only to warm-start scenarios (see Principle Insight on native vs warm-start LR). Fresh-start must use 1.0 or the base IV PKAN will not learn.
-  - Do NOT reduce `device_iv_finetune_steps` below 3000 even if it "seems high". The session evidence shows that reducing to 2200 was one cause of the symbolic regression (diagnostic.md:93).
-  - Do NOT increase `iv_adaptive_top2_mse` as a first resort. The v90 evidence shows Top-1 symbolic export with correct parameters achieves <1% HSPICE error. Only enable adaptive Top-2 if (a) numeric base IV RMS is <0.10 dex, (b) all v90 parameters are restored, (c) Top-1 still fails terminal gate, AND (d) edge-level MSE diagnostics show specific edges >0.015.
-
-**Evidence**:
-  - TURN 17: "v94 的 Top-1 候选函数库、edge exhaustive 拟合、180/80/360/2200 精修预算与 v90 完全一致；但我发现三个 IV 默认值被后续版本改过（线性损失 0.25→0.34、导数曲线数 36→24、符号正则周期 3→5），以及多了 v90 没有的 1600 步 measured-only 符号阶段" (diagnostic.md:519)
-  - TURN 17: After parameter restoration — "v90 原始 Top-1 顺序的重新符号化已经完成，结果比之前明显改善：HSPICE IV 最大相对误差从 4.886% 降到 0.956%，CV 最大相对误差 0.0578%" (diagnostic.md:522)
-  - TURN 18: "我把后续漂移的 iv_linear_weight=0.25、导数曲线数 36、symbolic period 3 恢复。唯一不应照抄的是 v90 对已有 checkpoint 的 warm-start 倍率 0.035" (diagnostic.md:534)
-  - TURN 20: "Adaptive Top2 仅升级了 9 条高误差 IV 边（其余 IV 边、全部 CV/温度边仍为 Top1）" — shows adaptive Top-2 is a controlled fallback, not a wholesale relaxation (diagnostic.md:772)
+### v90 Symbolic Pipeline: Key Default Parameter Differences — OUTDATED (ALL RESTORED)
+**Status**: FIXED as of current `param_defs.py`. All three "drifted" defaults have been restored to v90 values: `iv_residual_stage_linear_weight=0.25` (param_defs.py:391), `iv_residual_stage_deriv_curves=36` (param_defs.py:403), `iv_residual_stage_shape_period=3` (param_defs.py:415). Engine argparse defaults also match (e.g., line 17234: `default=0.25`). **This entry is retained for historical reference only — the parameter values are already corrected.**
 
 ---
 
@@ -268,3 +205,201 @@
   - TURN 8: "安全门后续会把它压低或置零，因此这仍不满足'CV residual 有真实贡献'" (diagnostic.md:266)
   - TURN 8: Agent correctly handled: "先做 CV-only 状态 ablation，比较现有当前 CV checkpoint 与这次新训练的 parameter/residual 分支，选择不会触碰 IV 的最小组合" (diagnostic.md:266)
   - TURN 8: Final result — CV parameter held-out improved from 0.0205225 to 0.0201922 with parameter KAN only; residual was not needed and correctly not forced (diagnostic.md:270)
+  - **Additional Evidence from 05-22 session**: Turns 108-110 independently confirmed that PKAN+residual had almost no effect on CV curve shapes — the safe scale mechanism was zeroing CV residual because CV shape gates triggered on minor non-physical artifacts. Turn 65 residual diagnostic showed IV residual KAN provided 50%+ improvement in IDVTG on-region, but CV residual KAN produced oscillatory behavior. The lesson from the earlier session is the same: CV residual is a marginal contributor that can easily cause more harm than good when CV shape constraints are active. (05-22 diagnostic.md:2670-2684)
+
+---
+
+## Principle Insights (from 05-22 session)
+
+### Derivative Observables (gm/gds, dC/dV) Must Enter Main Training Loss — Not Just Post-Hoc Screening
+**Category**: Principle Insight
+**Stage(s)**: train-static (all PKAN and residual training phases)
+**Symptom**: The trained model achieves acceptable IV RMS and CV RMS on point-wise log-error metrics, but the output curves show physically implausible features: IDVTG on-region has unrealistic curvature (excessive gm roll-off or sharp kinks), CV curves have local oscillations or multi-step transitions, and residual KAN contributions visually "twist" the curves in non-physical ways. These artifacts are invisible to aggregated RMS metrics but would cause SPICE convergence failures or wrong small-signal simulation results.
+**Root Cause**: The main training loss was designed to minimize point-wise log-error between prediction and measurement — `log(ID_pred/ID_meas)` for IV, `log(C_pred/C_meas)` for CV. Derivatives (transconductance `gm`, output conductance `gds`, `dC/dV`) were computed ONLY during post-training diagnostics and safe-scale screening. This created a fundamental mismatch: the optimizer minimizes what it's told to minimize (MSE on current/capacitance values), but the actual deployment requirement is smooth, monotonic derivatives. The residual KAN's natural response to the MSE-only loss is to overfit local curvature to shave off small numerical errors, producing jagged `gm` and oscillatory `dC/dV` that pass RMS checks but would fail any circuit simulator.
+**Evidence**:
+  - 05-22 TURN 82: Model shows IDVTG on-region physically implausible curvature after residual KAN — "加了residual之后，IDVTG的开态的曲线变化明显不符合物理，是你没考虑到二阶导吗" (05-22 diagnostic.md:2016)
+  - 05-22 TURN 83: Root cause identified — "筛图没有任何意义，不是最终的结果，模型才是最终的结果...导数只用于晒图肯定不对" (05-22 diagnostic.md:2056)
+  - 05-22 TURN 83: Code fix — "每一步训练都抽完整曲线子集，主 loss 直接包含 ID/gm/gds、CV 一阶/二阶导、residual 二阶导和 base-aware 约束" (05-22 diagnostic.md:2062)
+  - 05-22 TURN 83: Reference to Hu/Kao/Kam IEEE EDL physics-driven NN models — "同时看 ID/gm/gds，把导数拟合提升到主损失，不只是最后筛图" (05-22 diagnostic.md:2038-2040)
+  - 05-22 TURN 37: Early foreshadowing — "CV 的不正常抖动...主要是损失函数设置的不对" (05-22 diagnostic.md:945)
+**Generalization**: This applies to any compact model training where the final deployment target is a circuit simulator. Circuit simulators solve differential equations — they need smooth `gm = dID/dVG`, `gds = dID/dVD`, and `C = dQ/dV`. A model with 0.02 dex lower IV RMS but jagged second derivatives will fail in SPICE. The loss function MUST include derivative terms as optimization objectives, not just as post-hoc diagnostic metrics. Without this, the model achieves "good numbers" at the cost of "bad physics."
+**Actionable Advice**:
+  1. **Add gm/gds terms to IV loss**: For each training batch (or periodic full-curve subset), compute finite-difference `gm = dlog(ID)/dVG` and `gds = dlog(ID)/dVD` along each sweep direction. Add these as additional loss terms weighted by `gm_loss_weight` (~0.15-0.25) and `gds_loss_weight` (~0.05-0.10).
+  2. **Add dC/dV and d2C/dV2 terms to CV loss**: For CV, work on a smoothed version of measured C (to avoid chasing measurement noise in derivatives). Use a Savitzky-Golay filter or Gaussian-smoothed reference curve for the `dC/dV` target, NOT the raw noisy data. Add second-derivative smoothness penalty on the model's own CV prediction.
+  3. **Use base-aware relative constraints**: Do NOT set absolute derivative constraints ("CV slope must be >= 0") — this backfires when the physical kernel itself has minor slope variation. Instead use: `max(0, residual_derivative_worsening - base_derivative_worsening)` — residual must not make derivatives worse than base.
+  4. **What NOT to do**: Do not delegate derivative enforcement to the post-training safe-scale selection. If derivatives are only checked during safe-scale screening and not in training loss, the safe-scale will simply pick scale=0 (no residual) because any non-zero residual introduces derivative artifacts it was never trained to avoid. Evidence: 05-22 Turns 82-83 showed this exact failure pattern across v35-v36 (05-22 diagnostic.md:2021-2062).
+
+---
+
+### Physical Kernel Must Be Structurally Sufficient BEFORE KAN — KAN Compensating for Structural Deficiencies Produces Non-Physical Curves
+**Category**: Principle Insight
+**Stage(s)**: train-static (CV physical kernel design, all PKAN/residual training)
+**Symptom**: CV fitting metrics remain poor (RMS > 0.20 dec) despite multiple rounds of adjusting KAN capacity, residual strength, epoch count, and loss function tuning. Visual inspection reveals systematic patterns: CTG predictions are consistently ~2x higher than measurement across all bias conditions; CBG low-capacitance plateau is substantially above the measured floor; CGG shows non-physical double-hump transitions. The KAN and residual networks, instead of learning small device-specific corrections, attempt to compensate for fundamental model structure issues — producing curves with local oscillations, multi-step transitions, and false shoulders.
+**Root Cause**: The physical CV kernel (charge model → capacitance via autograd) had three structural gaps: (1) No measurement-configuration de-embedding — the EKV-style charge model produces intrinsic terminal capacitances, but the measured CV includes parasitic, contact, and measurement-path contributions that scale differently per configuration; (2) The transition width of the CV turn-on region was determined entirely by the thermal kT/q sharpness of the EKV charge model, but real IGZO TFTs have disorder/trap-induced broadening; (3) The inter-gate charge partitioning assumed ideal electrostatic coupling through a perfectly conductive channel sheet, which overestimates top-to-bottom gate capacitive coupling in the OFF state. KAN was being asked to perform a role it cannot fulfill: large-scale global corrections that should be in the physical kernel itself.
+**Evidence**:
+  - 05-22 TURN 37: Full model audit — "KAN 正在替物理模型擦屁股...物理核里有几个结构性缺口" (05-22 diagnostic.md:798)
+  - 05-22 TURN 52: "CV 的主要系统误差不是单纯'缺电容'，而是 top/bottom 归属错了...CBG 在中高压严重偏低，而 CTG 同区间严重偏高" (05-22 diagnostic.md:1217)
+  - 05-22 TURN 84: v38 diagnosis — "CTG 和 vds 纯物理核整体偏高，说明 residual KAN 不是在微调，而是在试图把一个系统性 offset/scale 错误往下拉" (05-22 diagnostic.md:2089)
+  - 05-22 TURN 88: After sheet calibration — "初始化结果很说明问题：CTG 需要约 0.65x 的测量参与系数，vds 需要约 0.49x" (05-22 diagnostic.md:2106)
+  - 05-22 TURN 93: "CGG 的 double hump 基本不是器件物理，而是模型先验造成的假结构" (05-22 diagnostic.md:2279)
+  - 05-22 TURN 106: User insight — "商业 CV compact model 根本不用 convolution" (05-22 diagnostic.md:2537)
+**Generalization**: For any physics+ML hybrid model, the physical component must be structurally complete before the ML component is added. If the physical model is missing a first-order effect (e.g., measurement de-embedding, disorder broadening, interface trap capacitance), the neural network will learn to compensate — but it will do so using high-frequency, non-physical basis functions (spline nodes in KAN), producing curves that fit numerically but violate physical constraints. The correct decomposition is: physical kernel handles all first-order, globally-varying physics; KAN handles second-order, bias-dependent device-specific deviations.
+**Actionable Advice**:
+  1. **Before training KAN, verify physical kernel baseline**: Run pure physical kernel prediction on ALL CV data configurations. If any configuration shows systematic offset (e.g., >50% scale error across all bias points), this is a kernel deficiency, not a KAN task. Fix the kernel first.
+  2. **Add measurement configuration de-embedding to physical kernel**: Each CV measurement configuration (cgg/cbg/ctg/vds) needs a local `gain` and `offset` parameter representing open/short de-embedding, AC participation ratio, and contact parasitics. These are pre-extracted from low-bias/high-bias plateau regions and frozen before KAN training.
+  3. **Add disorder/trap broadening to CV transition physics**: The EKV core's sharp thermal transition must be broadened by physical parameters: `dlog_nfac_cv`, `dlog_Cit_t/b`, `dlog_trap_width`. These are global device parameters, not per-curve, and should be allowed substantial tuning range (not just micro-delta of ±1%).
+  4. **Add OFF-state channel coupling modeling**: In the OFF state, the channel is depleted — the two gates are NOT electrostatically coupled through a conductive sheet. Add a `channel_participation` factor that smoothly transitions from weak (OFF) to strong (ON) as a function of normalized inversion charge.
+  5. **What NOT to do**: Do not increase KAN hidden layer size or add residual CV branches to compensate for poor kernel baseline. Evidence: the 05-22 session spent 30+ turns (v5→v35) adjusting KAN/residual hyperparameters with minimal CV improvement, then gained the largest single improvement from adding sheet-level calibration and fixing CBG/CTG label orientation, not from making KAN stronger (05-22 diagnostic.md:2089-2110).
+
+---
+
+### CV Charge Model Must Have Single Smooth Transition by Physical Construction — Convolution/DOS Artifacts Create False Multi-Step Transitions
+**Category**: Principle Insight
+**Stage(s)**: train-static (CV kernel architecture)
+**Symptom**: CV curves (especially CGG and CBG) show 2-3 distinct steps or "shoulders" in the transition from OFF capacitance to ON capacitance plateaus. These appear as multiple derivative peaks, visible as double-hump or triple-hump structures that do not correspond to any physical mechanism in the device. The artifacts persist even after extensive KAN training and can be traced to the CV kernel implementation, not the PKAN or residual networks.
+**Root Cause**: Two distinct mechanisms produced these artifacts at different development stages:
+  1. **Discrete Gaussian convolution (v45-v47)**: A 3-point Gaussian convolution applied to the base CV kernel produced 3 shifted copies of the original sharp EKV transition. Since the EKV transition is essentially a sigmoid, convolving it with 3 discrete shifted copies produced 3 visible steps in the output.
+  2. **Multiple independent charge sub-components (v26 base)**: The base CV kernel combined `cv_core (EKV inversion) + cv_trap (fast/slow trap) + cgg_tail (background)` as additive components. If these components activate at different gate voltages, the resulting capacitance curve shows a staircase of 3-4 separate transitions.
+  3. **Residual KAN with multiple narrow defect branches (v42-v43)**: When CV residual KAN output individual narrow sigmoid contributions, the optimizer could discover parameter values that produce multiple narrow capacitance bumps on top of the base transition.
+**Evidence**:
+  - 05-22 TURN 103: "CV 依旧出现了奇特的峰...v47 的离散高斯卷积实现方式本身把一个陡峭台阶复制成了 3 个台阶" (05-22 diagnostic.md:2476, 2487)
+  - 05-22 TURN 104: Diagnosis — base CV kernel with 3-point convolution produced up to 3 derivative peaks per curve, while single-transition template reduced all curves to exactly 1 peak (05-22 diagnostic.md:2516)
+  - 05-22 TURN 105: User direction — "商业 CV compact model 根本不用 convolution...让我重新想，从工业界的标准做法学起" (05-22 diagnostic.md:2537)
+  - 05-22 TURN 106: Implementation fix — "基础 CV 回到 base charge kernel，允许受控微调 nfac/Cit/trap_width 这一类展宽参数，并加形状约束确保不会再出现多台阶" (05-22 diagnostic.md:2539)
+**Generalization**: The base capacitance function `C(V) = dQ(V)/dV` must produce exactly ONE transition from OFF plateau to ON plateau by construction. Any technique that generates capacitance by summing multiple shifted copies of a sharp transition (convolution, quadrature, DOS broadening with discrete basis) will inherently create false multi-step structures. Commercial compact models achieve wide transitions through intrinsic physics (disorder-broadened surface potential, effective trap density-of-states) where the broadening is continuous and `dQ/dV` is guaranteed to be a single smooth function.
+**Actionable Advice**:
+  1. **Use a single-transition charge expression**: Define terminal charges as smooth functions with TWO plateau levels (OFF/ON) and ONE continuous transition region. The transition width is controlled by `nfac`, `Cit`, and `trap_width` — global physical parameters shared across all CV curves.
+  2. **Avoid discrete convolution for transition broadening**: Do NOT use `cap_broad = sum(w_i * cap(V - dV_i))` — this introduces N copies of each transition feature. If broadening is needed, incorporate it into the charge function itself via continuous functions.
+  3. **Avoid additive charge sub-components with independent activation voltages**: If the model has `Q_total = Q_inv + Q_trap_fast + Q_trap_slow + Q_tail`, each `Q_i(V)` must share the SAME effective threshold voltage. Trap and tail contributions should be parameterized as multiplicative corrections on `Q_inv(V)`.
+  4. **Detection**: After each CV kernel change, plot `dC/dV` for all CV curves. Count derivative peaks — any curve with >1 distinct peak indicates a false multi-transition and requires kernel redesign.
+  5. **What NOT to do**: Do not add more KAN capacity to "smooth out" the multi-step artifacts. The artifacts are deterministic consequences of the kernel structure and cannot be removed by neural network training — KAN can only attenuate them at the cost of introducing compensating oscillations elsewhere. (05-22 diagnostic.md:2476-2598)
+
+---
+
+## Tuning Patterns (from 05-22 session)
+
+### CV Measurement Configuration Calibration — Sheet Gain/Offset as Pre-Training De-Embedding Step
+**Category**: Tuning Pattern
+**Stage(s)**: train-static (CV data preprocessing and training)
+**Context**: CV physical kernel predictions consistently show systematic bias: CTG prediction is ~1.7-2.0x higher than measured across all bias points; VDS prediction is ~2.0x higher; CBG low-plateau capacitance is substantially above measured floor. The residual KAN wastes capacity trying to pull entire curves up/down by large factors, introducing local oscillations instead of learning smooth device-specific features.
+**Pattern**:
+  1. **Identify config-level bias, not per-point error**: If `mean(predicted/measured)` is far from 1.0 for an entire CV curve, this is a measurement-configuration mismatch. The physical kernel computes intrinsic terminal charge → capacitance; the measured value includes open/short de-embedding error, contact parasitics, effective area uncertainty, and AC frequency response.
+  2. **Pre-train per-configuration gain/offset**: Before any PKAN or residual training, estimate a `gain` and `offset` for each measurement configuration (cgg, cbg, ctg, vds): `C_calibrated = gain * C_intrinsic + offset`. Use the OFF plateau (lowest 20% of voltage sweep) and ON plateau (highest 20%) to constrain these.
+  3. **Freeze calibration during PKAN/residual training**: The gain/offset represents measurement-path properties, not device physics. Once extracted, freeze these parameters. If left trainable, the optimizer will use them to absorb device physics errors, masking the real modeling problem.
+  4. **Document as measurement wrapper, not device model**: In reports and Verilog-A output, clearly separate the "measurement calibration wrapper" from the "device compact model." Only the device model goes into final VA export.
+**Evidence**:
+  - 05-22 TURN 84: "CTG 和 vds 纯物理核整体偏高，说明 residual KAN 不是在微调，而是在试图把一个系统性 offset/scale 错误往下拉" (05-22 diagnostic.md:2089)
+  - 05-22 TURN 88: Sheet calibration initialization — "CTG 需要约 0.65x 的增益，vds 需要约 0.49x 的增益" (05-22 diagnostic.md:2106)
+  - 05-22 TURN 88: Result — "CV RMS 从约 0.183 dec 降到 0.129 dec，CTG 从 0.121 dec 降到 0.034 dec，vds 从 0.260 dec 降到 0.079 dec — 最大的改善来源于测量配置校准" (05-22 diagnostic.md:2110)
+  - 05-22 TURN 109: Verification — "解冻 sheet calibration 在前几轮几乎不改善 CBG，反而会把测量 wrapper 和器件内核重新缠在一起" (05-22 diagnostic.md:2643)
+**Key Parameters**:
+  - Per-configuration `cv_sheet_gain`: Typically 0.4-1.2. Initialize from OFF/ON plateau ratio `(C_meas_plateau / C_model_plateau)`.
+  - Per-configuration `cv_sheet_offset`: Typically +/- 1e-12 F for open de-embedding residual.
+  - `freeze_cv_sheet_calibration`: Set to True after initialization.
+**Success Indicator**: CV prediction error becomes balanced (positive and negative residuals of similar magnitude). CTG/vds gain values are physically reasonable (0.4 < gain < 1.2). KAN residual corrections become small.
+**Pitfalls**: Do NOT allow per-curve gain/offset — this is per measurement *configuration*, shared across all curves within that config. Do NOT embed measurement calibration into the Verilog-A device model. If gain is <0.3 or >3.0, the measurement configuration mapping is likely wrong (e.g., CBG/CTG labels swapped).
+
+---
+
+### Residual KAN Safety Gate with Separate IV/CV Scale Selection — Single Global Scale Kills IV Residual When CV Shape Gate Triggers
+**Category**: Tuning Pattern
+**Stage(s)**: train-static (safe residual scale selection)
+**Context**: The model trains fine, IV residual KAN shows clear 50%+ improvement in IDVTG on-region RMS, but the safe-scale post-training scan selects `safe_residual_scale = 0.0`, completely disabling ALL residual KAN contributions (both IV and CV). The per-scale scan table reveals: residual provides monotonic IV improvement at every scale, but CV shape diagnostics flag minor derivative artifacts at non-zero scales. The single global scale selector sees "CV not strictly improving" and zeros everything.
+**Pattern**:
+  1. **Check if CV shape gate is the bottleneck**: Read the per-scale scan table. If IV metrics improve with scale but CV metrics degrade slightly, the bottleneck is specifically CV shape.
+  2. **Separate IV and CV residual scales**: Use two independent scales: `safe_iv_residual_scale` (selected by IV shape+accuracy criteria) and `safe_cv_residual_scale` (selected by CV shape+accuracy criteria). IV scale can be non-zero even if CV scale is zero.
+  3. **Apply per-domain safety criteria**: IV scale selection considers IV RMS, gm/gds smoothness, IDVD monotonicity, extrapolation anchor errors. CV scale selection considers CV negative slope count, plateau flatness, single-transition peak count.
+  4. **Default CV residual to off**: For most devices, CV residual provides marginal benefit (<0.005 dec RMS) at the cost of shape risk. Set `cv_residual_enabled=False` as default.
+**Evidence**:
+  - 05-22 TURN 65: IV residual alone produced "IDVTG 开态 RMS 减半的提升，非常大" but CV residual produced oscillatory behavior (05-22 diagnostic.md:1609-1611)
+  - 05-22 TURN 109: "之前只有一个全局 safe residual scale，CV 只要对 residual 稍微敏感，就会把整个 residual scale 压到 0，连 IV residual 也一起被关掉" (05-22 diagnostic.md:2667)
+  - 05-22 TURN 109: After separation — "CV residual 关闭后，safe scale 不再被 CV 拖死，IV residual 仍可启用" (05-22 diagnostic.md:2671)
+  - 05-22 TURN 110: User confirms — "PKAN+residual 没作用是对 CV 曲线修正没有作用" (05-22 diagnostic.md:2677)
+**Key Parameters**:
+  - `enable_iv_residual`: True (default). IV residual is the primary KAN correction target.
+  - `enable_cv_residual`: False (default). Only enable when CV shape gates can be satisfied.
+  - `cv_residual_safety_margin`: 1.5. Allows small shape degradation in exchange for CV RMS improvement.
+  - Separate `iv_residual_scale_steps` and `cv_residual_scale_steps` for independent scan density.
+**Success Indicator**: `safe_iv_residual_scale` is non-zero (0.5-1.0). IV metrics improve with residual. CV metrics do not degrade even if CV residual is disabled.
+**Pitfalls**: Do NOT force both residuals to be non-zero. It is a valid outcome that CV residual is disabled while IV residual remains active. Do NOT relax CV shape gates just to get a non-zero CV residual scale. Do NOT use a combined IV+CV score for residual scale selection.
+
+---
+
+### CV Shape Template Constraints — Platform-Transition-Platform vs Monotonicity-Only Loss Design
+**Category**: Tuning Pattern
+**Stage(s)**: train-static (CV loss function design)
+**Context**: CV loss functions that only enforce monotonicity (`dC/dV >= 0`) or smoothness (`|d2C/dV2| small`) are insufficient. The model can satisfy both while still producing curves with double-hump transitions, continued slow rise in the high-voltage plateau, and residual KAN twist. These artifacts pass monotonicity checks but violate the expected "plateau-transition-plateau" shape of gate capacitance.
+**Pattern**:
+  1. **Define shape template per CV type**: For gate CV (CGG/CBG/CTG): OFF plateau (V < Vth-2V) ≈ constant, Transition (Vth-2V to Vth+2V) single monotonic rise, ON plateau (V > Vth+2V) ≈ constant. No second peak, no continued rise. VDS: same but ON plateau may shift with VDS due to channel pinch-off.
+  2. **Add template-based loss terms**: Unimodality penalty (dC/dV should have exactly one peak). Plateau flatness penalty (top/bottom 25% of sweep: 10x weight on |dC/dV|). No continued rise penalty (final 20% dC/dV must be near-zero).
+  3. **Make shape loss base-aware**: Penalty = `max(0, residual_shape_score - base_shape_score)`. Only penalize if residual makes things worse than base.
+  4. **Apply different weights by CV type**: CGG and CBG highest priority, CTG medium, VDS lowest.
+**Evidence**:
+  - 05-22 TURN 92-93: "CGG 的 double hump 基本不是器件物理，而是模型先验造成的假结构...loss 里没有明确写出双栅 TFT 各种 CV 曲线应有的形状先验" (05-22 diagnostic.md:2279, 2286)
+  - 05-22 TURN 93: Shape template design — "CGG/CBG/CTG 的基本形状不是'斜率一直为正'，而是低平台、一个主要转变区、高平台" (05-22 diagnostic.md:2291)
+  - 05-22 TURN 93: After template loss — "新的模板 loss 把模型从'追求 CV RMS'推向'更保守的平台型 CV'" (05-22 diagnostic.md:2300)
+**Key Parameters**:
+  - `cv_template_shape_weight`: 0.15-0.25 (relative to main CV value loss).
+  - `cv_plateau_fraction`: 0.25 (fraction of sweep at top/bottom as plateau).
+  - `cv_unimodal_penalty_weight`: 0.1 (penalty per additional derivative peak beyond the first).
+  - `cv_high_plateau_rise_threshold`: 0.01 (max allowed rise in ON plateau as fraction of total span).
+**Success Indicator**: CV curves show exactly 1 derivative peak per curve. ON plateau flat within 1-2% of total span. No double hump visible in CGG or CBG.
+**Pitfalls**: Do NOT apply strict unimodality to VDS CV — drain bias can produce legitimate shoulder structures. Accept a 0.01-0.03 dec RMS increase if it eliminates visible artifacts. The "no continued rise" constraint should be relaxed for devices with significant trap-related frequency dispersion.
+
+---
+
+### Data-Driven CV Width Initialization for Base PKAN Transition Parameter Finetuning
+**Category**: Tuning Pattern
+**Stage(s)**: train-static (CV physical kernel initialization, base PKAN warm-up)
+**Context**: The pre-trained base PKAN checkpoint contains CV physical parameters (`nfac`, `Cit_t/b`, `trap_width`) calibrated for a reference device. When training a new device with different transition characteristics, base PKAN finetuning must move these from their reference values. With standard warm-start multipliers (0.035), the physical parameters barely move in the first 100-200 epochs. The residual KAN compensates with non-physical corrections.
+**Pattern**:
+  1. **Extract measured CV transition width**: For CGG 10kHz and mid-bias CBG/CTG, compute 20%-80% transition span.
+  2. **Compare with base model transition width**: Ratio `R = width_measured / width_base`.
+  3. **Initialize PKAN transition parameters**: Scale `nfac_cv`, `Cit_t`, `Cit_b`, `trap_width` by `R`: `nfac_init = nfac_base * R`, etc.
+  4. **Use elevated LR for transition params in warm-up**: Separate parameter group with 5-10x higher LR during first 50 epochs.
+  5. **Freeze after warm-up** (~100 epochs), let residual handle remainder.
+**Evidence**:
+  - 05-22 TURN 106: "当前短训里 nfac/Cit/trap_width 移动太慢" (05-22 diagnostic.md:2576)
+  - 05-22 TURN 106: "从实测 20%-80% 过渡宽度估计...这比特殊处理某条曲线更通用" (05-22 diagnostic.md:2576)
+  - 05-22 TURN 107: After initialization — "nfac/Cit/trap_width 已经从一开始被放大，不再只是百分级微调" (05-22 diagnostic.md:2638)
+  - 05-22 TURN 48: User instruction — "CV 的 nfac/Cit/trap_width 可能不止要微调，可能需要大调" (05-22 diagnostic.md:2550)
+**Key Parameters**: `cv_base_pkan_warmup_epochs=100`, `cv_transition_lr_mult=5.0-10.0`, `cv_transition_range=[0.3, 3.0]`.
+**Success Indicator**: Base CV 20%-80% transition width after warm-up within +/-30% of measured width. Base CV RMS decreases >20% during warm-up. Residual corrections remain small.
+**Pitfalls**: Only apply to transition-width-controlling parameters (`nfac_cv`, `Cit_t/b`, `trap_width`), not threshold position parameters. If ratio `R` is >5 or <0.2, consider fallback to fit-physical instead.
+
+---
+
+### CBG/CTG Data Label Swap Auto-Detection via Cox Ratio vs CV Span Ratio
+**Category**: Tuning Pattern
+**Stage(s)**: train-static (CV data preprocessing)
+**Context**: The model consistently shows CBG capacitance span >> CTG span, but the top gate has higher Cox and should show LARGER capacitance span. Visual inspection confirms: curves labeled "CBG" actually look like CTG curves and vice versa — the dataset labels are swapped.
+**Pattern**:
+  1. **Compute expected Cox ratio**: From physical kernel: `R_Cox = Cox_t / Cox_b`.
+  2. **Compute measured CV spans**: `span_cbg = max(C_cbg) - min(C_cbg)`, `span_ctg = max(C_ctg) - min(C_ctg)`. Ratio `R_span = span_cbg / span_ctg`.
+  3. **Detect swap**: If `(R_Cox > 1 and R_span < 1)` or `(R_Cox < 1 and R_span > 1)`, labels are swapped.
+  4. **Auto-correct**: Exchange physical interpretation of CBG and CTG data — "CBG" data assigned to CTG model, "CTG" data assigned to CBG model. Swap swept voltage axis, gate weight matrix, and mode assignment.
+  5. **Report**: Write `cv_gate_orientation.json` documenting whether auto-swap was applied.
+**Evidence**:
+  - 05-22 TURN 109: "Cox_t/Cox_b = 2.92，但原始 CBG_span/CTG_span = 3.27，这和标准双栅 CV 的端口电容大小预期相反" (05-22 diagnostic.md:2663)
+  - 05-22 TURN 109: After auto-swap — "CV RMS 从约 0.13 dec 直接降到 0.0745 dec" (05-22 diagnostic.md:2663)
+  - 05-22 TURN 109: User suspicion confirmed — "有可能是我标反了，我这个器件底栅栅绝缘层电容小，顶栅绝缘层电容大" (05-22 diagnostic.md:2653)
+  - 05-22 TURN 109: After fix — "CBG/CTG 的物理量级也更符合'顶栅 Cox 大'的事实" (05-22 diagnostic.md:2671)
+**Key Parameters**: `cv_auto_orientation=True` (default), `cv_orientation_span_threshold=2.0` (minimum discrepancy factor to trigger).
+**Success Indicator**: After swap: CBG span ~ Cox_b*W*L, CTG span ~ Cox_t*W*L. Physical kernel CV prediction error decreases >30%. Report clearly documents swap decision.
+**Pitfalls**: Do NOT apply auto-swap if both Cox ratios are near 1.0 (symmetric gate). Span comparison must subtract OFF plateau baseline first. If discrepancy factor <2.0, emit warning but do NOT auto-swap.
+
+---
+
+## Session Meta-Notes (05-22)
+
+The 05-22 session represents the **original development of the Physical Kernel + PKAN methodology** from first principles. It began with raw data formatting (Turns 1-10), proceeded through physical kernel fitting with an empirical EKV model (Turns 11-17), and then spanned approximately 90 turns of iterative PKAN architecture development (Turns 18-110). Key methodological milestones:
+
+- **v5-v12** (Turns 31-52): Initial PKAN training script, CV kernel as shared-trap charge model, discovery that CV must be charge-based (Q->C via autograd) not capacitance-based
+- **v14-v20** (Turns 53-58): Move toward EKV-style terminal charge, introduction of terminal-pair parasitic network, recognition that CV data has measurement-configuration dependencies
+- **v22-v26** (Turns 59-63): Distributed CV charge kernel with channel participation, CV data quality audit, sheet-level CV quality gating
+- **v27-v30** (Turns 65-69): Residual KAN approach, discovery that parameter-KAN is too constrained, strong residual KAN shows 50%+ improvement
+- **v31-v35** (Turns 70-81): Safe residual scale mechanism, verbose output system, Verilog-A export
+- **v36-v41** (Turns 82-90): Derivative losses (gm/gds, dC/dV) enter main training, CV sheet calibration, shared IV/CV parameter tying, charge conservation diagnostics
+- **v42-v50** (Turns 92-109): CV shape template constraints, discovery of discrete convolution artifacts, move to single-transition commercial CV kernel, CBG/CTG label swap detection
+
+The session produced the methodological foundation later refined in the 06-29 session, but at this stage the engine (v96 architecture) and formal quality gates did not yet exist — all quality assurance was done through visual inspection of output curves and manual shape diagnostics.
