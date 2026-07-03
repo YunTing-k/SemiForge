@@ -68,7 +68,7 @@ Agent D cannot change the KAN correction architecture (additive vs multiplicativ
 **Stage(s)**: train-hysteresis (slow-bank training)  
 **Context**: After fresh slow-bank training completes with `slow_optimizer_policy = "v90"` and `slow_amp_parameterization = "independent"`, the aggregated `slow_student_teacher_rmse_dec_mean` is reported as 0.0033729 dex — slightly above the v90 protected baseline of 0.0033324 dex (gap 4.05×10⁻⁵ dex). This gap is consistent across multiple retries with identical hyperparameters but different random seeds. Agent D must decide whether to accept or continue tuning.  
 **Pattern**:
-1. First attempt: fresh training with `slow_optimizer_policy = "v90"`, `slow_amp_parameterization = "independent"`, `epochs = 1800`, `hidden_emission = 20`. Result: 0.00350 dex (gap 1.7×10⁻⁴ vs v90).
+1. First attempt: fresh training with `slow_optimizer_policy = "optimized"`, `slow_amp_parameterization = "independent"`, `epochs = 1800`, `hidden_emission = 20`. Result: 0.00350 dex (gap 1.7×10⁻⁴ vs v90).
 2. Second attempt: switch `slow_optimizer_policy` from `"optimized"` (CosineAnnealingLR) to `"v90"` (fixed-AdamW). Result: 0.0033729 dex (gap 4.05×10⁻⁵ vs v90). The CosineAnnealingLR was confirmed inferior for slow-bank — its LR decay undershoots the flat region of the non-convex loss landscape.
 3. Third attempt: increase `slow_restarts` from default 2 to 5, keeping v90 policy and independent parameterization. Result: 0.0033399 dex (gap 7.53×10⁻⁶ vs v90) — essentially identical.
 4. Stop here. The residual gap of 7.53×10⁻⁶ dex (0.23% of the baseline) is indistinguishable from rounding noise. Accept quality.

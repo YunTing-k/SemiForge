@@ -41,15 +41,15 @@
 **Symptom**: A freshly trained base IV-PKAN (no pre-existing checkpoint for this device) converges extremely slowly or plateaus at high loss when using `base_iv_learning_rate=0.002` multiplied by `warm_start_base_pkan_lr_mult=0.035` (effective LR = 7×10⁻⁵). The base PKAN effectively learns nothing, and subsequent residual training cannot compensate because the base under-represents the physical corrections. Conversely, using `LR=1.0` (i.e., `warm_start_base_pkan_lr_mult=1.0`) on a fine-tuning scenario from a good pre-trained checkpoint destroys the learned weights in ~15% of epochs.
 **Root Cause**: The `warm_start_base_pkan_lr_mult` parameter exists specifically for the case where the pre-trained base PKAN checkpoint already contains good device corrections, and the joint training phase should only make small adjustments. A multiplier of 0.035 means the effective LR = base LR × 0.035 — appropriate for protection. But for a `reset_base_from_physical_fit=True` scenario (fresh device, no prior KAN weights), the base PKAN correction heads are initialized to zero and need to learn from scratch. The 0.035 multiplier starves the optimizer. The v90 workflow avoided this because v90 never did fresh-start — it always fine-tuned from a pre-trained checkpoint. The v93+ workflow introduced fresh-start capability but kept the warm-start multiplier as the default, causing regression.
 **Evidence**:
-  - Fresh-start LR must remain 1.0 because v90's 0.035 only applies to pre-trained warm-start.
+   - Fresh-start base PKAN LR multiplier must remain 1.0 because v90's 0.035 multiplier only applies to pre-trained warm-start.
   - The only v90 warm-start value that should NOT be copied is the multiplier 0.035 for existing checkpoints; fresh-start devices must use 1.0, otherwise degradation occurs.
-  - Fresh base training at LR=1.0 reduced high-current RMS from ~0.22 to 0.0388 in ~40 seconds, showing the correct rate for fresh-start.
+   - Fresh base training with multiplier=1.0 reduced high-current RMS from ~0.22 to 0.0388 in ~40 seconds, showing the correct rate for fresh-start.
   - v90's effective base IV LR was 0.002 × 1.0 = 0.002 for warm-start with pre-trained checkpoint; this was the correct fine-tuning rate.
 **Generalization**: Any pipeline that supports both `reset_base_from_physical_fit=True` (fresh start) and `reset_base_from_physical_fit=False` (resume/warm-start) MUST switch the effective base PKAN learning rate between the two modes. The warm-start multiplier is a *protection* mechanism (not an optimization parameter): it exists to prevent CV loss gradients from destroying pre-trained base PKAN weights in the first 15% of joint training epochs. It has no useful role in fresh-start training.
 **Actionable Advice**:
   1. **When `reset_base_from_physical_fit=True`**: Set `warm_start_base_pkan_lr_mult=1.0` (or omit it entirely — same effect). Set `base_iv_learning_rate=0.002` (v90 proven value) and do not apply any LR multiplier during base IV PKAN phase. During the later joint CV phase, since `finetune_base_pkan=False` (v96 default), the base PKAN will be frozen anyway — the warm_start multiplier is irrelevant.
   2. **When `reset_base_from_physical_fit=False`** (resume from checkpoint): Set `warm_start_base_pkan_lr_mult=0.035` and `finetune_base_pkan=True`. This protects the pre-trained PKAN from early destruction when CV loss is introduced. The multiplier ramps from 0.035 to `base_pkan_lr_mult` over the warm-up period.
-   3. **Detection**: When `reset_base_from_physical_fit` is True, the effective LR must be 1.0 regardless of INI value — multiple iterations were wasted debugging LR mismatch caused by the wrong default.
+    3. **Detection**: When `reset_base_from_physical_fit` is True, the base PKAN LR multiplier (`base_pkan_lr_mult`, default 1.0) is used instead of the warm-start multiplier — the engine correctly switches between the two based on this flag. Multiple iterations were wasted debugging LR mismatch when the wrong multiplier was accidentally applied.
    4. **What NOT to do**: Do not blindly copy v90's INI config (which has `warm_start_base_pkan_lr_mult=0.035`) to a fresh-start deployment. This is the exact "copy v90, get worse results" problem the user identified. Do not set `base_iv_learning_rate` above 0.005 — even for fresh-start, rates >0.005 caused oscillations. LR=1.0 was used for a quick test, but the final settled value was 0.002.
 
 ---
@@ -104,11 +104,12 @@
 ### CV Passivity Scan: Joint Scan Defaults and Zero-Out Bug — PARTIALLY FIXED
 **Category**: Tuning Pattern
 **Stage(s)**: train-static (Phase 5 — Joint CV safe scale search)
-**Code Reality (verified 2026-07-03)**: The actual defaults are:
-- `joint_cv_passivity_scan_points`: **80** (not 48)
-- `safe_passivity_scan_points`: **160** (not 96)  
-- `passivity_max_points`: **1200** (not 96)
-There is NO separate "coarse pass then fine pass" two-stage architecture. `choose_safe_joint_cv_scales` runs a single exhaustive 2D grid search over `(parameter_scale × mode × residual_scale)` using `joint_cv_passivity_scan_points=80`.
+**Code Reality (verified 2026-07-03)**: The actual argparse defaults are:
+- `joint_cv_passivity_scan_points`: **80**
+- `safe_passivity_scan_points`: **160**  
+- `passivity_max_points`: **1200**
+Note: these argparse defaults are subject to runtime capping (`min(..., 32)`, `min(..., 48)`, `min(..., 400)` respectively via quick-mode limit logic in `_apply_quick_mode_limit`), so effective values may be lower than the declared defaults.
+`choose_safe_joint_cv_scales` runs a single exhaustive 2D grid search (the post-fix architecture; prior buggy code used a two-stage coarse-then-fine scan where the fine pass could zero out the residual without downward search — see Evidence section below).
 **Context**: Agent C observes that `safe_cv_residual_scale=0` despite `residual_cv_rms` appearing reasonable in intermediate training logs. The scan report shows that a joint scan accepted a `cv_residual_scale` value, but the final report has `selected_cv_residual_mode="off"` and `safe_cv_residual_scale=0.0`. The charge conservation / passivity check on the full grid found violations.
 **Pattern**:
    1. **Detect the bug**: If the scan report accepts a `cv_residual_scale` value but the final metrics show `safe_cv_residual_scale=0` and `selected_cv_residual_mode="off"`, the rejection-without-downward-search bug is active.
