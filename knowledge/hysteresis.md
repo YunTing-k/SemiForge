@@ -412,9 +412,12 @@ Agent D has four tools and must call EXACTLY ONE:
     learn from the teacher fits. Increase `epochs` first, then increase
     `slow_restarts` (if slow-bank led to failure).
    - `endpoint_drift_error_mean` / `endpoint_drift_error_p95`: The KAN predicts
-     wrong steady-state levels. Switch `amp_parameterization` from `independent`
-     to `conservative` — the bounded total+exchange form enforces charge conservation
-     which stabilizes endpoint predictions.
+      wrong steady-state levels. Switch `amp_parameterization` from `independent`
+      to `conservative` — the bounded total+exchange form enforces charge conservation
+      which stabilizes endpoint predictions. **Caveat**: only apply this when
+      endpoint drift is the dominant quality issue. Do NOT switch to conservative
+      to close small RMSE gaps (< 0.001 dex) — conservative degrades slow-bank
+      accuracy and will widen the gap.
   - `strict_top2_symbolic_topology`: Some KAN edges failed to produce Top-2
     symbolic replacements. This is rare but may require increasing `epochs`.
 

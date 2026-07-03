@@ -4,15 +4,15 @@
 
 ### Fail-Soft Output Policy: Quality Gates Must Mark, Not Block
 **Category**: Principle Insight
-**Stage(s)**: final-report (Agent E), all script stages with quality gates (train-static, train-hysteresis)
-**Symptom**: After 15+ iterations of iterative optimization, the pipeline produced zero deliverable output because quality gates blocked artifact preservation.
-**Root Cause**: Quality gate logic was implemented as a hard block — any gate failure (e.g., Top-1 symbolization measured-curve gate) meant no checkpoint, no Verilog-A, no ZIP. Combined with a non-convex optimization loop, this created a zero-output deadlock.
-**Evidence**: Once fail-soft policy was adopted (always save Tier-1 artifacts), the final package met all deployment-relevant gates (HSPICE IV 0.659%, CV 0.0228%) despite marginal measured-relative gate over-limit of 0.00151-0.00672 dex.
-**Generalization**: Whenever quality gates are implemented as hard blockers with no fallback artifact generation, pipelines can enter infinite refinement loops. This is especially dangerous when: (a) the optimization is non-convex (KAN training with random initialization), (b) gate thresholds are tight relative to achievable precision, or (c) multiple interdependent gates create a conjunctive failure mode where fixing one breaks another.
+**Stage(s)**: final-report (Agent E), all script stages with quality gates
+**Symptom**: During development iterations (historical: non-standard gate configuration), the pipeline produced zero deliverable output because quality gates blocked artifact preservation.
+**Root Cause**: In early development configurations, quality gate logic was implemented as a hard block — any gate failure (e.g., Top-1 symbolization measured-curve gate) meant no checkpoint, no Verilog-A, no ZIP. Combined with a non-convex optimization loop, this created a zero-output deadlock.
+**Evidence**: Once fail-soft policy was adopted (always save checkpoints and Verilog-A regardless of gate status), the final package met all deployment-relevant gates (HSPICE IV 0.659%, CV 0.0228%) despite marginal measured-relative gate over-limit of 0.00151-0.00672 dex.
+**[CLARIFICATION — current pipeline differs]**: The current pipeline's quality gates (fit-physical `iv_rms_log10_error_dec`, train-static `residual_iv_rms`+`residual_cv_rms`, train-hysteresis `step_log_rmse_median`) do NOT block artifact preservation. Quality failure only spawns agent retry loops; stages write output files (checkpoints, Verilog-A, plots) on subprocess success (exit code 0) regardless of quality_pass. The symbolization gate (`top1_compatibility`) is a secondary diagnostic, not a blocking quality gate. The "zero-output deadlock" scenario described here reflects an earlier configuration and should not be assumed for current runs. Nevertheless, Agent E should still check that expected artifacts exist — missing artifacts indicate hard failure, not gate failure.
 **Actionable Advice**:
-1. Agent E should explicitly check whether artifacts (checkpoints, Verilog-A files, plots) exist in the output directory even when `quality_pass=False`. If artifacts are missing entirely, Agent E should flag this as a pipeline design defect — the stages succeeded at computation but failed at preservation.
-2. Agent E should distinguish between "model that didn't train" (no checkpoint → real failure) and "model that trained well but failed a measured-curve symbolization gate" (artifact exists, gate is deployment-accuracy rather than training-accuracy).
-3. Agent E should recommend a two-tier delivery model: **always save numerical checkpoints and metrics** (Tier 1), and separately gate the Verilog-A/HSPICE deployment artifacts (Tier 2). Tier 1 should never be empty regardless of gate status.
+1. Agent E should distinguish between "model that didn't train" (no checkpoint → hard failure) and "model that trained successfully but metrics are borderline" (artifacts exist, quality_pass may be False). If artifacts exist despite quality_pass=False, the run is still diagnostically useful.
+2. Agent E should check whether key artifacts (checkpoints, Verilog-A files, plots) exist in the output directory. Missing artifacts indicate hard failure (subprocess crash), not gate failure — flag these as real failures.
+3. Agent E should recommend that future pipeline designs use a two-tier delivery model: **always save numerical checkpoints and metrics** (Tier 1), and separately gate the Verilog-A/HSPICE deployment artifacts (Tier 2).
 
 ### Deployment Error Decomposition: Three-Layer vs Conflated — FIXED (reference model corrected)
 **Status**: FIXED. The HSPICE validation at `dg_tft_full_model.py` now uses `_temporary_deployment_symbolic_nets` context manager to swap in symbolic students as the Python reference. The smoke report documents `"python_reference_model": "deployed_symbolic_students"`. **The three-layer decomposition advice remains valuable for Agent E's reporting and is retained below.**
@@ -25,9 +25,9 @@
 **Evidence**: Agent spent 4 iterations mechanically copying v90 checkpoint weights before user corrected: "reuse v90's IV training FLOW, loss function design, fitting ORDER, and symbolization PROCESS — not the trained RESULTS." When v90 parameters were restored (linear weight 0.25, deriv curves 36, shape period 3), HSPICE IV error dropped from 4.886% to 0.956% — recipe drift, not capacity, was the cause. user provided reference notebook and demanded line-by-line understanding; agent repeatedly drifted from reference architecture and was corrected. Core insight: reuse the method, never the trained artifacts.
 **Generalization**: When a pipeline is ported across versions, the training recipe (hyperparameters, stage order, loss function composition, validation strategy) often drifts due to accumulated "improvements" that were only tested on one device. The resulting failure looks like a model capacity issue but is actually a recipe regression. This pattern is especially common when: (a) training hyperparameters are spread across multiple config files, (b) default values change between versions without versioning, (c) new "features" (e.g., measured-only finetune phase) are added that weren't part of the validated recipe.
 **Actionable Advice**:
-1. Agent E should always compare the current pipeline's training recipe (ALL hyperparameters: epoch counts, learning rates, loss weights, stage ordering, frozen/unfrozen flags, validation strategy) against the last known-good version. A table of diff'd hyperparameters should be the FIRST diagnostic output.
-2. When a model trained from scratch fails but a previous device passed with "the same code," Agent E should assume recipe drift before model capacity issues. Check: LR, epoch count, loss weights, training phase count/order, validation selection criteria.
-3. Agent E should flag any hardcoded directory paths in training scripts as non-portable — these make "same code" a lie across deployments.
+1. Agent E should compare the current pipeline's training recipe (ALL hyperparameters: epoch counts, learning rates, loss weights, stage ordering, frozen/unfrozen flags, validation strategy) against the documented defaults in its knowledge base. Agent E has no access to previous pipeline runs — it can diff current config.ini values against known defaults, not against historical versions. Report any significant deviations from defaults.
+2. When a model trained from scratch fails, Agent E should assume recipe drift before model capacity issues. Check: LR, epoch count, loss weights, training phase count/order, validation selection criteria — compare each against documented defaults.
+3. Agent E should flag any hardcoded directory paths visible in config.ini as non-portable — these make "same code" a lie across deployments.
 
 ### KAN Spline Knot Grid Monotonicity: Silent Cross-Stage Corruption
 **Category**: Principle Insight
@@ -49,7 +49,7 @@
 **Evidence**: After 15 iterations (~20 hours) with zero delivery, users demanded outputs. The agent kept discovering new root causes (warm-start LR mismatch, reference model conflation, knot grid corruption), each triggering full retraining. Final delivery met all deployment gates (HSPICE IV 0.659%, CV 0.0228%) — the fix loop overshot the necessary quality. Counter-example: 80+ iterations across 3 days were PRODUCTIVE because each version added genuinely new physical structure (trap charge model, DOS broadening, single-transition CV kernel) — structural evolution, not parametric churn. The diagnostic signal: is each new version adding new model terms, or just re-tuning existing hyperparameters?
 **Generalization**: Multi-stage pipelines with interdependent quality gates create an optimization surface where fixing one gate can break another. When each fix requires a full pipeline re-run, the convergence time grows combinatorially. This is exacerbated when: (a) intermediate artifacts from earlier stages could be reused but aren't, (b) slow stages (CV passivity scans) are re-run even when their inputs haven't changed, (c) the agent treats "one more improvement" as always worthwhile regardless of the marginal gain vs delivery urgency.
 **Actionable Advice**:
-1. Agent E should explicitly track the **iteration count** and **cumulative wall-clock time** of optimization attempts. If the same stage has been retried >5 times or cumulative time >4 hours, Agent E should recommend delivery with current state and explicit documentation of which gates marginally failed.
+1. Agent E should explicitly track the **iteration count** and **cumulative wall-clock time** of optimization attempts (sum per-attempt `duration_s` from `operation_log.json` via bash). If the same stage has been retried >5 times or cumulative time >4 hours, Agent E should recommend delivery with current state and explicit documentation of which gates marginally failed.
 2. Agent E should distinguish between **blocking failures** (no trained model exists, training crashed) and **marginal failures** (model trained, gates missed by <10% of threshold margin). Marginal failures on non-deployment gates should trigger a recommendation to deliver with caveats, not to retrain.
 3. Agent E should recommend that the pipeline implement **artifact staging**: save intermediate checkpoints after each major phase (base-PKAN, residual, CV, symbolization pre-HSPICE) so that later fixes don't require re-running earlier phases whose inputs haven't changed.
 
@@ -142,7 +142,7 @@
 **Evidence**: simple PKAN training completed in ~2.5 min. After adding convolution + derivative losses + symbolic search, full training reached ~102 min. Convolution alone added ~30-40% overhead. After removing discrete convolution, training returned to ~90-100 min.
 **Generalization**: Incremental feature addition without profiling creates silent computational debt. Each new physics term, each new loss component, each new validation check adds to the per-iteration compute cost. When training runs take >1 hour, the iteration cycle becomes untenable — the developer gets <10 attempts per day. This is especially dangerous when each feature individually adds <20% overhead but 5+ such features double training time. The condition: any pipeline where (a) training time was initially fast but has grown over versions, (b) new "features" are added that recompute intermediate results (convolution, per-curve derivatives, exhaustive search), (c) no profiling or timing breakdown exists per training phase.
 **Actionable Advice**:
-1. Agent E should note the **total training duration** and compare it against previous runs. If duration has grown >2× between versions with similar epoch counts, there is computational bloat — flag it even if model quality improved.
+1. Agent E should note the **total training duration** from per-attempt `duration_s` in `operation_log.json`. If duration grows >2× across retry attempts with similar epoch counts, there is computational bloat — flag it even if model quality improved.
 2. Agent E should recommend that the pipeline profile training time by phase (warmup %, PKAN training %, residual training %, symbolization %, safe-scale search %) so that feature-specific slowdowns can be identified.
 3. Agent E should flag any feature that requires PER-SAMPLE computation (e.g., per-curve derivative, per-measurement-configuration convolution) that wasn't present in earlier faster versions. These are the typical culprits of training slowdown.
 
@@ -194,26 +194,22 @@ The KAN was asked to compensate for first-order global corrections (measurement 
 
 ### CV Charge Model Multi-Step Transitions from Discrete Convolution
 
-**Symptom**: CV curves (especially CGG and CBG) show 2-3 distinct steps or "shoulders" in the OFF→ON transition. These appear as double-hump or triple-hump structures that don't correspond to any physical mechanism. Visible as multiple `dC/dV` peaks.
+**Symptom**: CV curves (especially CGG and CBG) show 2-3 distinct steps or "shoulders" in the OFF→ON transition. These appear as double-hump or triple-hump structures that don't correspond to any physical mechanism. Visible as multiple `dC/dV` peaks. Even after monotonicity checks pass (`dC/dV >= 0`), CV curves can still show double-hump transitions, continued slow rise on the high-voltage plateau, and residual KAN twist.
 
 **Root Cause**: Three mechanisms at different development stages:
 1. **Discrete Gaussian convolution (v45-v47)**: 3-point convolution on EKV sigmoid transition = 3 shifted copies = 3 visible steps
 2. **Multiple additive charge sub-components**: `Q_total = Q_inv + Q_trap_fast + Q_trap_slow + Q_tail` — if each activates at different voltages, produces staircase transitions
 3. **Residual KAN narrow branches**: Optimizer can discover parameter values producing multiple narrow capacitance bumps
 
-**What should be fixed in the engine**: The base capacitance function `C(V) = dQ(V)/dV` must produce exactly ONE transition by construction. Do NOT use discrete convolution (`cap_broad = sum(w_i * cap(V - dV_i))`). Use single continuous transition with global physical parameters (`nfac`, `Cit`, `trap_width`) controlling width. Each additive charge sub-component must share the SAME effective threshold voltage. After any kernel change, plot `dC/dV` — any curve with >1 peak indicates false multi-transition.
+Additionally, monotonicity and smoothness constraints alone are insufficient — the correct CV shape is "plateau-transition-plateau" (two flat regions connected by a single smooth rise). Without template-based loss, the optimizer finds monotonic but non-plateau solutions.
 
-**Evidence**: commercial CV compact models don't use discrete convolution. After replacing 3-point convolution with single-transition kernel, all CV curves reduced to exactly 1 derivative peak.
+**What should be fixed in the engine**: The base capacitance function `C(V) = dQ(V)/dV` must produce exactly ONE transition by construction. Do NOT use discrete convolution (`cap_broad = sum(w_i * cap(V - dV_i))`). Use single continuous transition with global physical parameters (`nfac`, `Cit`, `trap_width`) controlling width. Each additive charge sub-component must share the SAME effective threshold voltage. Add template loss: unimodality penalty (exactly 1 peak in `dC/dV`), plateau flatness penalty (10x weight on `|dC/dV|` in top/bottom 25% of sweep), no-continued-rise penalty. Make shape loss base-aware: only penalize if residual is worse than base. Apply different weights by CV type (CGG/CBG highest priority). After any kernel change, plot `dC/dV` — any curve with >1 peak indicates false multi-transition.
 
-### CV Measurement Configuration Calibration — Per-Sheet Gain/Offset
+**Evidence**: Commercial CV compact models don't use discrete convolution. After replacing 3-point convolution with single-transition kernel, all CV curves reduced to exactly 1 derivative peak. CGG double hump was traced to model artifacts, not device physics — template-based shape loss eliminated them.
 
-**Symptom**: Systematic per-configuration bias — CTG and VDS consistently ~1.5-2.0x higher than measured across all bias points. Residual KAN wastes capacity trying to pull entire curves up/down.
+### CV Measurement Configuration Calibration — Per-Sheet Gain/Offset (see also: Principle Insight above)
 
-**Root Cause**: Physical kernel computes intrinsic terminal capacitance. Measured CV includes open/short de-embedding error, contact parasitics, effective area uncertainty, and AC frequency response — different for each measurement configuration.
-
-**Engine fix**: Pre-extract per-configuration `gain` + `offset` from OFF/ON plateaus before KAN training. Freeze these during training. Do NOT embed in Verilog-A device model — they're measurement-path properties. CTG typically 0.65x gain, VDS typically 0.49x gain.
-
-**Evidence**: adding per-configuration gain+offset was the single largest CV improvement — total CV RMS 0.183→0.129 dec, CTG 0.121→0.034 dec in initial smoke.
+Diagnostic pattern already covered by the Principle Insight "CV Measurement Configuration Calibration" above. The engine-level specifics: per-configuration `gain` + `offset` must be pre-extracted from OFF/ON plateaus and frozen before KAN training. These are measurement-path properties and must NOT be embedded in the Verilog-A device model (they belong in the testbench or extraction script). CTG typically 0.65x gain, VDS typically 0.49x gain. Total CV RMS improved 0.183→0.129 dec with this single change.
 
 ### Separate IV/CV Residual Scales — Global Scale Kills Both When One Fails
 
@@ -224,16 +220,6 @@ The KAN was asked to compensate for first-order global corrections (measurement 
 **Engine fix**: Use two independent scales: `safe_iv_residual_scale` (IV metrics only) and `safe_cv_residual_scale` (CV metrics only). IV can be non-zero while CV stays at zero. Default CV residual to off — it provides marginal benefit (<0.005 dec RMS) for most devices.
 
 **Evidence**: CV shape gate sensitivity caused single global scale to zero both IV and CV residuals — even though IV residual alone provided 50%+ improvement.
-
-### CV Shape Template Constraints — Beyond Monotonicity
-
-**Symptom**: CV curves pass monotonicity checks (`dC/dV >= 0`) but still have double-hump transitions, continued slow rise on high-voltage plateau, and residual KAN twist.
-
-**Root Cause**: Monotonicity and smoothness constraints are insufficient. The correct CV shape is "plateau-transition-plateau" — two flat regions connected by a single smooth rise. Without template-based loss, the optimizer finds monotonic but non-plateau solutions.
-
-**Engine fix**: Add template loss: unimodality penalty (exactly 1 peak in `dC/dV`), plateau flatness penalty (10x weight on `|dC/dV|` in top/bottom 25% of sweep), no continued rise penalty. Make shape loss base-aware: only penalize if residual is worse than base. Apply different weights by CV type (CGG/CBG highest priority).
-
-**Evidence**: CGG double hump was traced to model artifacts, not device physics — template-based shape loss eliminated them.
 
 ### KAN Correction Form — Additive vs Multiplicative by Parameter Semantics
 

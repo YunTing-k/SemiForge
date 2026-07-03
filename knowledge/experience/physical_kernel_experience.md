@@ -50,23 +50,23 @@ The manual scipy least_squares fit (similar structure to the pipeline engine) al
 ### [REMOVED — Code Verification] qsolve(y) hard-clip at y=80 does not exist in current engine
 Code audit confirmed: `qsolve()` in `fit_physical_kernel.py` uses `np.clip(y, -80.0, 2.0)` — the `-80` is a **lower** bound for weak-inversion exp() underflow prevention, NOT an upper clip at y=80. Strong inversion uses `q = 0.5*y + 1e-12` with no upper clip. The claim of a `min(y, 80)` upper clip was factually incorrect — it has never existed in any commit. This entry was removed.
 
-### Contact Resistance Iteration Jitter → Recognition Only
+### [OUTDATED — Engine No Longer Fits Rs0/Rd0] Contact Resistance Iteration Jitter
 
-**Diagnostic**: IV curves (especially IDVD) show sawtooth/zigzag oscillations in strong conduction region. Smooth intrinsic current, jagged external Ids.
+**Diagnostic**: (Historical — cannot occur with current engine.) IV curves (especially IDVD) show sawtooth/zigzag oscillations in strong conduction region. Smooth intrinsic current, jagged external Ids.
 
-**Agent Impact**: **None.** Agent B cannot change Rs0/Rd0 via `adjust_params` (these are EKV model parameters fitted by scipy, not INI-tunable). The 10Ω threshold, 30-step iteration, and 0.55/0.45 relaxation are engine-hardcoded.
+**Agent Impact**: **None.** Rs0/Rd0 default to 1.0 and are NOT in any fitting stage parameter list — they are held fixed, not fitted by scipy. The direct calculation path (no iterative solver) is always used since both are < 10Ω. The 10Ω threshold, 30-step iteration, and 0.55/0.45 relaxation are engine-hardcoded.
 
-**Correct Actions**: If you see IV jitter → check `fitted_params.json`. If Rs0 or Rd0 > 10Ω, the iterative solver is active and unstable. Options: (1) `accept_quality` if jitter is small and on-region RMS is acceptable, (2) `fallback_to_previous` (→ check-data) — the data may contain measurement artifacts that cause the optimizer to push Rs/Rd to unstable values. Do NOT increase `max_nfev_scale` — more iterations worsen the jitter.
+**Why Outdated**: The engine historically allowed fitting Rs0/Rd0, which could push them above the 10Ω threshold and activate an unstable iterative solver path. The fix was to remove them from all fitting stages and hold them at fixed defaults (1.0). This entry is retained to document the pathology in case someone re-adds Rs0/Rd0 to a stage parameter list.
 
 **Evidence**: The optimizer pushed Rd0 large, the 30-step solver oscillated → produced sawtooth IV. Fix was to stop fitting Rs/Rd and use Ioff0/Gleak_ds for off-state leakage instead. IV RMS dropped from ~1 dec to 0.24 dec.
 
-### Gate Saturation (Vmodsat/Vknee) IV-CV Conflict → Recognition Only
+### [OUTDATED — Engine No Longer Fits Vmodsat/Vknee] Gate Saturation IV-CV Conflict
 
-**Diagnostic**: IV saturation improves but CV develops artificial peaks+decline in strong inversion instead of rising to plateau. Vmodsat values in `fitted_params.json` are at non-default low values.
+**Diagnostic**: (Historical — cannot occur with current engine.) IV saturation improves but CV develops artificial peaks+decline in strong inversion instead of rising to plateau. Vmodsat values in `fitted_params.json` are at non-default low values.
 
-**Agent Impact**: **None.** Vmodsat/Vknee are fitted by scipy, not INI-tunable. The fundamental IV-CV tradeoff is structural — both share the same `one_sided_sat()` function.
+**Agent Impact**: **None.** Vmodsat_t/b and Vknee_t/b default to 1.0e6 (effectively "no saturation" — `one_sided_sat()` returns x unchanged) and are NOT in any fitting stage parameter list. They are held fixed, not fitted by scipy. No INI key exists for them.
 
-**Correct Actions**: If both IV saturation and CV shape are poor → `fallback_to_previous` (data/model mismatch). If only CV shape is compromised but IV is acceptable → `accept_quality` — downstream KAN can learn saturation pattern as a VDS-dependent correction. Do NOT attempt to override Vmodsat values via INI adjustments (no INI key exists for these).
+**Why Outdated**: The engine historically included Vmodsat in fitting stages, which allowed the optimizer to lower the saturation knee and produce unphysical CV peaks. The fix was to freeze them at large defaults (1e6) and let mobility/CLM handle saturation through the intrinsic current equation. The `one_sided_sat()` function is structurally shared between IV and CV paths, but with Vmodsat at 1e6 it acts as a pass-through.
 
 **Evidence**: The optimizer pushed Vmodsat_t to lower bound → CV developed spurious peaks. Fix was to freeze Vmodsat at large defaults and let mobility/CLM handle saturation.
 

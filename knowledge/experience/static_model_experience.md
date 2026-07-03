@@ -30,7 +30,7 @@
 2. Request `--freeze-iv-residual-after-stage` to protect IV residual from CV gradients
 3. Reduce `cv_weight` to 5.0 during CV residual stage (from default 10.0) to reduce gradient competition
 4. If CV residual degrades results: set `enable_cv_residual=False` — CV residual is optional, not mandatory
-5. Do NOT set `iv_residual_stage_linear_weight` to 0.34 — use 0.25 (v90 proven)
+5. Do NOT set `iv_residual_stage_linear_weight` to 0.34 (default 0.25 is correct — knowledge covers tuning)
 6. If IV degradation persists after all above → `fallback_to_previous` (→ fit-physical) — the physical kernel may need regeneration
 
 **Evidence**: Restoring v90 parameter values (700 epoch, LR=0.002, linear=0.25, deriv=36, shape=3) produced 11.3% held-out IV improvement. Freezing IV before CV training prevented regression. Independent convergence on same staged isolation principle confirmed cross-session.
@@ -47,7 +47,7 @@
   - v90's effective base IV LR was 0.002 × 1.0 = 0.002 for warm-start with pre-trained checkpoint; this was the correct fine-tuning rate.
 **Generalization**: Any pipeline that supports both `reset_base_from_physical_fit=True` (fresh start) and `reset_base_from_physical_fit=False` (resume/warm-start) MUST switch the effective base PKAN learning rate between the two modes. The warm-start multiplier is a *protection* mechanism (not an optimization parameter): it exists to prevent CV loss gradients from destroying pre-trained base PKAN weights in the first 15% of joint training epochs. It has no useful role in fresh-start training.
 **Actionable Advice**:
-  1. **When `reset_base_from_physical_fit=True`**: Set `warm_start_base_pkan_lr_mult=1.0` (or omit it entirely — same effect). Set `base_iv_learning_rate=0.002` (v90 proven value) and do not apply any LR multiplier during base IV PKAN phase. During the later joint CV phase, since `finetune_base_pkan=False` (v96 default), the base PKAN will be frozen anyway — the warm_start multiplier is irrelevant.
+   1. **When `reset_base_from_physical_fit=True`**: `warm_start_base_pkan_lr_mult` is ignored (engine uses `base_pkan_lr_mult`=1.0, see `dg_tft_full_model.py:9898-9901`). Use `base_iv_learning_rate` at default (0.002). During the later joint CV phase, since `finetune_base_pkan=False` (v96 default), the base PKAN will be frozen anyway.
   2. **When `reset_base_from_physical_fit=False`** (resume from checkpoint): Set `warm_start_base_pkan_lr_mult=0.035` and `finetune_base_pkan=True`. This protects the pre-trained PKAN from early destruction when CV loss is introduced. The multiplier ramps from 0.035 to `base_pkan_lr_mult` over the warm-up period.
     3. **Detection**: When `reset_base_from_physical_fit` is True, the base PKAN LR multiplier (`base_pkan_lr_mult`, default 1.0) is used instead of the warm-start multiplier — the engine correctly switches between the two based on this flag. Multiple iterations were wasted debugging LR mismatch when the wrong multiplier was accidentally applied.
    4. **What NOT to do**: Do not blindly copy v90's INI config (which has `warm_start_base_pkan_lr_mult=0.035`) to a fresh-start deployment. This is the exact "copy v90, get worse results" problem the user identified. Do not set `base_iv_learning_rate` above 0.005 — even for fresh-start, rates >0.005 caused oscillations. LR=1.0 was used for a quick test, but the final settled value was 0.002.
@@ -61,11 +61,11 @@
 **Agent Impact**: **Partial.** Agent C controls symbolic budget parameters (edge_steps, network_finetune_steps, device_iv_finetune_steps, device_iv_measured_steps) but not the edge-local vs terminal validation approach.
 
 **Correct Actions**:
-1. Increase symbolic budget: `edge_steps=180`, `network_finetune_steps=360`, `device_iv_finetune_steps=3000` (v90 values). Do NOT reduce below these.
+1. Use default symbolic budget (`edge_steps`=180, `network_finetune_steps`=360, `device_iv_finetune_steps`=3000). Do NOT reduce below these.
 2. Set `device_iv_measured_steps=0` — the extra 1600-step measured-only phase causes HSPICE error increase (4.886%→0.956% when removed).
-3. Restore v90 IV parameters if drifted: `iv_residual_stage_linear_weight=0.25`, `iv_residual_stage_deriv_curves=36`, `iv_residual_stage_shape_period=3`. (Note: these defaults are already restored in current param_defs.py.)
-4. Increase `base_iv_top1_symbolic_weight` to 0.35 (from 0.05) if edge-level compatibility is poor — pushes KAN edges toward simpler shapes during training.
-5. Relax `base_iv_max_top1_compatibility` to 0.02-0.03 if terminal accuracy is borderline — but only AFTER restoring v90 symbolic budget.
+3. Restore v90 IV defaults if drifted: `iv_residual_stage_linear_weight`=0.25, `iv_residual_stage_deriv_curves`=36, `iv_residual_stage_shape_period`=3.
+4. Increase `base_iv_top1_symbolic_weight` to 0.35 (from default 0.05 near-zero) if edge-level compatibility is poor.
+5. Relax `base_iv_max_top1_compatibility` to 0.02-0.03 if terminal accuracy is borderline — but only AFTER restoring symbolic budget to defaults.
 6. If HSPICE errors persist after all above → `accept_quality` with documentation. The numeric model is accurate; deployment errors may be acceptable for some use cases.
 
 **Evidence**: Restoring v90 parameters reduced HSPICE IV error from 4.886% → 0.956%. Edge-local gate passed (all <0.015) but terminal accuracy was 0.122 dex vs numeric 0.082 dex.

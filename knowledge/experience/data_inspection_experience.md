@@ -1,6 +1,7 @@
 # Data Inspection Experience
 
-> **Agent A tools**: Only `fallback_to_previous` (→ Verifier). No `read_file`, `glob_file`, or `adjust_params` — check-data has no INI parameters.  
+> **Agent A subagent tool**: `fallback_to_previous` (→ Verifier). No `adjust_params` (check-data has no INI parameters).  
+> **Base tools**: `read_file`, `glob_file`, `grep_file`, `bash` (standard explorer set). No `inspect_xlsx`.  
 > **Can influence**: ONLY the fallback decision — is the error in the data (→ fallback to Verifier/Preparer) or environmental (→ no fallback, terminate)?  
 > **Principle**: all advice below answers one question: fallback or not?
 
@@ -14,7 +15,7 @@
 
 **Root Cause**: `model_config.ini` paths containing non-ASCII characters (e.g., Chinese directory names on Windows) can become garbled during file I/O with inconsistent encoding. The pipeline's error classifier matches "data_dir not found" → `DATA_ERROR`, which would incorrectly suggest fallback to Verifier.
 
-**Correct Action**: Inspect the error message text (passed in the Agent A prompt) for garbled non-ASCII characters in path strings. If the error message itself contains corrupted path characters → **no fallback** (encoding corruption cannot be fixed by data re-preparation). Report as `CONFIG_ERROR`. If paths in the error message appear correctly encoded but point to the wrong location → fallback to Verifier (path correction needed). Note: Agent A cannot read `model_config.ini` directly (no file I/O tools); rely on the error text and stdout summary provided in the prompt.
+**Correct Action**: Inspect the error message text (passed in the Agent A prompt) for garbled non-ASCII characters in path strings. Use `read_file` to check `model_config.ini` paths for encoding corruption — garbled non-ASCII path characters in the file indicate an environmental failure, not a data preparation issue. If error text or config paths contain corrupted characters → **no fallback** (encoding corruption cannot be fixed by data re-preparation). Report as `CONFIG_ERROR`. If paths appear correctly encoded but point to the wrong location → fallback to Verifier (path correction needed).
 
 ### Downstream File Discovery Mismatch — check-data Passes But Training Fails
 
