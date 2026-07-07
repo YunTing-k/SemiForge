@@ -202,6 +202,9 @@ class TestGetHandoffHistory(unittest.TestCase):
             op_log.append_attempt("data-prep", StageAttemptLog(
                 n=1, trigger=AttemptTrigger.INITIAL,
                 handoff={"observations": ["found files"]},
+            ))
+            op_log.append_attempt("verifier", StageAttemptLog(
+                n=1, trigger=AttemptTrigger.VERIFIER_FAIL,
                 agent_decision={"overall_ok": False, "summary": "fail"},
             ))
             result = _get_handoff_history(op_log)

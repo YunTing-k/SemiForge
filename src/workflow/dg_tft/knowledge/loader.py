@@ -202,22 +202,56 @@ def load_discovered_summaries(
     stage: str,
     discovered_dir: str | Path,
 ) -> str:
-    """Aggregate discovered knowledge summaries for a stage (progressive disclosure).
+    """Scan discovered knowledge files for YAML frontmatter summaries.
 
-    Scans ``discovered_dir`` for ``*_summary.md`` files, reads their content,
-    and appends them into a single text block for injection into the agent
-    system prompt.  Detailed per-run reports (*.md without ``_summary`` suffix)
-    are left on disk for the agent to read on-demand via ``read_file``.
-
-    Implemented when 4.4 (knowledge contribution) is built.
+    Reads ``knowledge/_discovered/*.md``, parses ``---\n...\n---`` YAML
+    headers, and returns a formatted list of summaries for injection into
+    the agent system prompt.  The agent can then ``read_file`` individual
+    files on-demand.
 
     Args:
         stage: Stage name for filtering (future; currently returns all).
         discovered_dir: Path to ``knowledge/_discovered/``.
 
     Returns:
-        Concatenated summary text, or empty string if no summaries exist.
+        Formatted text block listing discovered knowledge items, or empty
+        string if no summaries exist.
     """
-    # TODO (4.4): scan discovered_dir for *_summary.md,
-    # filter by stage-relevant keywords, return concatenated text.
-    return ""
+    import glob
+    import yaml
+
+    root = Path(discovered_dir)
+    if not root.is_dir():
+        return ""
+
+    items: list[dict[str, str]] = []
+    for md_file in sorted(glob.glob(str(root / "*.md"))):
+        try:
+            content = Path(md_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not content.startswith("---"):
+            continue
+        try:
+            _, fm, _ = content.split("---", 2)
+            data = yaml.safe_load(fm)
+            if isinstance(data, dict):
+                title = str(data.get("title", ""))
+                summary = str(data.get("summary", ""))
+                if title or summary:
+                    items.append({"file": Path(md_file).name, "title": title, "summary": summary})
+        except (ValueError, yaml.YAMLError):
+            continue
+
+    if not items:
+        return ""
+
+    lines = [
+        "==== DISCOVERED KNOWLEDGE (summaries — use `read_file` to load full content on-demand) ====",
+        "",
+    ]
+    for item in items:
+        lines.append(f"- **{item['title']}** ({item['file']})")
+        lines.append(f"  {item['summary']}")
+        lines.append("")
+    return "\n".join(lines)

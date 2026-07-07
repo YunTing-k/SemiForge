@@ -121,6 +121,32 @@ SUPPORTED_TYPES: dict[str, tuple[str, ...]] = {
         TOOL_NAME_UPDATE_TASK,
         TOOL_NAME_QUERY_TASK,
     ),
+    VERIFIER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_BASH,
+    ),
+    DIAGNOSTIC_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_BASH,
+    ),
+    MODELING_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_WEB_FETCH,
+        TOOL_NAME_WEB_SEARCH,
+        TOOL_NAME_BASH,
+    ),
+    INTERPRETER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        TOOL_NAME_BASH,
+    ),
 }
 
 PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
@@ -176,6 +202,36 @@ PERMISSION_PRESETS: dict[str, tuple[str, ...]] = {
         BASH_FILE_LABEL,
         BASH_UNKNOWN_LABEL,
     ),
+    VERIFIER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        BASH_SAFE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
+    ),
+    DIAGNOSTIC_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        BASH_SAFE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
+    ),
+    MODELING_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        BASH_SAFE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
+        BASH_NETWORK_LABEL,
+        BASH_FILE_LABEL,
+    ),
+    INTERPRETER_AGENT_LABEL: (
+        TOOL_NAME_GLOB_FILE,
+        TOOL_NAME_GREP_FILE,
+        TOOL_NAME_READ_FILE,
+        BASH_SAFE_LABEL,
+        BASH_INLINE_SCRIPT_LABEL,
+    ),
 }
 
 SUPPORTED_TYPES_DESC: dict[str, str] = {
@@ -199,5 +255,32 @@ SUPPORTED_TYPES_DESC: dict[str, str] = {
         f"Data preparation specialist for DG-TFT device modeling. Converts raw CSV/XLSX measurement files into standardized "
         f"*_train.xlsx format. Has {TOOL_NAME_GLOB_FILE}, {TOOL_NAME_GREP_FILE}, {TOOL_NAME_READ_FILE}, {TOOL_NAME_WRITE_FILE}, "
         f"and {TOOL_NAME_BASH} (with python inline execution) for efficient batch file processing."
+    ),
+    VERIFIER_AGENT_LABEL: (
+        f"Data verification specialist for DG-TFT device modeling. Inspects prepared *_train.xlsx files "
+        f"to verify sheet structure, required columns, and data integrity. Has {TOOL_NAME_GLOB_FILE}, "
+        f"{TOOL_NAME_GREP_FILE}, {TOOL_NAME_READ_FILE}, and {TOOL_NAME_BASH} (safe + inline python only) "
+        f"for file inspection and data validation."
+    ),
+    DIAGNOSTIC_AGENT_LABEL: (
+        f"Diagnostic specialist for check-data failures in DG-TFT modeling. Analyzes dataset structural "
+        f"validation results and decides whether to fall back to upstream stages. Has {TOOL_NAME_GLOB_FILE}, "
+        f"{TOOL_NAME_GREP_FILE}, {TOOL_NAME_READ_FILE}, and {TOOL_NAME_BASH} (safe + inline python only) "
+        f"for inspecting validation outputs, error logs, and xlsx file structure."
+    ),
+    MODELING_AGENT_LABEL: (
+        f"Modeling agent for DG-TFT parameter tuning (Agents B/C/D). Analyzes stage results, quality "
+        f"metrics, and output artifacts to decide between adjusting parameters, falling back upstream, "
+        f"or accepting current quality. Has {TOOL_NAME_GLOB_FILE}, {TOOL_NAME_GREP_FILE}, "
+        f"{TOOL_NAME_READ_FILE}, and {TOOL_NAME_BASH} (safe + inline python only) for inspecting "
+        f"output files, logs, metrics JSON, and xlsx file structure."
+    ),
+    INTERPRETER_AGENT_LABEL: (
+        f"Final interpretation specialist for DG-TFT modeling (Agent E). Reads operation_log.json, "
+        f"RUN_SUMMARY, and stage output artifacts to produce a comprehensive interpretation: "
+        f"recommends the best attempt chain across all stages, diagnoses root causes of failures, "
+        f"and optionally contributes novel discoveries to the shared knowledge base. Has "
+        f"{TOOL_NAME_GLOB_FILE}, {TOOL_NAME_GREP_FILE}, {TOOL_NAME_READ_FILE}, and "
+        f"{TOOL_NAME_BASH} (safe + inline python only) for reading output files and logs."
     ),
 }

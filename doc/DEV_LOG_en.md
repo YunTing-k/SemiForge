@@ -835,3 +835,52 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 - When modifying `param_defs` or engine argparse → sync `knowledge/*.md` + check `knowledge/experience/*.md` for outdated entries
 - New Codex session JSONL → run Pass 1-3 pipeline, 5-agent parallel extraction
 - Outdated entries in experience files are **deleted**, never retained. `[REMOVED]`/`[OUTDATED]`/`[FIXED]` markers are transitional only.
+
+---
+
+## 2026-07-07 — Agents A-E Complete + Unified Knowledge Injection
+
+### Step 15: Agent Preparer + Verifier
+
+- Added `VERIFIER_AGENT_LABEL`, refined `preparer` type
+- Preparer: `stop_mode="schema"` + `submit_handoff` (structured handoff)
+- Verifier: `stop_mode="schema"` + `report_verification` (structured check)
+- Handoff chain: Preparer → bidirectional → op_log → prompt injection
+- Dynamic stage insertion: Verifier failure in non-full entry → insert DATA_PREP
+- Agent A: dedicated `diagnostic` type, tools `inspect_xlsx` + `fallback_to_previous`
+- Agent A → Verifier: receives Prep handoff + Verifier report + Agent B fallback info
+
+### Steps 16-18: Agent B/C/D — Unified Modeling Agents
+
+- Shared `modeling` type, differentiated by per-stage schema + prompt
+- `adjust_params` inline handler: validates at tool-call level, rejects empty → LLM retries in-session
+- All 5 agents (A-E) now have expert knowledge injected (`build_agent_prompt` reads `knowledge/*.md` + `experience/*.md`)
+- Injection order: EXPERT KNOWLEDGE → EXPERIENCE → task context
+- Fallback_ctx propagation: upstream metrics, downstream fallback info, prior attempts all injected
+- Bugfix: `_stage_done` clears `fallback_ctx` (upstream re-run success must consume fallback context)
+- Bugfix: fallback_ctx lost after retry loop exit → early check + chain exhaustion termination
+
+### Step 19: Agent E — Final Interpretation
+
+- Dedicated `interpreter` type, `stop_mode="any"`
+- Full attempt history in prompt (not just last per stage)
+- Output `FINAL_INTERPRETATION.md` to disk (no 15-line console truncation)
+- `contribute_knowledge` optional: structured template + YAML frontmatter (`title`/`summary`)
+- `load_discovered_summaries()`: startup scan of `_discovered/*.md` YAML headers → summaries injected
+- `dg_tft_report` returns `FINAL_INTERPRETATION.md` path
+- `_spawn_agent_e` placed after `_finalize_run` (reports ready first)
+
+### Full Change Summary
+
+- `constants.py`: +4 agent type constants + `FINAL_INTERPRETATION_FILENAME`
+- `progress.py`: +80 lines (verifier/diagnostic/modeling/interpreter type definitions)
+- `subagent_tools.py`: `submit_handoff` schema + `_AGENT_TYPE_CONFIG` (5 types) + handler changes
+- `subagent.py`: type auto-resolution in `__init__` + handler stop_schema merge
+- `orchestrator.py`: ~250 lines rewritten/added (full A-E spawn chain, fallback_ctx propagation, handoff injection)
+- `data_preparer.py`: ~60 lines (structured Preparer handoff, Verifier type switch)
+- `loader.py`: `load_discovered_summaries()` implementation (YAML header scanning)
+- `tool_def.py`: `dg_tft_report` includes `FINAL_INTERPRETATION.md` path
+- `data_inspection.md`: tool list + three entry modes + Agent A prompt content update
+- `final_interpret.md`: +185 lines Stage Principles for Interpretation
+
+### Git Commits

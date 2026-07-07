@@ -34,7 +34,7 @@ from .schema import (
     StageName,
     DatasetProfile,
 )
-from .stages import get_stages, StageDef
+from .stages import get_stages, get_stage_by_name, StageDef
 from .stage_runner import run_stage
 from .artifacts import STAGE_DISPLAY_NAMES, get_report_paths
 from .report_builder import build_and_write_reports
@@ -257,7 +257,11 @@ def run_workflow(
             sys_log.info("Stage [%s] already completed, skipping (resume)", sd.name)
             _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [bright_black]skipped (already done)[/bright_black]")
             _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
+            # If we reached here via fallback and the upstream re-run succeeded,
+            # consume the fallback context — the downstream stage is about to re-run
+            # and should not see its own previous fallback as "why it was re-run"
             pointer += 1
+            fallback_ctx = None
             continue
 
         # ── Announce stage ──
@@ -280,12 +284,24 @@ def run_workflow(
                 if current < max_r:
                     if sd.name == StageName.VERIFIER:
                         _console(ctx, f"  [{WF_STATUS_WARN}]Verifier failed → back to Preparer (attempt {current}/{max_r})[/{WF_STATUS_WARN}]")
-                        # Go back to DATA_PREP so the worker re-processes with verifier feedback
                         prep_idx = _find_stage_pointer(stages, StageName.DATA_PREP)
+                        if prep_idx < 0:
+                            # Non-"full" entry (verifier/check-data): dynamically insert DATA_PREP
+                            prep_sd = get_stage_by_name(StageName.DATA_PREP)
+                            if prep_sd:
+                                stages.insert(0, prep_sd)
+                                max_pointer = len(stages)
+                                total_stages = len(stages)
+                                if board is not None:
+                                    _add_stage_task(board, ctx.agent_id, run_id, task_map, prep_sd)
+                                prep_idx = 0
+                                _console(ctx, f"  [bright_black]({entry} entry: inserted DATA_PREP for fallback)[/bright_black]")
+                            else:
+                                _console(ctx, f"  [{WF_STATUS_ERROR}]Cannot fallback to DATA_PREP: stage definition not found[/{WF_STATUS_ERROR}]")
+                                break
                         if prep_idx >= 0:
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
-                            # Clear data-prep stage result so _stage_done does not skip it
                             wm.clear_stage_result(run_id, StageName.DATA_PREP)
                         fallback_ctx = None
                         run = wm.get_run(run_id)
@@ -396,13 +412,26 @@ def run_workflow(
 
                 # ── Agent A: check-data hard failure → fallback_to_previous ──
                 if sd.name == StageName.CHECK_DATA:
-                    agent_a_result = _spawn_agent_a(ctx, run_id, sd, sr, output_dir, op_log)
+                    agent_a_result = _spawn_agent_a(ctx, run_id, sd, sr, output_dir, op_log, fallback_ctx=fallback_ctx)
                     if agent_a_result.get("fallback"):
                         fb_target = agent_a_result["fallback"]
                         fb_reason = agent_a_result.get("reason", "")
                         _console(ctx, f"  [{WF_STATUS_WARN}]Agent A → fallback to {fb_target}[/{WF_STATUS_WARN}] [bright_black]({fb_reason[:100]})[/bright_black]")
                         fallback_ctx = agent_a_result
                         new_pointer = _find_stage_pointer(stages, fb_target)
+                        if new_pointer < 0 and fb_target == StageName.VERIFIER:
+                            # "check-data" entry: dynamically insert VERIFIER
+                            verify_sd = get_stage_by_name(StageName.VERIFIER)
+                            if verify_sd:
+                                check_idx = _find_stage_pointer(stages, StageName.CHECK_DATA)
+                                insert_pos = check_idx if check_idx >= 0 else len(stages)
+                                stages.insert(insert_pos, verify_sd)
+                                max_pointer = len(stages)
+                                total_stages = len(stages)
+                                if board is not None:
+                                    _add_stage_task(board, ctx.agent_id, run_id, task_map, verify_sd)
+                                new_pointer = insert_pos
+                                _console(ctx, f"  [bright_black]({entry} entry: inserted VERIFIER for fallback)[/bright_black]")
                         if new_pointer >= 0:
                             pointer = new_pointer
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
@@ -422,6 +451,7 @@ def run_workflow(
                         known_failures=[sr.error or "unknown error"],
                         preferences=preferences,
                         attempt_n=attempt_n,
+                        fallback_ctx=fallback_ctx,
                     )
                     decision = _process_agent_decision(
                         ctx, run_id, sd, config_path, op_log,
@@ -435,8 +465,10 @@ def run_workflow(
                         if new_pointer >= 0:
                             pointer = new_pointer
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                            wm.clear_stage_result(run_id, fb_target)
                             run = wm.get_run(run_id)
                             _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
+                            fallback_ctx = agent_result
                             break
                     # accept / error / exhausted → mark failed and move on
                     if not failed_stage:
@@ -499,6 +531,7 @@ def run_workflow(
                 known_failures=quality_issues,
                 preferences=preferences,
                 attempt_n=attempt_n,
+                fallback_ctx=fallback_ctx,
             )
             decision = _process_agent_decision(
                 ctx, run_id, sd, config_path, op_log,
@@ -512,11 +545,29 @@ def run_workflow(
                 if new_pointer >= 0:
                     pointer = new_pointer
                     _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                    wm.clear_stage_result(run_id, fb_target)
                     run = wm.get_run(run_id)
                     _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
+                    fallback_ctx = agent_result
                     break
             # accept / error → move on
             break
+
+        # If we exited the retry loop due to fallback, skip pointer advance
+        if fallback_ctx is not None:
+            _console(ctx, f"  [bright_black]Fallback active → re-entering upstream stage[/bright_black]")
+            # If the fallback target stage also hard-failed and the fallback chain
+            # is exhausted (e.g. Agent A refused to fallback), abort — don't loop forever.
+            if failed_stage:
+                _console(ctx, f"  [{WF_STATUS_ERROR}]Fallback chain exhausted at {failed_stage} — pipeline terminating[/{WF_STATUS_ERROR}]")
+                wm.mark_failed(run_id, f"Fallback chain exhausted at {failed_stage}: {failed_error}")
+                op_log.set_final_status("failed")
+                _finalize_run(ctx, run_id, output_dir, t_start, stages,
+                              failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
+                              board=board, task_map=task_map)
+                return False, f"Failed at {failed_stage}: fallback chain exhausted"
+            run = wm.get_run(run_id)
+            continue
 
         _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=not bool(failed_stage))
         pointer += 1
@@ -526,14 +577,14 @@ def run_workflow(
     # All stages processed — some may have failed
     if failed_stage:
         op_log.set_final_status("failed")
-        _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
         _finalize_run(ctx, run_id, output_dir, t_start, stages,
                       failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
                       board=board, task_map=task_map)
+        _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
         return False, f"Run {run_id} completed with failures: {failed_stage}"
     op_log.set_final_status("done")
-    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=False, config_path=config_path)
     _finalize_run(ctx, run_id, output_dir, t_start, stages, failed=False)
+    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=False, config_path=config_path)
     return True, f"Run {run_id} completed: {len(stages)} stages"
 
 
@@ -615,7 +666,26 @@ def _run_agent_stage(
         if not op_log.get_stage_attempts("data-prep"):
             copy_dataset_to_data_prep(dataset_dir, attempt_dir)
 
-        verify_result = run_verifier_stage(ctx, attempt_dir)
+        # Build Verifier prompt context: Preparer handoff + Agent A fallback reason (if any)
+        prep_handoff = None
+        prep_attempts = op_log.get_stage_attempts("data-prep")
+        if prep_attempts:
+            prep_handoff = prep_attempts[-1].get("handoff")
+
+        if fallback_ctx and fallback_ctx.get("fallback"):
+            agent_a_handoff = {
+                "fallback_from": "Agent A (check-data)",
+                "reason": fallback_ctx.get("reason", ""),
+                "evidence": fallback_ctx.get("evidence", ""),
+                "suggestion": fallback_ctx.get("suggestion", ""),
+            }
+            if prep_handoff:
+                prep_handoff = dict(prep_handoff)
+                prep_handoff["agent_a_fallback"] = agent_a_handoff
+            else:
+                prep_handoff = {"agent_a_fallback": agent_a_handoff}
+
+        verify_result = run_verifier_stage(ctx, attempt_dir, handoff=prep_handoff)
         verify_ok = verify_result.get("ok", False)
         feedback = verify_result.get("feedback")
         issues = verify_result.get("issues", [])
@@ -642,22 +712,28 @@ def _run_agent_stage(
 
 
 def _build_handoff_history(op_log: OperationLog | None) -> str:
-    """Build handoff history text from prior data-prep attempts."""
+    """Build handoff history text from prior data-prep and verifier attempts.
+
+    Cross-references data-prep attempts with matching verifier feedback
+    by attempt number so the Preparer sees what the Verifier found on retry.
+    """
     if op_log is None:
         return ""
     import json as _json
-    attempts = op_log.get_stage_attempts("data-prep")
-    if not attempts:
-        return ""
+    prep_attempts = op_log.get_stage_attempts("data-prep")
+    verifier_attempts = op_log.get_stage_attempts("verifier")
+    verifier_by_n = {va.get("n"): va for va in verifier_attempts}
     lines: list[str] = []
-    for ad in attempts:
+    for ad in prep_attempts:
         n = ad.get("n", 0)
         h = ad.get("handoff")
-        fb = ad.get("agent_decision")
         if h:
-            lines.append(f"Attempt {n} handoff: {_json.dumps(h, ensure_ascii=False)}")
-        if fb:
-            lines.append(f"Attempt {n} verifier feedback: {_json.dumps(fb, ensure_ascii=False)}")
+            lines.append(f"Attempt {n} preparer handoff: {_json.dumps(h, ensure_ascii=False)}")
+        va = verifier_by_n.get(n)
+        if va:
+            fb = va.get("agent_decision")
+            if fb:
+                lines.append(f"Attempt {n} verifier feedback: {_json.dumps(fb, ensure_ascii=False)}")
     return "\n".join(lines)
 
 
@@ -668,24 +744,27 @@ def _spawn_agent_a(
     stage_result: StageResult,
     output_dir: str,
     op_log: OperationLog | None = None,
+    fallback_ctx: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Spawn Agent A (check-data) to decide whether to fall back to Verifier.
 
-    Agent A has only the ``fallback_to_previous`` tool.  When check-data
-    hard-fails, this agent is invoked to decide whether the failure warrants
-    a fallback to the Verifier stage.
+    Agent A uses the dedicated ``diagnostic`` subagent type — base tools
+    (glob_file, grep_file, read_file, bash) plus subagent tools (inspect_xlsx
+    for investigation, fallback_to_previous for the decision). Tools, stop_mode,
+    and stop_schemas are auto-resolved from the type config.
+
+    Args:
+        fallback_ctx: If Agent B/C/D fell back to check-data, contains their
+                      fallback_to_previous arguments {reason, evidence, suggestion}.
 
     Returns:
         Dict with keys: fallback (str target or ""), reason, evidence, suggestion.
         If fallback is empty, the orchestrator treats the failure as final.
     """
     from src.agent.subagent import SubAgent
-    from src.tool.subagent_tools import get_tools, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS
-    from src.agent.progress import EXPLORER_AGENT_LABEL
+    from src.constants import DIAGNOSTIC_AGENT_LABEL
+    from src.workflow.dg_tft.knowledge.loader import build_agent_prompt
 
-    schemas, handlers = get_tools("check-data")
-
-    # Build a prompt for Agent A
     prompt_lines = [
         "You are Agent A (check-data diagnostics).",
         "The check-data stage (dataset structural validation) has failed.",
@@ -708,26 +787,53 @@ def _spawn_agent_a(
     ])
 
     if op_log:
+        import json as _json
+        prep_attempts = op_log.get_stage_attempts("data-prep")
         verifier_attempts = op_log.get_stage_attempts("verifier")
+
+        if prep_attempts:
+            prompt_lines.append("")
+            prompt_lines.append("Preparer handoff (what the worker produced):")
+            last_prep = prep_attempts[-1]
+            h = last_prep.get("handoff")
+            if h:
+                prompt_lines.append(_json.dumps(h, ensure_ascii=False, indent=2))
+            else:
+                prompt_lines.append(str(last_prep)[:500])
+
         if verifier_attempts:
             prompt_lines.append("")
-            prompt_lines.append("Prior Verifier result:")
+            prompt_lines.append("Verifier report (structured validation results from `report_verification`):")
             last_v = verifier_attempts[-1]
-            prompt_lines.append(str(last_v)[:500])
+            fb = last_v.get("agent_decision")
+            if fb and isinstance(fb, dict):
+                prompt_lines.append(_json.dumps(fb, ensure_ascii=False, indent=2))
+            else:
+                prompt_lines.append(str(last_v)[:500])
+
+    if fallback_ctx and fallback_ctx.get("decision") == "fallback_to_previous":
+        fb_args = fallback_ctx.get("arguments", {}) if isinstance(fallback_ctx.get("arguments"), dict) else {}
+        prompt_lines.append("")
+        prompt_lines.append("**Why you were called (downstream modeling agent fell back):**")
+        prompt_lines.append(f"  Reason from downstream agent: {fb_args.get('reason', '')[:200]}")
+        prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')[:200]}")
+        prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')[:200]}")
+
+    # ── Expert knowledge ──
+    knowledge_block = build_agent_prompt("check-data")
+    if knowledge_block:
+        prompt_lines.insert(0, knowledge_block)
+        prompt_lines.insert(0, "")
 
     prompt = "\n".join(prompt_lines)
 
     agent_id = f"agent_a_check_data_{run_id}_{os.urandom(4).hex()}"
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type=EXPLORER_AGENT_LABEL,
+        subagent_type=DIAGNOSTIC_AGENT_LABEL,
         prompt=prompt,
         agent_id=agent_id,
         subject="DG-TFT check-data diagnostic",
-        subagent_tools=schemas,
-        tool_handlers=handlers,
-        stop_mode="schema",
-        stop_schemas=[SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS],
         console=None,
     )
     ctx.agent_list[agent_id] = agent.progress
@@ -917,6 +1023,29 @@ def _resolve_task(board, agent_id: str, task_id: int | None, *, completed: bool)
         add_blocked_by=None,
     )
     board.update_task(update)
+
+
+def _add_stage_task(
+    board,
+    agent_id: str,
+    run_id: int,
+    task_map: dict[str, int],
+    sd: StageDef,
+) -> None:
+    """Create a single task board entry for a dynamically inserted stage."""
+    if board is None:
+        return
+    import re as _re
+    subject = _STAGE_TASK_SUBJECTS.get(sd.name, sd.name)
+    desc = _STAGE_TASK_DESCS.get(sd.name, "")
+    step = _STAGE_STEP_INDEX.get(sd.name, 0)
+    ok, msg = board.create_task(
+        f"[DG-TFT, ID: {run_id}] [Step-{step}] {subject}", desc,
+    )
+    if ok:
+        m = _re.search(r"\d+", msg)
+        if m:
+            task_map[sd.name] = int(m.group())
 
 
 # ── Console summary ────────────────────────────────────────────────
@@ -1313,6 +1442,7 @@ def _spawn_modeling_agent(
     known_failures: list[str] | None = None,
     preferences: str = "",
     attempt_n: int = 1,
+    fallback_ctx: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Spawn a modeling Agent (B/C/D) to decide on parameter adjustments.
 
@@ -1325,10 +1455,11 @@ def _spawn_modeling_agent(
             ctx, run_id, sd, stage_result, output_dir, config_path,
             op_log, trigger=trigger, known_failures=known_failures,
             preferences=preferences, attempt_n=attempt_n,
+            fallback_ctx=fallback_ctx,
         )
     except Exception as e:
         sys_log.warning("%s spawn failed: %s", agent_label, e)
-        _console(ctx, f"  [bright_black]{agent_label}: could not spawn (context may be incomplete)[/bright_black]")
+        _console(ctx, f"  [bright_black]{agent_label}: could not spawn (context may be incomplete)[/bright_black])")
         return {"decision": "error", "tool_name": "", "arguments": {}, "reasoning": str(e)}
 
 
@@ -1345,6 +1476,7 @@ def _spawn_modeling_agent_inner(
     known_failures: list[str] | None,
     preferences: str,
     attempt_n: int,
+    fallback_ctx: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from src.agent.subagent import SubAgent
     from src.tool.subagent_tools import (
@@ -1353,69 +1485,140 @@ def _spawn_modeling_agent_inner(
         SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
         SUBAGENT_TOOL_ACCEPT_QUALITY,
     )
-    from src.agent.progress import EXPLORER_AGENT_LABEL
+    from src.constants import MODELING_AGENT_LABEL
+    from src.workflow.dg_tft.knowledge.loader import build_agent_prompt
     from src.workflow.dg_tft.param_defs import (
         get_stage_param_schema,
         get_stage_sections,
         get_soft_guard_prompt,
     )
+    import json as _json
 
     upstream = _UPSTREAM_STAGE.get(sd.name, "verifier")
     agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
-    # Auto-generated adjust_params schema for this stage
     adjust_schema = get_stage_param_schema(sd.name)
-
-    # Build tools
     schemas, handlers = get_tools(sd.name, adjust_params_override=adjust_schema)
-
-    # Build stop_schemas
     stop_schemas = [SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_ACCEPT_QUALITY]
 
-    # Build prompt
-    errors = stage_result.error or "none"
-    failures_text = ", ".join(known_failures) if known_failures else "none reported"
-    soft_guard = get_soft_guard_prompt()
+    def _build_prompt() -> str:
+        errors = stage_result.error or "none"
+        failures_text = ", ".join(known_failures) if known_failures else "none reported"
+        soft_guard = get_soft_guard_prompt()
 
-    prompt_lines = [
-        f"You are {agent_label} ({sd.name} diagnostics).",
-        f"The {sd.name} stage has {'failed' if trigger == AttemptTrigger.QUALITY_FAIL and not stage_result.ok else 'completed with quality below threshold'}.",
-        f"Error: {errors}",
-        f"Quality failures: {failures_text}",
-        f"Attempt number: {attempt_n}",
-        f"INI config path: {config_path}",
-        f"Output directory: {output_dir}",
-        f"Upstream stage for fallback: {upstream}",
-        "",
-        "Your job: analyze the stage results and decide the best course of action.",
-        "",
-        "Options (call EXACTLY ONE tool to submit your decision):",
-        f"  1. `adjust_params` — if you believe adjusting hyperparameters can improve quality.",
-        f"  2. `fallback_to_previous` — if you suspect the problem originates upstream (target: {upstream}).",
-        f"  3. `accept_quality` — if the current quality is acceptable, or continued adjustments won't help.",
-    ]
+        prompt_lines = [
+            f"You are {agent_label} ({sd.name} diagnostics).",
+            f"The {sd.name} stage has {'failed' if trigger == AttemptTrigger.QUALITY_FAIL and not stage_result.ok else 'completed with quality below threshold'}.",
+            f"Error: {errors}",
+            f"Quality failures: {failures_text}",
+            f"Attempt number: {attempt_n}",
+            f"INI config path: {config_path}",
+            f"Output directory: {output_dir}",
+            f"Upstream stage for fallback: {upstream}",
+            "",
+            "Your job: analyze the stage results and decide the best course of action.",
+            "",
+            "Options (call EXACTLY ONE tool to submit your decision):",
+            f"  1. `adjust_params` — if you believe adjusting hyperparameters can improve quality.",
+            f"  2. `fallback_to_previous` — if you suspect the problem originates upstream (target: {upstream}).",
+            f"  3. `accept_quality` — if the current quality is acceptable, or continued adjustments won't help.",
+        ]
 
-    prompt_lines.extend([
-        "",
-        "Guidelines:",
-        "- You may use `read_file` and `glob_file` to inspect output files and logs.",
-        "- Make small, incremental parameter changes — extreme jumps rarely help.",
-        "- If the same quality issue persists across multiple attempts, consider fallback or accept.",
-        "- If user preferences deprioritize the failing metric, accept_quality is valid.",
-        "",
-        soft_guard,
-    ])
+        # ── Prior attempts from this stage ──
+        if op_log:
+            prior = op_log.get_stage_attempts(sd.name)
+            if prior:
+                prompt_lines.append("")
+                prompt_lines.append("**Prior attempts from this stage:**")
+                for pa in prior[-3:]:
+                    n = pa.get("n", 0)
+                    adj = pa.get("adjustments") or {}
+                    reason = pa.get("agent_reasoning", "")[:120]
+                    trigger_info = pa.get("trigger", "")
+                    parts = [f"  Attempt {n}"]
+                    if trigger_info:
+                        parts.append(f"(trigger={trigger_info})")
+                    if adj:
+                        adj_str = ", ".join(f"{k}={v}" for k, v in adj.items())
+                        parts.append(f"adjustments: {adj_str}")
+                    if reason:
+                        parts.append(f"reasoning: {reason}")
+                    prompt_lines.append(" | ".join(parts))
 
-    if preferences:
-        prompt_lines.insert(8, "")
-        prompt_lines.insert(9, f"==== USER PREFERENCES ====\n{preferences}\n==== END USER PREFERENCES ====")
+        # ── Upstream stage context ──
+        if op_log:
+            upstream_attempts = op_log.get_stage_attempts(upstream)
+            if upstream_attempts:
+                ua = upstream_attempts[-1]
+                prompt_lines.append("")
+                prompt_lines.append(f"**Last {upstream} attempt:** OK={ua.get('ok')}, "
+                                    f"metrics={_json.dumps(ua.get('metrics', {}))}, "
+                                    f"adjustments={_json.dumps(ua.get('adjustments', {}))}")
 
-    prompt = "\n".join(prompt_lines)
+        # ── Downstream fallback context ──
+        if fallback_ctx and fallback_ctx.get("decision") == "fallback_to_previous":
+            fb_args = fallback_ctx.get("arguments", {}) if isinstance(fallback_ctx.get("arguments"), dict) else {}
+            prompt_lines.append("")
+            prompt_lines.append("**Why you were re-run (downstream fallback):**")
+            prompt_lines.append(f"  Fallback from downstream stage, reason: {fb_args.get('reason', '')[:200]}")
+            prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')[:200]}")
+            prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')[:200]}")
+
+        prompt_lines.extend([
+            "",
+            "Guidelines:",
+            "- You may use `read_file` and `glob_file` to inspect output files and logs.",
+            "- Make small, incremental parameter changes — extreme jumps rarely help.",
+            "- If the same quality issue persists across multiple attempts, consider fallback or accept.",
+            "- If user preferences deprioritize the failing metric, accept_quality is valid.",
+            "- You may change as many parameters as needed — there is no limit on the number of adjustments.",
+            "",
+            soft_guard,
+        ])
+
+        if preferences:
+            prompt_lines.insert(8, "")
+            prompt_lines.insert(9, f"==== USER PREFERENCES ====\n{preferences}\n==== END USER PREFERENCES ====")
+
+        # ── Expert knowledge ──
+        kb = build_agent_prompt(sd.name)
+        if kb:
+            prompt_lines.insert(0, kb)
+            prompt_lines.insert(0, "")
+
+        return "\n".join(prompt_lines)
+
+    # ── Build adjust_params handler (validates inline at tool-call level) ──
+    param_table = _get_stage_param_table(sd.name)
+    sections = get_stage_sections(sd.name)
+
+    def _adjust_params_handler(arguments: dict, _ctx) -> dict:
+        raw = arguments.get("adjustments", {}) if isinstance(arguments, dict) else {}
+        if not raw:
+            return {"status": "fail", "reason": "adjustments must be a non-empty dict of key=value pairs"}
+        sanitized, warnings = validate_agent_adjustments(raw, param_table, sections, sd.name)
+        if not sanitized:
+            return {"status": "fail", "reason": f"All {len(warnings)} params rejected: {'; '.join(warnings[:3])}"}
+        primary_section = sections[0]
+        snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
+        applied_str = ", ".join(f"{k}={v}" for k, v in sanitized.items())
+        return {
+            "status": "ok",
+            "applied": dict(sanitized),
+            "warnings": warnings,
+            "ini_snapshot": snapshot,
+            "applied_summary": applied_str,
+        }
+
+    handlers[SUBAGENT_TOOL_ADJUST_PARAMS] = _adjust_params_handler
+
+    # ── Single spawn ──
+    prompt = _build_prompt()
 
     agent_id = f"{sd.name}_agent_{run_id}_{os.urandom(4).hex()}"
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type=EXPLORER_AGENT_LABEL,
+        subagent_type=MODELING_AGENT_LABEL,
         prompt=prompt,
         agent_id=agent_id,
         subject=f"DG-TFT {sd.name} agent",
@@ -1439,7 +1642,6 @@ def _spawn_modeling_agent_inner(
         sys_log.warning("%s failed: %s", agent_label, err)
         return {"decision": "error", "tool_name": "", "arguments": {}, "reasoning": err}
 
-    import json as _json
     try:
         parsed = _json.loads(result) if isinstance(result, str) else dict(result)
     except (_json.JSONDecodeError, TypeError, ValueError):
@@ -1471,6 +1673,8 @@ def _normalize_tool_name(parsed: dict[str, Any]) -> str:
         if key in parsed or parsed.get("tool") == key or parsed.get("function") == key:
             return canonical
 
+    if parsed.get("applied"):
+        return "adjust_params"
     if parsed.get("section") and parsed.get("adjustments"):
         return "adjust_params"
     if parsed.get("target") and parsed.get("reason"):
@@ -1503,35 +1707,44 @@ def _process_agent_decision(
     agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
     if decision == "adjust_params":
-        sections = get_stage_sections(sd.name)
-        param_table = _get_stage_param_table(sd.name)
-        if sections is None or param_table is None:
-            _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params: no param table for {sd.name}[/{WF_STATUS_WARN}]")
-            return "accept"
+        arguments = agent_result.get("arguments", {})
+        reasoning = agent_result.get("reasoning", "")
+        agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
-        raw_params = arguments.get("adjustments", {}) if isinstance(arguments, dict) else {}
-        if not raw_params:
-            _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params called with empty adjustments[/{WF_STATUS_WARN}]")
-            return "accept"
+        # Handler output (pre-validated and applied) or legacy raw arguments
+        applied = arguments.get("applied", {}) if isinstance(arguments, dict) else {}
+        warnings = arguments.get("warnings", []) if isinstance(arguments, dict) else []
+        snapshot = arguments.get("ini_snapshot", "") if isinstance(arguments, dict) else ""
 
-        sanitized, warnings = validate_agent_adjustments(
-            raw_params, param_table, sections, sd.name,
-        )
-        for w in warnings:
+        if not applied:
+            # Fallback: attempt raw validation (backward compat)
+            sections = get_stage_sections(sd.name)
+            param_table = _get_stage_param_table(sd.name)
+            if sections is None or param_table is None:
+                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params: no param table for {sd.name}[/{WF_STATUS_WARN}]")
+                return "accept"
+            raw_params = arguments.get("adjustments", {}) if isinstance(arguments, dict) else {}
+            if not raw_params:
+                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params called with empty adjustments[/{WF_STATUS_WARN}]")
+                return "accept"
+            sanitized, warnings = validate_agent_adjustments(raw_params, param_table, sections, sd.name)
+            if not sanitized:
+                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label}: all params rejected by guard[/{WF_STATUS_WARN}]")
+                return "accept"
+            applied = {str(k): v for k, v in sanitized.items()}
+            primary_section = sections[0]
+            snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
+
+        for w in warnings[:3]:
             sys_log.warning("[%s] %s", sd.name, w)
             _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} guard: {w}[/{WF_STATUS_WARN}]")
 
-        if not sanitized:
-            _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label}: all params rejected by guard[/{WF_STATUS_WARN}]")
-            return "accept"
-
-        adjusted_keys = list(sanitized.keys())
-        _console(ctx, f"  [{WF_STATUS_SUCCESS}]{agent_label} → adjust_params: {', '.join(f'{k}={sanitized[k]}' for k in adjusted_keys[:5])}[/{WF_STATUS_SUCCESS}]")
+        applied_str = arguments.get("applied_summary", "") if isinstance(arguments, dict) else ""
+        if not applied_str and applied:
+            applied_str = ", ".join(f"{k}={v}" for k, v in applied.items())
+        _console(ctx, f"  [{WF_STATUS_SUCCESS}]{agent_label} → adjust_params: {applied_str}[/{WF_STATUS_SUCCESS}]")
         if reasoning:
             _console(ctx, f"  [bright_black]Reasoning: {reasoning[:120]}[/bright_black]")
-
-        primary_section = sections[0]
-        snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
 
         if op_log:
             op_log.append_attempt(sd.name, StageAttemptLog(
@@ -1540,7 +1753,7 @@ def _process_agent_decision(
                 agent_decision=arguments,
                 agent_reasoning=reasoning,
                 ini_snapshot=snapshot,
-                adjustments={str(k): str(v) for k, v in sanitized.items()},
+                adjustments={str(k): str(v) for k, v in applied.items()},
                 ok=False,
             ))
 
@@ -1641,48 +1854,85 @@ def _spawn_agent_e_inner(
     failed_stage: str,
 ) -> None:
     from src.agent.subagent import SubAgent
-    from src.tool.subagent_tools import get_tools, SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE
-    from src.agent.progress import EXPLORER_AGENT_LABEL
-
-    schemas, handlers = get_tools("final-interpret")
+    from src.constants import INTERPRETER_AGENT_LABEL, FINAL_INTERPRETATION_FILENAME
+    from src.workflow.dg_tft.knowledge.loader import build_agent_prompt, load_discovered_summaries
+    import json as _json
 
     status_text = f"FAILED at {failed_stage}" if failed else "COMPLETED successfully"
-    stage_summaries: list[str] = []
+
+    # ── Build stage history (all attempts, not just last) ──
+    stage_summary_lines: list[str] = []
     if op_log:
         for stage_name, attempts in op_log.data.get("stages", {}).items():
-            if attempts:
-                last = attempts[-1]
-                ok = "PASS" if last.get("ok") else "FAIL"
-                metrics = last.get("metrics", {})
-                metric_str = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if v is not None)
-                stage_summaries.append(f"  {stage_name}: {ok} | {metric_str}")
+            if not attempts:
+                continue
+            stage_summary_lines.append(f"  Stage: {stage_name} ({len(attempts)} attempt(s))")
+            for a in attempts:
+                n = a.get("n", 0)
+                ok = "OK" if a.get("ok") else "FAIL"
+                trigger = a.get("trigger", "")
+                quality = a.get("quality_pass", "")
+                metrics = a.get("metrics", {})
+                adj = a.get("adjustments", {})
+                reason = a.get("agent_reasoning", "")[:120]
+                parts = [f"    Attempt {n}: {ok}, trigger={trigger}, quality_pass={quality}"]
+                if metrics:
+                    parts.append("metrics=" + ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if v is not None))
+                if adj:
+                    parts.append("adjustments=" + ", ".join(f"{k}={v}" for k, v in adj.items()))
+                if reason:
+                    parts.append(f"agent_reasoning=\"{reason}\"")
+                stage_summary_lines.append(" | ".join(parts))
 
+    # ── Build prompt ──
     prompt_lines = [
-        "You are Agent E (final interpretation).",
-        f"The DG-TFT modeling pipeline has {status_text}.",
+        "You are Agent E (final interpretation) for DG-TFT modeling.",
+        f"The pipeline has {status_text}.",
+        f"Output directory: {output_dir}",
         "",
         "LANGUAGE: All output MUST be in English only.",
         "",
-        "Stage results summary:",
-    ]
-    prompt_lines.extend(stage_summaries)
-    prompt_lines.extend([
+        "Your job:",
+        "1. Read `operation_log.json` and stage output artifacts to understand the full run.",
+        "2. Recommend the BEST chain of attempts across all stages — read ALL attempts,",
+        "   not just the last one per stage. For each stage, explain which attempt",
+        "   produced the best result and why.",
+        "3. If the pipeline failed, identify the root cause stage (the FIRST stage that",
+        "   failed independently, not a cascade victim missing upstream artifacts).",
+        "4. Assess modeling quality overall and deployment readiness.",
+        "5. Optionally (VERY rarely), call `contribute_knowledge` if you discover a truly",
+        "   novel, generalizable pattern. Most runs do NOT trigger this.",
         "",
-        "Your PRIMARY job: produce a concise text interpretation of this run.",
-        "Focus on what went well, what went wrong, and what to try next.",
-        "",
-        "IMPORTANT — `contribute_knowledge` is OPTIONAL. Call it ONLY when you",
-        "identify a genuinely novel, generalizable pattern that is NOT already",
-        "documented in the project's knowledge base and would help future runs.",
-        "Most runs do NOT produce such discoveries — simply skip the tool and",
-        "output your text interpretation. Calling `contribute_knowledge` for",
-        "routine observations (e.g. 'learning rate was too high') is noise.",
+        "Output format — write clear Markdown with these sections:",
+        "  ## Recommended Path",
+        "  ## Modeling Status",
+        "  ## Per-Stage Analysis",
+        "  ## Metric Breakdown",
+        "  ## Failure Diagnosis (if applicable)",
+        "  ## Deployment Readiness",
         "",
         "Be concise and actionable. Focus on what matters for this device.",
-    ])
+        "",
+        "IMPORTANT — Injected knowledge: Your prompt includes EXPERT KNOWLEDGE (code-derived",
+        "reference covering parameters, engine behavior, and decision frameworks) and",
+        "EXPERIENCE (practical patterns from real sessions including diagnostic signals",
+        "and tuning recipes). You may also see DISCOVERED KNOWLEDGE summaries from prior",
+        "runs. Do NOT repeat or regurgitate this knowledge in your interpretation — it is",
+        "context for your reasoning, not content to copy-paste. The same applies to",
+        "`contribute_knowledge`: only call it for genuinely novel patterns NOT already",
+        "described in the EXPERT KNOWLEDGE, EXPERIENCE, or DISCOVERED KNOWLEDGE blocks.",
+    ]
 
-    if preferences:
-        prompt_lines.insert(0, f"==== USER PREFERENCES ====\n{preferences}\n==== END USER PREFERENCES ====")
+    if op_log:
+        prompt_lines.append("")
+        prompt_lines.append("**Full operation log summary (all attempts):**")
+        prompt_lines.extend(stage_summary_lines)
+
+    # ── Expert knowledge + discovered summaries ──
+    knowledge_block = build_agent_prompt("final-report", user_preferences=preferences,
+                                         discovered_dir="knowledge/_discovered")
+    if knowledge_block:
+        prompt_lines.insert(0, knowledge_block)
         prompt_lines.insert(0, "")
 
     prompt = "\n".join(prompt_lines)
@@ -1690,14 +1940,10 @@ def _spawn_agent_e_inner(
     agent_id = f"agent_e_interpret_{run_id}_{os.urandom(4).hex()}"
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type=EXPLORER_AGENT_LABEL,
+        subagent_type=INTERPRETER_AGENT_LABEL,
         prompt=prompt,
         agent_id=agent_id,
         subject="DG-TFT final interpretation",
-        subagent_tools=schemas,
-        tool_handlers=handlers,
-        stop_mode="any",
-        stop_schemas=[SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE],
         console=None,
     )
     ctx.agent_list[agent_id] = agent.progress
@@ -1710,54 +1956,20 @@ def _spawn_agent_e_inner(
         agent.progress.if_archived = True
 
     if result and agent.status.value == "done":
-        _console(ctx, f"  [{WF_SECTION_TITLE}]Agent E Interpretation[/{WF_SECTION_TITLE}]")
-        if isinstance(result, str):
-            import json as _json
-            try:
-                parsed = _json.loads(result)
-                if isinstance(parsed, dict) and "title" in parsed:
-                    _handle_contribute_knowledge(parsed, ctx, run_id)
-            except _json.JSONDecodeError:
-                pass
-            for line in result.strip().splitlines()[:15]:
-                _console(ctx, f"  [bright_black]{line[:120]}[/bright_black]")
-        else:
-            _console(ctx, f"  [bright_black]See agent dump for details[/bright_black]")
+        # Write full interpretation to file
+        interpretation_path = os.path.join(output_dir, FINAL_INTERPRETATION_FILENAME)
+        try:
+            with open(interpretation_path, "w", encoding="utf-8") as f:
+                f.write(result if isinstance(result, str) else str(result))
+            _console(ctx, f"  Agent E → {FINAL_INTERPRETATION_FILENAME} written ({os.path.getsize(interpretation_path)} bytes)")
+        except OSError as e:
+            sys_log.warning("Agent E: failed to write %s: %s", FINAL_INTERPRETATION_FILENAME, e)
+            _console(ctx, f"  [bright_black]Agent E: could not write {FINAL_INTERPRETATION_FILENAME}[/bright_black]")
     else:
+        sys_log.warning("Agent E: no interpretation produced (status=%s)", agent.status.value)
         _console(ctx, f"  [bright_black]Agent E: no interpretation produced[/bright_black]")
 
 
-def _handle_contribute_knowledge(arguments: dict[str, Any], ctx, run_id: int) -> None:
-    """Write a knowledge contribution from Agent E's structured output.
-
-    Filename: ``{title_slug}_{timestamp}.md`` — title slugified for human readability,
-    timestamp for uniqueness.
-    """
-    import re
-    from datetime import datetime
-
-    os.makedirs("knowledge/_discovered", exist_ok=True)
-
-    title = arguments.get("title", "").strip()
-    content = arguments.get("content", "")
-
-    if title:
-        slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
-    else:
-        slug = "discovery"
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{slug}_{timestamp}.md"
-    filepath = os.path.join("knowledge/_discovered", filename)
-
-    full_text = f"# {title or 'Untitled'}\n\n{content}\n"
-
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(full_text)
-        _console(ctx, f"  [{WF_STATUS_SUCCESS}]Contributed knowledge: {filename}[/{WF_STATUS_SUCCESS}]")
-    except Exception as e:
-        sys_log.warning("Failed to write contributed knowledge: %s", e)
 
 
 def _get_prep_info(ctx: AgentContext, prep_id: int | None) -> dict | None:

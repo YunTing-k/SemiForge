@@ -53,15 +53,18 @@ SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS: str = "fallback_to_previous"
 SUBAGENT_TOOL_REPORT_VERIFICATION: str = "report_verification"
 SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: str = "contribute_knowledge"
 SUBAGENT_TOOL_ACCEPT_QUALITY: str = "accept_quality"
+SUBAGENT_TOOL_SUBMIT_HANDOFF: str = "submit_handoff"
 
 __all__ = [
     "get_tools",
+    "resolve_agent_type_config",
     "SUBAGENT_TOOL_INSPECT_XLSX",
     "SUBAGENT_TOOL_ADJUST_PARAMS",
     "SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS",
     "SUBAGENT_TOOL_REPORT_VERIFICATION",
     "SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE",
     "SUBAGENT_TOOL_ACCEPT_QUALITY",
+    "SUBAGENT_TOOL_SUBMIT_HANDOFF",
 ]
 
 # ---------------------------------------------------------------------------
@@ -219,30 +222,97 @@ _ACCEPT_QUALITY_SCHEMA: dict[str, Any] = {
     },
 }
 
+_SUBMIT_HANDOFF_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_SUBMIT_HANDOFF,
+        "description": (
+            "Submit a structured handoff report after data preparation. "
+            "Call this tool exactly once at the end — do not output free text."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["observations", "actions"],
+            "additionalProperties": False,
+            "properties": {
+                "observations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Key observations about the raw data (file types found, format issues, column naming patterns).",
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "What was done: which files were processed, how they were converted, any normalizations applied.",
+                },
+                "potential_issues": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Potential problems the verifier should check: missing VDS scans, ambiguous column names, incomplete files.",
+                },
+                "output_manifest": {
+                    "type": "object",
+                    "properties": {
+                        "iv_files": {"type": "integer", "description": "Number of IV *_train.xlsx files produced."},
+                        "cv_files": {"type": "integer", "description": "Number of CV *_train.xlsx files produced."},
+                        "it_files": {"type": "integer", "description": "Number of I-t files in the it/ directory, or 0 if none."},
+                    },
+                    "description": "Count of output files produced, for the verifier to cross-check.",
+                },
+            },
+        },
+    },
+}
+
 _CONTRIBUTE_KNOWLEDGE_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE,
         "description": (
             "Contribute a genuinely novel, generalizable discovery to the shared knowledge base. "
-            "Only call this when you have a non-obvious finding that future runs would benefit from. "
+            "Only call this when you have a NON-OBVIOUS finding that future runs would benefit from. "
             "All output MUST be in English. "
-            "The file is saved to knowledge/_discovered/ with a slug based on the title."
+            "The file is saved to knowledge/_discovered/ with a YAML header for structured indexing.\n\n"
+            "DO NOT CALL THIS for: (a) routine observations like 'learning rate was too high', "
+            "(b) one-run metrics without generalizable conditions, (c) facts already documented in "
+            "the EXPERT KNOWLEDGE, EXPERIENCE, or DISCOVERED KNOWLEDGE blocks in your prompt.\n\n"
+            "ONLY call this when you find a genuinely new PATTERN — something reproducible and "
+            "cross-device, with clear triggering conditions, that would guide a future agent to "
+            "a better decision.\n\n"
+            "The `content` field MUST follow this template (no other format accepted):\n"
+            "```\n"
+            "## Category: [one of: Diagnostic Signal, Tuning Recipe, Tool Strategy, Engine Behavior, Pipeline Pattern]\n"
+            "## Stage(s): [which stage(s) this applies to]\n"
+            "## Symptom: [what the agent sees — metric value, error message, log pattern]\n"
+            "## Root Cause: [why it happens — the underlying mechanical or physical reason, NOT a guess]\n"
+            "## Evidence: [specific metric values, file paths, reproductions]\n"
+            "## Actionable Advice:\n"
+            "1. [specific action the agent should take first]\n"
+            "2. [fallback if action 1 fails]\n"
+            "```"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Short English title summarizing the discovery (used as filename slug).",
+                    "description": "Short English title summarizing the discovery (used as filename slug and YAML frontmatter)."
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "A short, self-contained summary of the discovery (2-4 sentences). This is the ONLY part "
+                        "that will be injected into future agent prompts for indexing. It MUST be specific enough "
+                        "to be recognized as relevant when a future agent encounters a similar situation. Include: "
+                        "the triggering condition, the recommended action, and the expected outcome."
+                    ),
                 },
                 "content": {
                     "type": "string",
-                    "description": "Full discovery text in English Markdown, including conditions, "
-                    "observations, metric values, and actionable conclusions.",
+                    "description": "Full discovery text following the required template format above."
                 },
             },
-            "required": ["title", "content"],
+            "required": ["title", "summary", "content"],
         },
     },
 }
@@ -253,7 +323,7 @@ _CONTRIBUTE_KNOWLEDGE_SCHEMA: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, Any]:
-    """Write a knowledge contribution to the discovered knowledge directory."""
+    """Write a knowledge contribution with YAML frontmatter to the discovered directory."""
     import os
     import re
     from datetime import datetime
@@ -262,6 +332,7 @@ def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, A
     os.makedirs(knowledge_dir, exist_ok=True)
 
     title = arguments.get("title", "").strip()
+    summary = arguments.get("summary", "").strip()
     content = arguments.get("content", "")
 
     if title:
@@ -273,7 +344,11 @@ def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, A
     filename = f"{slug}_{timestamp}.md"
     filepath = os.path.join(knowledge_dir, filename)
 
-    full_text = f"# {title or 'Untitled'}\n\n{content}\n"
+    yaml_header = f"title: {title or 'Untitled'}\n"
+    if summary:
+        yaml_header += f"summary: {summary}\n"
+
+    full_text = f"---\n{yaml_header}---\n\n# {title or 'Untitled'}\n\n{content}\n"
 
     try:
         with open(filepath, "w", encoding="utf-8") as f:
@@ -360,3 +435,53 @@ def get_tools(
         else:
             schemas.append(adjust_params_override)
     return schemas, dict(handlers)
+
+
+# ---------------------------------------------------------------------------
+# Agent type → tool configuration (auto-resolved for dedicated types)
+# ---------------------------------------------------------------------------
+# Dedicated agent types have fixed tool sets determined by their type,
+# without requiring callers to pass subagent_tools / tool_handlers params.
+# Non-dedicated types (explorer, worker, scheduler) resolve to None —
+# callers pass subagent_tools explicitly for those.
+# ---------------------------------------------------------------------------
+
+from src.constants import VERIFIER_AGENT_LABEL, PREPARER_AGENT_LABEL, DIAGNOSTIC_AGENT_LABEL, INTERPRETER_AGENT_LABEL
+
+_AGENT_TYPE_CONFIG: dict[str, dict[str, Any]] = {
+    PREPARER_AGENT_LABEL: {
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _SUBMIT_HANDOFF_SCHEMA],
+        "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+        "stop_mode": "schema",
+        "stop_schemas": [SUBAGENT_TOOL_SUBMIT_HANDOFF],
+    },
+    VERIFIER_AGENT_LABEL: {
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA],
+        "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+        "stop_mode": "schema",
+        "stop_schemas": [SUBAGENT_TOOL_REPORT_VERIFICATION],
+    },
+    DIAGNOSTIC_AGENT_LABEL: {
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _FALLBACK_TO_PREVIOUS_SCHEMA],
+        "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
+        "stop_mode": "schema",
+        "stop_schemas": [SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS],
+    },
+    INTERPRETER_AGENT_LABEL: {
+        "tool_schemas": [_CONTRIBUTE_KNOWLEDGE_SCHEMA],
+        "tool_handlers": {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: _contribute_knowledge_handler},
+        "stop_mode": "any",
+        "stop_schemas": [],
+    },
+}
+
+
+def resolve_agent_type_config(
+    agent_type: str,
+) -> dict[str, Any] | None:
+    """Return tool configuration for a dedicated agent type.
+
+    Returns a dict with keys: tool_schemas, tool_handlers, stop_mode, stop_schemas.
+    Returns None for non-dedicated types (callers must provide tool config explicitly).
+    """
+    return _AGENT_TYPE_CONFIG.get(agent_type)

@@ -47,6 +47,7 @@ from src.tool.subagent_tools import (
     SUBAGENT_TOOL_ADJUST_PARAMS,
     SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
     SUBAGENT_TOOL_REPORT_VERIFICATION,
+    resolve_agent_type_config,
 )
 from src.constants import *
 
@@ -194,6 +195,17 @@ class SubAgent:
 
         if subagent_type not in SUPPORTED_TYPES:
             raise ValueError(f"Unknown subagent type: {subagent_type}. Supported: {list(SUPPORTED_TYPES.keys())}")
+
+        if subagent_tools is None:
+            type_config = resolve_agent_type_config(subagent_type)
+            if type_config is not None:
+                subagent_tools = type_config["tool_schemas"]
+                tool_handlers = type_config.get("tool_handlers") or {}
+                if stop_mode == "plain_text" and "stop_mode" in type_config:
+                    stop_mode = type_config["stop_mode"]
+                if not stop_schemas and "stop_schemas" in type_config:
+                    stop_schemas = type_config["stop_schemas"]
+
         if model_type not in ("main", "medium", "fast"):
             raise ValueError(f"Unknown model_type: {model_type}. Supported: main, medium, fast")
         if stop_mode not in ("plain_text", "schema", "any"):
@@ -633,6 +645,14 @@ class SubAgent:
                 "tool_call_id": tool_call["id"],
                 "content": result_str,
             })
+            # If handler succeeded and this is a stop_schema tool, capture and stop.
+            # If handler returned error, result goes to LLM for retry (don't stop).
+            if self.stop_mode == "schema" and func_name in self.stop_schemas:
+                if not isinstance(result, dict) or result.get("status") != FAIL_LABEL:
+                    self.result = result_str
+                    self.status = AgentStatus.DONE
+                    self.progress.status = AgentStatus.DONE
+                    sys_log.info(f"SubAgent {self.agent_id}: stop_schema tool {func_name} handler succeeded, DONE")
             return
 
         if self.stop_mode == "schema" and func_name in self.stop_schemas:

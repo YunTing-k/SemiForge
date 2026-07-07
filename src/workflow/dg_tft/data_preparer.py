@@ -100,29 +100,19 @@ The output directory already exists. Write all output files into it.
    - Priority 2: If no `it/` subdirectory (or it's empty), scan `{raw_dir}/` for files matching `I-t*` pattern. Create `{output_dir}/it/` and copy each matching file: `os.makedirs("{output_dir}/it", exist_ok=True); for f in glob.glob("{raw_dir}/I-t*.xlsx"): shutil.copy(f, "{output_dir}/it/")`
    - Omit this step if no I-t files are found anywhere.
 
-5. Write `{report_name}` in `{output_dir}` with this exact format:
-```json
-{{
-  "files_processed": ["output_file1.xlsx", "output_file2.xlsx"],
-  "file_mapping": [
-    {{"source": "IDVBG VDS01V.csv", "output": "IDVBG_VDS0.1V_train.xlsx", "source_type": "csv", "rows": 5117, "duplicate_of": null}},
-    {{"source": "IDVBG_VDS0.1V.xlsx", "output": "IDVBG_VDS0.1V_train.xlsx", "source_type": "xlsx", "rows": 5117, "duplicate_of": null}}
-  ],
-  "iv_families": ["IDVBG", "IDVD", "IDVTG"],
-  "cv_found": true,
-  "it_found": true,
-  "issues": ["..."]
-}}
-```
-IMPORTANT: The `file_mapping` array MUST include every file processed. Set `duplicate_of` to the output filename if this source was skipped because another source already produced the same output. If no duplicate, set `duplicate_of` to null. Set `rows` to the actual row count written to the output file.
+5. Call `submit_handoff` with a summary of your work:
+   - `observations`: What you found in the raw data (file types, formats, column naming patterns)
+   - `actions`: What you did (which files were processed, how they were converted)
+   - `potential_issues`: Things the verifier should double-check (missing VDS scans, ambiguous columns, incomplete files)
+   - `output_manifest`: Counts of produced files (iv_files, cv_files, it_files)
 
-**Each file should take ONE python -c command. After processing all files, write {report_name} and output a brief summary.**
+**Each file should take ONE python -c command. After processing all files, call `submit_handoff`.** Do NOT output free text — your plain text response will be ignored.
 
 Do NOT ask the user any questions — work autonomously. Do NOT explore files excessively — just read, clean, and save.
 """
 
 VERIFIER_PROMPT_TEMPLATE = """\
-You are a verification specialist for DG-TFT data preparation. A worker has processed raw measurement data into standardized training files. Your job is to inspect the output directory and report findings in a structured format via the report_verification tool.
+You are a verification specialist for DG-TFT data preparation. Your job is to inspect the output directory and report findings in a structured format via the report_verification tool. You may be called in three scenarios: (1) a worker just processed raw data — check the handoff below for what was done, (2) the pipeline entered at the Verifier stage with a pre-existing dataset — verify it meets standards, (3) Agent A (check-data diagnostics) requested a re-check after check-data failure — focus your checks on the issues identified in the agent_a_fallback section of the handoff.
 
 **Prepared data directory**: {output_dir}
 
@@ -189,8 +179,11 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     sys_log.info("Data prep %d done: ok=%s issues=%s", prep_id, ok, issues)
 
 
-def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_history_text: str = "") -> None:
-    """Launch a worker subagent to process raw data into standardized format.
+def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_history_text: str = "") -> dict[str, Any] | None:
+    """Launch a preparer subagent to process raw data into standardized format.
+
+    The preparer uses ``stop_mode="schema"`` with ``submit_handoff`` as its
+    output tool (auto-resolved from agent type).
 
     Args:
         ctx: Agent context.
@@ -198,6 +191,9 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         output_dir: Destination directory for prepared files.
         handoff_history_text: Previous handoff and verifier feedback to inject
                               into the worker's prompt (for retry attempts).
+
+    Returns:
+        Parsed handoff dict (submit_handoff arguments), or None on failure.
     """
     modeling_exe = ctx.agent_configs.get("DG_TFT_MODELING_PYTHON_EXE", "python")
     python_exe = modeling_exe if modeling_exe and Path(modeling_exe).exists() else "python"
@@ -206,7 +202,6 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         iv_sheet=_PREP_IV_SHEET_NAME,
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
-        report_name=_PREP_WORKER_REPORT_NAME,
         python_exe=python_exe,
     )
     if handoff_history_text:
@@ -231,33 +226,42 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         agent.progress.status = agent.status
         agent.progress.if_archived = True
 
-    if agent.status.value == "done":
-        sys_log.info("Data prep worker completed: %s", result[:200] if result else "(empty)")
+    handoff: dict[str, Any] | None = None
+    if agent.status.value == "done" and result:
+        try:
+            handoff = json.loads(result) if isinstance(result, str) else dict(result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            sys_log.warning("Preparer returned non-JSON result: %s", str(result)[:200])
+            handoff = {"observations": [], "actions": [str(result)[:500]], "output_manifest": {}}
+        sys_log.info("Data prep worker completed: %s", json.dumps(handoff, ensure_ascii=False)[:300])
     else:
         err = agent.error or "unknown error"
-        raise RuntimeError(f"Worker subagent failed: {err}")
+        raise RuntimeError(f"Preparer subagent failed: {err}")
 
     worker_report_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
-    if result:
-        try:
-            if not os.path.exists(worker_report_path):
-                with open(worker_report_path, "w", encoding="utf-8") as f:
-                    f.write(result)
-        except Exception:
-            pass
+    try:
+        with open(worker_report_path, "w", encoding="utf-8") as f:
+            json.dump(handoff, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        sys_log.warning("Failed to write worker handoff report: %s", e)
 
+    return handoff
 
-def _run_verifier_subagent(ctx: AgentContext, output_dir: str, report_verification_tool_name: str) -> dict[str, Any] | None:
+def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
+                          report_verification_tool_name: str = "report_verification",
+                          handoff: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Run a SubAgent-based verifier to inspect prepared data and report findings.
 
-    The verifier uses ``stop_mode="schema"`` with ``report_verification`` as its
-    output tool. It inspects xlsx files via ``inspect_xlsx`` (investigation tool)
-    and lists the output directory via ``glob_file`` (from the explorer type).
+    The verifier type (``VERIFIER_AGENT_LABEL``) auto-resolves its tools
+    (``inspect_xlsx`` + ``report_verification``) and ``stop_mode="schema"``
+    from the agent type config — no explicit ``subagent_tools`` or
+    ``tool_handlers`` params are needed.
 
     Args:
         ctx: Agent context.
         output_dir: Directory containing prepared training files.
         report_verification_tool_name: Name constant for the report_verification tool.
+        handoff: The Preparer's handoff dict with observations/actions/potential_issues/output_manifest.
 
     Returns:
         Parsed verifier feedback dict, or None if the verifier failed to produce one.
@@ -268,22 +272,20 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str, report_verificati
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
     )
+    if handoff:
+        handoff_text = json.dumps(handoff, ensure_ascii=False, indent=2)
+        prompt += f"\n\n**Preparer handoff** (what the worker found and did — use this to focus your checks):\n```json\n{handoff_text}\n```"
 
     from src.tool.subagent_tools import get_tools
     from src.agent.subagent import SubAgent
-    from src.agent.progress import EXPLORER_AGENT_LABEL
+    from src.constants import VERIFIER_AGENT_LABEL
 
-    schemas, handlers = get_tools("data-prep")
     agent = SubAgent(
         parent_ctx=ctx,
-        subagent_type=EXPLORER_AGENT_LABEL,
+        subagent_type=VERIFIER_AGENT_LABEL,
         prompt=prompt,
         agent_id=f"prep_verifier_{os.path.basename(output_dir)}",
         subject="DG-TFT data verification",
-        subagent_tools=schemas,
-        tool_handlers=handlers,
-        stop_mode="schema",
-        stop_schemas=[report_verification_tool_name],
         console=None,
     )
     ctx.agent_list[agent.agent_id] = agent.progress
@@ -331,9 +333,7 @@ def _run_worker_and_verifier(
 
     if console and not muted:
         console.print("  [bold]Preparer[/bold] [bright_black]SubAgent processing raw files ...[/bright_black]")
-    _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
-
-    handoff = _read_worker_handoff(output_dir)
+    handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
     if console and not muted:
         iv_count = handoff.get("output_manifest", {}).get("iv_files", 0) if handoff else 0
         cv_ok = "✓" if (handoff.get("output_manifest", {}).get("cv_files", 0) if handoff else 0) else "✗"
@@ -341,7 +341,7 @@ def _run_worker_and_verifier(
 
     if console and not muted:
         console.print("  [bold]Verifier[/bold] [bright_black]SubAgent checking output structure ...[/bright_black]")
-    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name)
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff)
     _write_verifier_result(output_dir, verifier_feedback)
     if console and not muted:
         vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
@@ -574,26 +574,28 @@ def run_verification_only(
 
 
 def _get_handoff_history(op_log: Any) -> str:
-    """Build a handoff history text from previous data-prep attempts in the operation log.
+    """Build a handoff history text from previous data-prep and verifier attempts.
 
-    Extracts handoff and verifier feedback from prior attempts and formats
-    them for injection into the worker's prompt.
+    Cross-references verifier feedback with matching data-prep attempts by
+    attempt number so the Preparer sees what the Verifier found on retry.
     """
     from .operation_log import OperationLog
     if not isinstance(op_log, OperationLog):
         return ""
-    attempts = op_log.get_stage_attempts("data-prep")
-    if not attempts:
-        return ""
+    prep_attempts = op_log.get_stage_attempts("data-prep")
+    verifier_attempts = op_log.get_stage_attempts("verifier")
+    verifier_by_n = {va.get("n"): va for va in verifier_attempts}
     lines: list[str] = []
-    for attempt_dict in attempts:
-        n = attempt_dict.get("n", 0)
-        handoff = attempt_dict.get("handoff")
-        feedback = attempt_dict.get("agent_decision")
-        if handoff:
-            lines.append(f"Attempt {n} handoff: {json.dumps(handoff, ensure_ascii=False)}")
-        if feedback:
-            lines.append(f"Attempt {n} verifier feedback: {json.dumps(feedback, ensure_ascii=False)}")
+    for ad in prep_attempts:
+        n = ad.get("n", 0)
+        h = ad.get("handoff")
+        if h:
+            lines.append(f"Attempt {n} preparer handoff: {json.dumps(h, ensure_ascii=False)}")
+        va = verifier_by_n.get(n)
+        if va:
+            fb = va.get("agent_decision")
+            if fb:
+                lines.append(f"Attempt {n} verifier feedback: {json.dumps(fb, ensure_ascii=False)}")
     return "\n".join(lines)
 
 
@@ -777,38 +779,36 @@ def run_preparer_stage(
     from .schema import PrepHandoff
 
     try:
-        _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+        handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
     except Exception as e:
         sys_log.error("Preparer stage failed: %s", e)
         return {"ok": False, "handoff": None, "error": str(e)}
 
-    worker_report_path = os.path.join(output_dir, _PREP_WORKER_REPORT_NAME)
-    worker_report = {}
-    if os.path.exists(worker_report_path):
-        try:
-            with open(worker_report_path, "r", encoding="utf-8") as f:
-                worker_report = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-
-    handoff = PrepHandoff.from_worker_report(worker_report).to_dict()
-    return {"ok": True, "handoff": handoff, "error": ""}
+    formatted_handoff = PrepHandoff.from_worker_report(handoff or {}).to_dict()
+    return {"ok": True, "handoff": formatted_handoff, "error": ""}
 
 
 def run_verifier_stage(
     ctx: AgentContext,
     output_dir: str,
     report_verification_tool_name: str = "report_verification",
+    handoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the Verifier stage as a standalone pipeline step.
 
     Spawns a Verifier SubAgent to inspect the prepared data and produce
     structured feedback.
 
+    Args:
+        ctx: Agent context.
+        output_dir: Directory containing prepared files to verify.
+        report_verification_tool_name: Name constant for the report_verification tool.
+        handoff: The Preparer's handoff dict to inject into the Verifier's prompt.
+
     Returns:
         {"ok": bool, "feedback": dict | None, "issues": list[str]}
     """
-    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name)
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff)
     _write_verifier_result(output_dir, verifier_feedback)
 
     programmatic_ok, issues = _check_output(output_dir)

@@ -887,3 +887,52 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 - 改 `param_defs` 或引擎 argparse → 同步更新 `knowledge/*.md` + 检查 `knowledge/experience/*.md` 有无过时条目
 - 新 Codex 会话 JSONL → 用 Pass 1-3 pipeline 提取，5-agent parallel 写入
 - experience 中过时条目（问题已被引擎修复）**直接删除**，不保留。`[REMOVED]`/`[OUTDATED]`/`[FIXED]` 仅作过渡标记。
+
+---
+
+## 2026-07-07 — Agent A-E 全线完成 + 知识注入统合
+
+### Step 15: Agent preparer + verifier
+
+- 新增 `VERIFIER_AGENT_LABEL`，精炼 `preparer` 类型
+- Preparer: `stop_mode="schema"` + `submit_handoff` (结构化交接)
+- Verifier: `stop_mode="schema"` + `report_verification` (结构化检查)
+- Handoff 传递链: Preparer → bidirection → op_log → prompt injection
+- Fallback 动态插入: `verifier`/`check-data` 入口下 Verifier 失败→插入 DATA_PREP
+- Agent A: 专用的 `diagnostic` 类型，工具 `inspect_xlsx` + `fallback_to_previous`
+- Agent A → Verifier fallback: 接收 Prep handoff + Verifier report + Agent B fallback 信息
+
+### Step 16-18: Agent B/C/D — 建模 Agent 统合
+
+- 共用 `modeling` 类型，差异化由 per-stage schema + prompt 驱动
+- `adjust_params` 内联 handler: tool-call 层验证，空参数直接返回失败 → LLM 同会话重试
+- Agent A-E 全线注入专家知识（`build_agent_prompt` 调 `knowledge/*.md` + `experience/*.md`）
+- 注入顺序: EXPERT KNOWLEDGE → EXPERIENCE → 任务上下文
+- Fallback_ctx 传播: 上游指标、下游回退信息、本阶段历史 attempt 全部注入
+- Bugfix: `_stage_done` 清 `fallback_ctx`（上游重跑成功后需消费回退上下文）
+- Bugfix: retry 循环退出后 `fallback_ctx` 丢失 → 提前检查 + 链耗尽时 `_finalize_run`
+
+### Step 19: Agent E — 最终解读
+
+- 专用 `interpreter` 类型，`stop_mode="any"`
+- 全量 attempt 历史注入 prompt（非仅最后一条）
+- 输出 `FINAL_INTERPRETATION.md` 落盘（不再 15 行控制台截断）
+- `contribute_knowledge` 可选：结构化模板 + YAML frontmatter (`title`/`summary`)
+- `load_discovered_summaries()`: 启动扫描 `_discovered/*.md` YAML header → 摘要注入 prompt
+- `dg_tft_report` 返回 `FINAL_INTERPRETATION.md` 路径
+- `_spawn_agent_e` 后置到 `_finalize_run` 之后（报告先就绪）
+
+### 全量改动统计
+
+- `constants.py`: +3 常量 (`VERIFIER_AGENT_LABEL`, `DIAGNOSTIC_AGENT_LABEL`, `MODELING_AGENT_LABEL`, `INTERPRETER_AGENT_LABEL`, `FINAL_INTERPRETATION_FILENAME`)
+- `progress.py`: +80 行（verifier/diagnostic/modeling/interpreter 四个类型的完整定义）
+- `subagent_tools.py`: `submit_handoff` schema + `_AGENT_TYPE_CONFIG` (5 agent types) + handler 改动
+- `subagent.py`: `__init__` 中 type 自动解析 + handler 成功时 stop_schema 合并
+- `orchestrator.py`: ~250 行重写/新增（Agent A-E spawn 全链路、fallback_ctx 传播、handoff 注入）
+- `data_preparer.py`: ~60 行改动（Preparer handoff 结构化、Verifier type 切换）
+- `loader.py`: `load_discovered_summaries()` 实现（YAML header 扫描）
+- `tool_def.py`: `dg_tft_report` 增加 `FINAL_INTERPRETATION.md` 返回
+- `data_inspection.md`: 工具清单 + 三种入口说明 + Agent A prompt 内容更新
+- `final_interpret.md`: +185 行 Stage Principles for Interpretation
+
+### Git Commits

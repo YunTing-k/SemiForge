@@ -20,7 +20,7 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | train-hysteresis | script | Yes (Agent D) | Hard failure / quality below threshold |
 | final-report | script | No (Agent E) | — (always runs at end) |
 
-Note: Agent A is a **diagnostic agent** distinct from the modeling agents (B/C/D). Agent A has only one tool (`fallback_to_previous`) and uses `stop_mode="schema"` — it does not produce free text. Modeling agents (B/C/D) additionally have `adjust_params`, `accept_quality`, and `inspect_xlsx`.
+Note: Agent A is a **diagnostic agent** (dedicated `diagnostic` subagent type) distinct from the modeling agents (B/C/D). Agent A has two tools (`inspect_xlsx` for investigation, `fallback_to_previous` for decision) and uses `stop_mode="schema"` — it does not produce free text. Modeling agents (B/C/D) additionally have `adjust_params` and `accept_quality`.
 
 Script stages run via subprocess; fit-physical uses scipy (CPU-only, no CUDA). train-static, train-hysteresis use PyTorch GPU.
 When a script stage hard-fails (exit code != 0) or produces quality below threshold,
@@ -39,12 +39,24 @@ of the dataset files (IV/CV/I-t) before any heavy modeling computation begins.
 This stage has **no adjustable INI parameters** and **no quality thresholds**.
 It is a binary gate: pass (all files structurally correct) or hard-fail.
 
-On hard failure, **Agent A** is spawned with a single tool: `fallback_to_previous`.
+On hard failure, **Agent A** is spawned with two tools: `inspect_xlsx` (investigation) and `fallback_to_previous` (decision).
 Agent A decides whether the failure originates from data preparation (→ fallback
 to Verifier → potentially Preparer) or is environmental (→ no fallback, pipeline terminates).
 
 **Resume/Skip**: If check-data previously completed successfully (a `StageResult` with `ok=True` and `skipped=False`
 exists in the run's task board), it is skipped via `_stage_done()` check — it will not re-run.
+
+### Pipeline Entry Modes
+
+The pipeline supports three entry modes, which affect what stages Agent A may find in the stage list when it is spawned:
+
+| Entry | Stages Present | Agent A Fallback Target | Dynamic Stage Insertion |
+|-------|---------------|------------------------|------------------------|
+| `"full"` | Prep → Verifier → Check → ... | Verifier (native) | Not needed — all stages present |
+| `"verifier"` | Verifier → Check → ... | Verifier (native) | If Verifier fails: DATA_PREP dynamically inserted |
+| `"check-data"` | Check → ... | Verifier | **VERIFIER dynamically inserted** before check-data |
+
+When Agent A is spawned in a `"check-data"` entry run, the Verifier stage does not exist in the stage list yet. The orchestrator detects `_find_stage_pointer(stages, "verifier") == -1` and dynamically inserts it. Similarly, if the Verifier subsequently fails and needs to fall back to the Preparer, DATA_PREP is dynamically inserted. This means Agent A should always fall back to Verifier regardless of entry — the orchestrator handles the insertion.
 
 ### Principles: What Is Being Checked
 
@@ -323,7 +335,12 @@ When check-data hard-fails:
 
 Note: `_run_stage_diagnosis()` does NOT run for check-data failures — the check-data hard-failure path uses `break` before reaching the diagnosis code. Only Agent A's fallback decision runs.
 
-**Agent A prompt content**: Agent A's prompt (orchestrator.py) includes only `stage_result.error` (stderr, truncated to 2000 chars), NOT `stage_result.summary` (stdout last 10 lines which contains validate_dataset.py's JSON output). The agent must proactively `read_file dataset_validation.json` to see the actual validation results — the prompt alone is insufficient for diagnosis.
+**Agent A prompt content**: Agent A's prompt (orchestrator.py) includes:
+- `stage_result.error` (stderr, truncated to 2000 chars)
+- `stage_result.summary` (stdout last lines, if available)
+- **Preparer handoff** (from `op_log["data-prep"][-1].handoff`) — what the worker produced: `{observations, actions, potential_issues, output_manifest}`. Absent if the pipeline entered at the Verifier or check-data stage without a Preparer run.
+- **Verifier report** (from `op_log["verifier"][-1].agent_decision`) — the `report_verification` structured findings: `{overall_ok, iv_families, cv_check, it_check, summary}`. Absent if no Verifier has run (check-data entry).
+The agent should still proactively `read_file dataset_validation.json` to see the actual engine-level validation results — the prompt alone may not contain the full validation output.
 
 ### Edge Case: Artifact Stage Resume
 
@@ -384,8 +401,16 @@ timeout the agent and terminate.
 
 ### Diagnostic Tools Available to Agent A
 
-- `read_file`: Read `dataset_validation.json` (if produced), error logs,
-  `model_config.ini` (check paths section), IV/CV workbook inspection
+Agent A is spawned as a **dedicated `diagnostic` subagent type**, which auto-resolves its base tools and subagent tools from the type configuration — no explicit `subagent_tools` or `tool_handlers` params are needed.
+
+**Base tools** (from the `diagnostic` type's SUPPORTED_TYPES allowlist):
+- `read_file`: Read `dataset_validation.json` (if produced), error logs, `model_config.ini` (check paths section), IV/CV workbook inspection
 - `glob_file`: List files in the dataset directory to verify what exists
-- Agent A also has access to standard SubAgent base tools (`bash`, `grep_file`, `write_file`, `edit_file`)
-- No `inspect_xlsx` tool — Agent A is the only diagnostic agent without it
+- `grep_file`: Search files for specific error patterns
+- `bash`: Inline python for numeric validation (e.g., `python -c "import pandas as pd; df = pd.read_excel(...); print(df.dtypes)"`)
+
+**Subagent tools** (auto-resolved from `_AGENT_TYPE_CONFIG`):
+- `inspect_xlsx` (investigation, has handler): Returns `{{sheet_name: [columns], ...}}` — quick structural check without reading raw xlsx bytes
+- `fallback_to_previous` (stop tool, `stop_mode="schema"`): Submits `{{target, reason, evidence, suggestion}}` to trigger fallback to Verifier
+
+**Not available**: `write_file`, `edit_file` (read-only diagnostics), `web_search`, `web_fetch` (unnecessary for local file inspection), `create_task`/`update_task`/`query_task` (no independent scoreboard needed).

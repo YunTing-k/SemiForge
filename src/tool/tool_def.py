@@ -2589,9 +2589,13 @@ def dg_tft_report(arguments: dict[str, Any], ctx: AgentContext, progress: Progre
 
         report_files = []
         from pathlib import Path
+        from src.constants import FINAL_INTERPRETATION_FILENAME
         if output_dir:
             base = Path(output_dir)
             if base.exists():
+                interpretation_file = base / FINAL_INTERPRETATION_FILENAME
+                if interpretation_file.exists():
+                    report_files.append(str(interpretation_file))
                 summary_file = base / "summary.json"
                 if summary_file.exists():
                     report_files.append(str(summary_file))

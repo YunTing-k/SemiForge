@@ -100,7 +100,191 @@ Important: The operation_log.json contains an `upstream` field in its schema, bu
 field is **never populated by the orchestrator** — it will always be the empty string.
 Agent E should not rely on it for dependency tracking.
 
-## 2. Cross-Stage Quality Reference
+## 2. Stage Principles for Interpretation
+
+Agent E diagnoses the pipeline as a complete system. Understanding the physics of each upstream stage is essential for interpreting metrics, distinguishing root cause from cascade victims, and producing insightful reports. Each subsection below condenses the key domain concepts relevant to interpretation and root cause diagnosis — for full parameter tables and agent decision frameworks, see the stage-specific knowledge files.
+
+### 2.1 check-data — Data Inspection
+
+**What it validates**: The check-data stage inspects the structural integrity of measurement files — it does NOT validate data ranges, units, or physical plausibility (those are downstream concerns).
+
+**IV (Current-Voltage) measurements** — three families, each workbook must contain a "long" sheet:
+- `IDVBG`: Transfer characteristics (ID vs VBG sweep, at fixed VDS voltages). Naming: `IDVBG VDS0.1V_train.xlsx`.
+- `IDVTG`: Top-gate transfer (ID vs VTG sweep).
+- `IDVD`: Output characteristics (ID vs VD sweep). Two sub-families: `IDVD VTG*` and `IDVD VBG*`.
+
+Required columns: VD_V, VBG_V, VTG_V, ID_A — fuzzy-matched (lowercased substring).
+
+**CV (Capacitance-Voltage) measurements** — four standard sweeps in `CV_train.xlsx`:
+- `cgg`: Gate-to-gate capacitance. `cbg`: Bottom-gate. `ctg`: Top-gate. `vds`: Drain-source.
+
+CV data has two layout variants: paired-column (directly usable) and shared-bias wide-table (requires normalization). The engine auto-detects and converts wide-tables to paired-column format — the conversion writes back to the same file in-place and is destructive (original format lost).
+
+**I-t (Current-Time) measurements** — optional, determined by auto-discovery in the hysteresis data directory. Required columns: `time`, `vds`, `vbg`, `vtg`, `temp`, `id`. The `DatasetProfile.has_hysteresis` flag gates whether train-hysteresis runs.
+
+**Validation limits**: Column detection reads only 20 rows for IV (`nrows=20` — headers beyond row 20 are missed) and 8 rows for CV layout detection. Temperature columns are detected via aliases (temp_K, temperature_K, T_K, TEMP_K and Celsius equivalents) but not validated — if only Celsius aliases exist, temperature is "detected" but downstream uses wrong absolute values. I-t column matching is fuzzy (e.g., "id" matches both "id", "ids", "current").
+
+**Interpretation significance**: Check-data failure = structural file problems (missing sheets, missing columns, corrupt workbooks). These CANNOT be fixed by parameter tuning in downstream stages. The only remedy is `fallback_to_previous` → Verifier → Preparer for data re-preparation. Check-data has no INI parameters, no quality metrics, no adjustable thresholds.
+
+**Artifact**: `dataset_validation.json` with per-family `ok` flags and `ok_static`/`ok_with_it` summary. If `ok_static=false`, all three modeling stages fail (missing upstream data). If `ok_with_it=false` but `ok_static=true`, static modeling proceeds but hysteresis is skipped.
+
+### 2.2 fit-physical — Physical Kernel (EKV Parameter Extraction)
+
+**What it does**: Extracts a compact set of physics-based EKV (Enz-Krummenacher-Vittoz) parameters from measured IV and CV using `scipy.optimize.least_squares`. This produces the analytical baseline that the static model's PKAN later refines — the PKAN learns corrections to named physical parameters, not the entire voltage-current mapping.
+
+**EKV formalism**: Unlike simple threshold-voltage models, EKV describes all operating regions (subthreshold, transition, strong inversion) with a single equation set — critical for TFTs where the off/on transition is gradual.
+
+**Double-gate physics**: The device has independent top-gate (TG) and bottom-gate (BG) with distinct oxide capacitances (`Cox_t`, `Cox_b`) and threshold voltages (`Vth_t0`, `Vth_b0`). The effective overdrive voltage is a weighted combination:
+
+```
+Vov = (Cox_t/(Cox_t+Cox_b)) · Vov_t + (Cox_b/(Cox_t+Cox_b)) · Vov_b
+```
+
+**qsolve**: Normalized mobile charge density computed via 6 Newton iterations of `2q + ln(q) = y` — avoids piecewise approximations. Strong inversion uses linear approximation; weak inversion uses Boltzmann exponential.
+
+**Parameter space**: 34 parameters in the `Params` dataclass, but only **12 are actually optimized** across 6 fitting stages (Vth_t0, Vth_b0, nfac0, mu0, Ioff0, Gleak_ds, theta_mu, lambda_clm, Cfr_tgs, Cfr_tgd, Cfr_bgs, Cfr_bgd). The remaining 22 are fixed physical constants (geometry W/L, oxide thickness, saturation knee/modulation held at large values approximating "no saturation" for TFTs, temperature coefficients).
+
+**Six-stage sequential fitting** — stages build on each other; failure at early stages makes downstream fit impossible:
+
+| Stage | Name | Key Parameters | Data Scope | Significance |
+|-------|------|---------------|------------|-------------|
+| 1 | low_vds_transfer | Vth_t0, Vth_b0, nfac0, mu0, Ioff0, Gleak_ds | Low-VDS transfer only (\|VDS\| ≤ 0.55V) | **Critical foundation**: extracts thresholds. If rejected (`accepted=false` in fit_history), Vth values are physically wrong — all downstream stages start from wrong initial parameters. |
+| 2 | all_transfer_gate_shape | Same + theta_mu | All transfer (IDVBG + IDVTG) | Refines gate shape, adds mobility degradation. |
+| 3 | output_curves | Same + lambda_clm | Output (IDVD) + transfer sample | Fits output conductance and channel-length modulation. |
+| 4 | cv_capacitance | Cfr_* (4 fringe caps) | CV only | Fits gate fringe/overlap capacitances from measured CV. |
+| 5 | joint_refine | All above | IV + CV joint | Joint optimization balancing IV and CV quality. |
+| 6 | cv_shared_trap | Cfr_*, Cit_t, Cit_b, trap_width, tau_s, alpha | CV only (all series) | Frequency-dependent interface trap model with Colle-Cole dispersion. NFEV fixed at **450** — NOT scaled by max_nfev_scale. |
+
+Each stage uses `least_squares(loss="soft_l1", x_scale="jac")`. If `after_rms > before_rms × 1.002`, the stage is rejected and previous parameters kept (convergence guard). Stages 1-5 NFEV = `round(base_nfev × max_nfev_scale)`.
+
+**Silent data filtering**: NaN rows in IV are dropped via `dropna()`. CV sheets with < 3 rows are skipped with no warning. Non-positive capacitances are masked. XLSX files without a "long" sheet are silently excluded. Agent E should be aware that not all measured data is loaded — compare expected vs actual point counts if fit quality is unexpectedly poor.
+
+**Optimization budget**: `max_nfev_scale` (default 1.0, range 0.5-5.0) is the single most impactful parameter. It multiplies per-stage NFEV budgets. Stage 6 is NOT scaled. Upper bound: stages 1-5 cap at `round(120 × 5.0) = 600` NFEV each.
+
+**iv_rms_log10_error_dec**: RMS log10 error between measured and fitted IV across ALL families (IDVBG, IDVTG, IDVD) and ALL operating regions. 0.35 = typical prediction within ~2.2× factor in absolute current. This is the physical baseline — the static model can typically improve it by 10-30% via PKAN corrections.
+
+**Key diagnostic sub-metrics** (from `fitted_params.json` → `metrics_summary`):
+- `iv_on_rms_log10_error_dec`: On-region RMS (|ID| ≥ 1e-9 A) — if much better than global, subthreshold is the problem
+- `iv_subthreshold_rms_log10_error_dec`: Subthreshold RMS — if high, Vth or nfac0 extraction is poor
+- `fit_nonmonotonic_steps`: Count of non-negative dy steps in fitted IV — **non-zero means the optimizer converged to a physically unreasonable local minimum**, NOT a data quality issue. Check ratio vs `fit_checked_steps` — ratio > 0.1 is severe
+- `cv_rms_log10_error_dec`: Overall CV RMS including trap model — if high, fringe caps or trap parameters are wrong
+
+**Red flags for Agent E** (indicates the physical kernel, not downstream, is the root cause):
+- Stage 1 rejected in fit_history → threshold extraction failed entirely
+- `fit_nonmonotonic_steps > 0` → non-physical local minimum
+- Vth values pinned at PARAM_BOUNDS limits → data or model cannot produce physical thresholds
+- CV gate auto-orientation swapped labels (check `v92_phase1_cv_gate_orientation.json`) — swap thresholds (Cox ratio ≥ 1.40, span ratio ≥ 1.55) are hardcoded heuristics that CAN produce false swaps, causing systematically poor CV fit
+
+### 2.3 train-static — Static Model (PKAN + Residual KAN)
+
+**What it does**: Trains a PKAN (Physics-informed Kolmogorov-Arnold Network) that learns device-specific corrections to the physical kernel. The KAN does NOT replace physics — it learns small **additive** adjustments to named physical parameters (Vth, nfac, mu, fringe capacitances, trap parameters).
+
+**What is a KAN**: Unlike a standard MLP (fixed activations at nodes), a Kolmogorov-Arnold Network decomposes a multivariate function into a sum of univariate B-spline activations along learned edges. KANs produce interpretable, compact symbolic formulas — each edge can be replaced by an analytic primitive (sin, exp, tanh, polynomial basis) with measurable approximation error.
+
+**PKAN architecture (v96)**: All KANs use `CompactKAN` with frozen B-spline knot grids (grid=5, degree k=3, hidden=12). Five specialized sub-networks handle different aspects:
+
+| Network | Inputs | Outputs | Role |
+|---------|--------|---------|------|
+| IV-PKAN (`base.kan`) | 6 physics-derived features (Ut_V, Ub_V, Veff_V, VDS_V, qbar0, VDSxqbar0) | 11 IV parameter corrections (dpsi, dVth_eff, dlog_mu, dlog_theta, dlambda, dlog_ileak, dlog_Cit, etc.) | Per-bias-point additive corrections to named physical parameters |
+| CV-PKAN (`base.cv_kan`) | Same 6 features | 10 corrections; only **4 active by default** (dVfb_t, dVfb_b, dlog_Cit_t, dlog_Cit_b) — 6 disabled via DEFAULT_DISABLED_CV_PKAN | Corrects flatband voltages and trap densities by bias |
+| IV residual (`diag.iv_resid`) | Similar features | 1 scalar: `dlog_id_residual` | Log-current correction on held-out IV data; adds final adjustment when parameter-level PKAN is insufficient |
+| CV residual (`diag.cv_q_resid`) | Same 6 features | Single KAN with 21 output slots, only **7 active in release** | Routes through 3 physical modules: shared broadened-DOS, asymmetric terminal redistribution, inter-gate reciprocal coupling |
+| Temperature KAN (`diag.temperature_kan`) | 5 scaled temp features | 7 temperature modulation outputs | **Multiplicative** modulator — scales base PKAN by a learned factor in [0.1, 1.0] × kan_scale (default 0.35). Not an additive correction. |
+
+**Why CV threshold 0.06 is far stricter than IV threshold 0.35**: CV is a derivative observable — capacitance C = dQ/dV. Numerical differentiation amplifies noise, but the log-space error is naturally 5-10× smaller than IV log-error. A `residual_cv_rms` of 0.06 means ~15% relative error in capacitance. The engine applies a `cv_weight` multiplier (default 10.0) to compensate for the smaller raw loss magnitude during training.
+
+**Training in three sequential phases**:
+1. **Base IV PKAN** (Phase 1): Trains only the IV-PKAN on all IV data. Gate: Top-1 symbolic compatibility — each KAN edge must be replaceable by an analytic formula with MSE ≤ `base_iv_max_top1_compatibility` (default 0.015). Failure = RuntimeError.
+2. **Held-out IV Residual** (Phase 2): Trains the scalar residual on stride-based holdout data. Gate: residual must improve held-out data by ≥ 8e-4; no region may degrade > 0.008.
+3. **Joint CV/Residual** (Phase 3): Full model trained with staged loss schedule — early (0-30%) emphasizes IV shape, middle (30-70%) ramps CV weight, late (70-100%) balances both. CV training has hardcoded internal phase boundaries (`cv_parameter_ramp_start=0.25` through `cv_residual_ramp_end=0.82`) that control which parameters are trained when — these are NOT adjustable via INI.
+
+**Symbolic optimization**: After training, each KAN edge is replaced with a Top-1 analytic formula. The edgewise replacement MSE must not exceed `base_iv_max_top1_compatibility`. Successfully replaced edges are exported as Verilog-A formulas in `dg_tft_static_compact.va`.
+
+**Safety evaluation**: After training, scans ensure deployment safety:
+- **Safe CV parameter scale selection**: Scans CV PKAN output scale from 0 to 2× base; selects maximum that does not violate passivity (negative capacitance, overshoot)
+- **Safe residual scale selection**: `safe_iv_residual_scale=0` means the IV residual was force-disabled — it harmed held-out data. IV accuracy is limited to what PKAN parameter corrections alone can achieve
+- **CV parameter head ablation**: Tests each CV PKAN output head independently; heads that individually degrade quality are pruned to zero
+- **KAN grid audit** (`assert_valid_grids`): Verifies all KANs have valid grid integrity — if this fails, the model is corrupted and unrecoverable
+
+**Engine-internal precision gates** (cause hard failures, not quality gate warnings):
+- 7 region-specific IV RMS checks (on, off, subthreshold, transition, nonzero, high, p95) — ANY failure = RuntimeError
+- IV residual heldout gain gate (≥ 8e-4 minimum improvement)
+- IV residual region degradation gate (≤ 0.008 maximum degradation)
+- Charge conservation/passivity (charge sum, cross-reciprocity, diagonal negativity)
+- KAN grid audit
+
+Agent E should distinguish: grid audit failure → unrecoverable (fallback is the only action upstream); base IV region gate failure → increase training budget; residual gain gate failure → residual KAN capacity issue.
+
+**Key diagnostic sub-metrics** (from `v93_safe_residual_metrics.json`):
+- `safe_iv_residual_scale=0`: Residual KAN disabled — static model IV accuracy is entirely from PKAN parameter corrections. Further gains require better physical kernel or more base IV training
+- `safe_cv_residual_scale < 0.5`: CV residual heavily restricted — CV charge baseline (from physical kernel fringe caps) may be poor
+- `base_iv_training.*.top1_compatibility`: Per-edge symbolic MSE — identifies which KAN input→output mappings resist analytic simplification. High MSE on specific edges → non-standard device characteristics
+- `selected_cv_residual_mode`: Which CV residual branches are active — "off" = no CV residual, "shared_only" = only broadened-DOS, "persisted_active_factors" = all active branches survived safety scans
+- `disabled_iv_pkan_outputs` / `disabled_cv_pkan_outputs`: Which PKAN heads were pruned to zero by ablation — a long list indicates the device is very different from the pre-trained PKAN baseline
+
+### 2.4 train-hysteresis — Hysteresis Model (SRH Trap Dynamics)
+
+**What is hysteresis in TFTs**: When the gate voltage changes abruptly (a bias step), the drain current does not instantaneously settle to its steady-state value. It drifts over microseconds to seconds due to charge trapping and de-trapping at semiconductor/dielectric interface states (slow traps) and within the channel or gate oxide bulk. This time-dependent response manifests as a difference between up-sweep and down-sweep IV curves.
+
+**SRH (Shockley-Read-Hall) two-trap model**: Each bias-step transient is modeled as a double-exponential decay:
+
+```
+I(t) = I∞ + A_fast · (e^{-t/τ_fast} - 1) + A_slow · (e^{-t/τ_slow} - 1)
+```
+
+where `I∞` is steady-state current, `A_fast`/`A_slow` are trap amplitudes (positive=capture, negative=emission), and `τ_fast`/`τ_slow` are time constants (microseconds to seconds). This is two discrete exponential terms, not a stretched-exponential — together they approximate the multi-timescale behavior of TFT traps.
+
+**Two-phase execution — critical distinction**:
+1. **Pre-analysis** (`analyze_it_hysteresis.py`): For each I-t bias step segment, fits the two-trap model via `scipy.optimize.least_squares` with `loss="soft_l1"` and duration-aware τ bounds. The median log10 RMSE across all successful fits is `step_log_rmse_median`. **This metric comes from pre-analysis — NOT from KAN training. Parameter tuning CANNOT fix a high step_log_rmse_median.** Causes: too few time points per step (< 16), noisy transients, non-exponential measurement artifacts.
+2. **SRH-KAN Training** (`train_srh_top2_regime_banks.py`): Trains separate `CompactKAN` banks to predict trap parameters (τ, A) from bias conditions (VBG, VTG, VDS, temperature). The KAN learns to reproduce pre-analysis teacher fits across unmeasured bias conditions — this is supervised learning (teacher→student), not direct regression on raw data.
+
+**Fast/Slow regime split** (50 ms threshold):
+- **Fast** (τ < 50 ms): microsecond-scale, oscilloscope-like capture. Default `conservative` amplitude parameterization (bounded total+exchange: A_fast = total/2 + exchange, A_slow = total/2 − exchange, enforcing charge conservation).
+- **Slow** (τ ≥ 50 ms): second-scale, stress/recovery. Default `independent` per-amplitude (v90 legacy baseline).
+
+Each regime has separate KAN banks, up to 8 groups: 2 regimes × 2 gate families (VBG, VTG) × 2 processes (capture, emission).
+
+**Teacher-Student framework**: The pre-analysis produces teacher labels; the KAN is evaluated on how well it learns from the teacher (`student_teacher_rmse_dec_mean`) AND how well it matches raw measurements (`top2_rmse_dec_mean`). High student-teacher gap → KAN lacks capacity. Low student-teacher gap but high measurement RMSE → teacher itself was poor (pre-analysis failure).
+
+**Internal acceptance gates** (7 hardcoded CLI thresholds, NOT adjustable via INI):
+- `max-top2-rmse-mean` (0.020): KAN predicted vs measured
+- `max-student-teacher-rmse-mean` (0.006), `max-student-teacher-rmse-p90` (0.012): KAN vs teacher
+- `max-endpoint-drift-error-mean` (0.070), `max-endpoint-drift-error-p95` (0.230): steady-state level accuracy
+
+Failure of any gate raises `RuntimeError` — these are training-script-internal, not pipeline quality gate checks.
+
+**Silent data filtering**: The pre-analysis → training pipeline applies strict filters; if ALL data is excluded, two distinct RuntimeErrors are raised. Adjusting training parameters (epochs, hidden, etc.) has zero effect — only `fallback_to_previous` can help.
+
+**Critical metric interpretation for Agent E**:
+- `step_log_rmse_median` > 0.08: I-t data quality issue, NOT a KAN training problem. > 0.15 = two-trap model inadequate (multi-trap species, non-exponential behavior, extreme noise). Cannot be fixed by tuning.
+- `student_teacher_rmse_dec_mean` high: KAN failed to learn from viable teacher fits — capacity or training issue, NOT data quality. Distinguish from step_log_rmse_median: if the teacher was good (step low) but student is bad, the KAN is the problem.
+- `endpoint_drift_error_*` high: KAN predicts wrong steady-state levels. Most common acceptance gate failure. Typically fixable by switching to `conservative` amplitude parameterization.
+- `top2_rmse_dec_mean` high with `student_teacher` OK: Teacher fits were poor — root cause is pre-analysis quality (upstream I-t data or static model baseline).
+
+### 2.5 Upstream Quality → Downstream Impact Chain
+
+Understanding how upstream quality physically bounds downstream results is essential for root cause identification:
+
+**Physical kernel → Static model**:
+- The physical kernel provides the "shape baseline" for IV/CV. Systematic error in physical kernel (e.g., subthreshold swing overestimation) → PKAN must learn larger corrections → higher symbolic MSE → edgewise precision gate risk
+- Physical kernel CV fringe capacitance errors → CV charge baseline shifted → CV residual compensates harder → `residual_cv_rms` inflated, passivity risk elevated
+- Physical kernel `iv_rms_log10_error_dec` sets the practical lower bound for static model `residual_iv_rms`: PKAN improves typically 10-30%, but cannot rescue a physical kernel with iv_rms > 0.5
+- `fit_nonmonotonic_steps > 0` in physical kernel → static model inherits non-physical baseline shapes → PKAN corrections are local, may not resolve global non-monotonicity
+
+**Static model → Hysteresis**:
+- Hysteresis computes `dlog = log10(I_dynamic / I_static)`, relying on accurate `I_static` from the static model checkpoint
+- Static model steady-state error → dlog systematically biased → hysteresis KAN learns to compensate for static errors, not true trap dynamics
+- Static voltage correction in pre-analysis (`voltage_corrected_segments`) depends on accurate bias-point current from the static model — if static model produces unreliable predictions, voltage alignment is corrupted
+
+**Data quality → All stages**:
+- Noisy subthreshold IV → physical kernel cannot extract reliable Vth/nfac0 → cascade to static model base IV precision gate
+- CV with < 3 rows per sheet → silently skipped → physical kernel fits Cfr with fewer constraints → CV charge baseline degraded
+- I-t with < 16 time points per step → pre-analysis fits underconstrained → `step_log_rmse_median` inflated, teacher labels unreliable
+- CV gate labels swapped but auto-orientation heuristic misses it → physical CV fit wrong → static CV residual forced to extreme compensation → passivity violations
+
+**Diagnostic principle**: When the pipeline fails, Agent E should trace upward through this physics chain from the first failing stage. Ask: did this stage fail because of its own data/model issues, or did it receive degraded upstream input? MISSING_ARTIFACT errors signal cascade victims. Non-MISSING_ARTIFACT errors from the first failing stage identify the root cause.
+
+## 3. Cross-Stage Quality Reference
 
 ### Unified Metric Table
 
@@ -144,7 +328,7 @@ relying on these hardcoded values.
   only in the retry loop (max_retries=3 gives up to 4 total attempts: 1 initial + 3 auto-retries).
 - **minimal_run bypasses all quality gates** — `_assess_stage_quality` returns `True, []` immediately.
 
-## 3. Stage Dependency and Cascade Rules
+## 4. Stage Dependency and Cascade Rules
 
 ### 3.1 Upstream → Downstream Data Flow
 
@@ -231,7 +415,7 @@ text after parameter adjustments, the only record of what exact parameters were 
 best-scoring attempt by reading the full operation_log.json (not just the prompt summary). The inline prompt
 summary only contains the last attempt per stage.
 
-## 4. Cross-Stage Diagnostic Patterns
+## 5. Cross-Stage Diagnostic Patterns
 
 | Symptom Pattern | Likely Root Cause | Evidence to Check |
 |----------------|-------------------|-------------------|
@@ -246,7 +430,7 @@ summary only contains the last attempt per stage.
 | fit-physical OK + train-static `residual_iv_rms` high + `safe_iv_residual_scale=0` | IV residual KAN was disabled by safety scan — the bare PKAN corrections were insufficient | Check `iv_residual_stage_heldout_gain` — if negative, the residual KAN hurt held-out data and was force-disabled. Increase `iv_residual_stage_epochs` or adjust `iv_residual_stage_linear_weight`. |
 | fit-physical `cv_rms_log10_error_dec` high + train-static `residual_cv_rms` high | CV gate orientation may be wrong — CBG↔CTG labels swapped but auto-correction missed it | Check `v92_phase1_cv_gate_orientation.json` in fit-physical output. Check `v92_cv_gate_orientation.json` in train-static output. If `Cox_t/Cox_b < 1.40`, the gate auto-orientation does NOT trigger — a manual orientation correction may be needed. |
 
-## 5. Knowledge Contribution Guidelines
+## 6. Knowledge Contribution Guidelines
 
 ### 5.1 When to Contribute
 
@@ -280,7 +464,7 @@ The `contribute_knowledge` tool accepts:
 The tool writes to `knowledge/_discovered/{title_slug}_{timestamp}.md`. The content
 is injected into future agent system prompts for cross-run learning.
 
-## 6. Report Output Structure
+## 7. Report Output Structure
 
 Agent E's Markdown report is output to console. Recommended structure:
 
@@ -321,7 +505,7 @@ Per-stage per-attempt table with:
   (trusted if all quality gates passed, caution if borderline, untrusted if gates failed)
 - Deployment readiness: whether the output model is suitable for circuit simulation
 
-## 7. Common Failure Scenarios and Diagnoses
+## 8. Common Failure Scenarios and Diagnoses
 
 ### fit-physical terminated at stage 1 (low_vds_transfer)
 `fit_history[0].accepted = false` → the initial threshold extraction failed. This is
