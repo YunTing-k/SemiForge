@@ -1018,5 +1018,59 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 ### Git Commits
 
 ```
+9821d3c feat: Agent flow test suite (36 tests), Phase 6 legacy cleanup, minimal_run rationalization, Agent E awareness, knowledge sync
+```
+
+---
+
+## 2026-07-08 — Preparer/Verifier Prompt 重构 + Pipeline Bug 修复
+
+### 三个生产 Bug 修复
+
+**Bug 1 — Preparer 空转三次**：`WORKER_PROMPT_TEMPLATE` 含 `{report_name}` 占位符但 `.format()` 未传该参数 → `KeyError: 'report_name'` → SubAgent 从未启动。operation_log 中 `error: "'report_name'"` + `duration_s: 0.0` 三次完全相同。修复：`.format()` 加 `report_name=_PREP_WORKER_REPORT_NAME`。
+
+**Bug 2 — `'dict' object has no attribute 'status'` 崩溃**：`_revert_tasks` 中 `task.status` 点号访问 TypedDict（运行时擦除为 plain dict）。Scoreboard `get_task()` 返回 dict，但 code 用了 attribute access。四个 fallback 路径全部受影响：Agent A fallback、Agent B/C/D hard-failure fallback、quality-fail fallback、Verifier→Preparer 重置。修复：`task.status` → `task.get("status")`。
+
+**Bug 3 — Preparer 耗尽后无效跌落**：旧逻辑 `pointer += 1` 跌落到 Verifier → Verifier 在空目录上跑无意义 LLM 调用 → 回来看到 Preparer 重试计数器已耗尽 → 来回震荡直到 Verifier 也耗尽。修复：Preparer 耗尽直接 `_finalize_run` + `return False` 终止管线。
+
+### 两个设计缺陷修复
+
+**缺陷 1 — 4 条 early-return 路径不执行 Agent E**：超时 (`L236`)、Preparer 耗尽 (`L311`)、Verifier 耗尽 (`L321`)、fallback 链耗尽 (`L564`) 四条路径直接 return，不调 `_spawn_agent_e`。修复：每条 return 前追 `_spawn_agent_e(...)`。
+
+**缺陷 2 — Verifier 失败重置到 DATA_PREP 时 retry_counts 不清零**：`retry_counts["data-prep_retries"]` 保留旧值导致 Preparer 无法获得新鲜重试机会。修复：`retry_counts.pop("data-prep_retries", None)`。
+
+### Preparer Prompt 重构 — 引擎格式契约驱动
+
+**核心原则**：Preparer 对流进来的数据格式不做假设（文件名、布局均无硬编码），但输出必须严格满足引擎硬要求。
+
+**新增 `Engine requirements your output MUST meet` 区块**：明确列出引擎对三类数据的精确格式契约（从引擎源码直接提取）：
+
+| 数据 | 契约来源 | 关键要求 |
+|------|---------|---------|
+| IV | `fit_physical_kernel.py:248-286` | 文件名 `IDVBG*/IDVTG*/IDVD*_train.xlsx`、sheet=`long`（大小写敏感）、4 列不可缺 |
+| CV | `fit_physical_kernel.py:322-382` | 固定名 `CV_train.xlsx`、Row0=描述 Row1=列头 Row2+=数据（`header=None, iloc[1], iloc[2:]` 硬编码） |
+| I-t | `analyze_it_hysteresis.py:32-41` | 8 个精确文件名，VBG/VTG family 分组 + temperature 标记 |
+
+**CV 处理重写**：不再猜源文件叫 `CV_wide_tables.xlsx`。`glob_file` 按关键词找 CV 文件 → `inspect_xlsx` 查 Row 0/1 布局 → 如 Row 0 是列头（非描述文本）→ `openpyxl.insert_rows(1)` 插入空白行 → `wb.save` 到 `CV_train.xlsx`。不改数据值，只调行位。
+
+**I-t 处理重写**：盲 `copytree` → `glob_file` 列出文件 → `inspect_xlsx` 读列头 → 从 `vbg`/`vtg`/`temp` 关键词推断 family 和 role → 按 VBG1/2/3, VTG1/2/3, *_temperature 分组排序编号 → `shutil.copy` 重命名为引擎 8 个期望名。无法分类时 default 到 VTG + 记录 potential_issues。
+
+**精度规则强化**：新增"CV/I-t 布局修复时用 `openpyxl.insert_rows()` — 禁止 pandas 重序列化"、"CV/I-t 数据值必须原样通过"。
+
+### Verifier Prompt 重构 — 与 Preparer 共享引擎契约
+
+新增 `Engine requirements this data MUST satisfy` 区块，与 Preparer 保持一致：
+
+- IV：新增文件名前缀检查（`IDVBG*` vs 任意 `*_train.xlsx`）
+- CV：**新增 Row 0/1 布局检查** — 检测 Row 0 是否是列头而非描述，如是则标为"无声损坏"（引擎偏移一行读取）
+- I-t：**从"数文件数"变为"8 个精确文件名对照检查"** — 列出文件名，报告缺失和命名错误
+
+### test_subagent_unit.py 残留目录修复
+
+`session/test-unit-001` 在测试运行后残留。根因：清理代码在 `if __name__ == "__main__"` 块内，pytest 不执行该块。修复：新增 `atexit.register(_cleanup_test_unit)` 在模块级注册，进程退出时无论何种 runner 均清理。
+
+### Git Commits
+
+```
 (待提交)
 ```

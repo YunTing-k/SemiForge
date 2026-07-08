@@ -24,7 +24,7 @@ import time
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .schema import (
     WorkflowStatus,
@@ -233,6 +233,7 @@ def run_workflow(
             _finalize_run(ctx, run_id, output_dir, t_start, stages,
                           failed=True, failed_stage=failed_stage, failed_error=failed_error,
                           board=board, task_map=task_map)
+            _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
             return False, failed_error
 
         # ── No-op stage check ──
@@ -294,6 +295,7 @@ def run_workflow(
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             wm.clear_stage_result(run_id, StageName.DATA_PREP)
+                            retry_counts.pop("data-prep_retries", None)
                         fallback_ctx = None
                         run = wm.get_run(run_id)
                         continue
@@ -304,14 +306,21 @@ def run_workflow(
                         continue
                 # Exhausted — fail if required
                 if sd.name == StageName.DATA_PREP:
-                    _console(ctx, f"  [{WF_STATUS_ERROR}]Preparer exhausted after {max_r} attempts, falling through to Verifier[/{WF_STATUS_ERROR}]")
-                    pointer += 1
+                    _console(ctx, f"  [{WF_STATUS_ERROR}]Preparer exhausted after {max_r} attempts — pipeline cannot continue[/{WF_STATUS_ERROR}]")
+                    wm.mark_failed(run_id, f"Preparer exhausted after {max_r} attempts")
+                    op_log.set_final_status("failed")
+                    _finalize_run(ctx, run_id, output_dir, t_start, stages,
+                                  failed=True, failed_stage=sd.name, failed_error="Preparer exhausted",
+                                  board=board, task_map=task_map)
+                    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=sd.name, config_path=config_path)
+                    return False, f"Failed at {sd.name}: preparer exhausted"
                 else:
                     wm.mark_failed(run_id, f"Required stage {sd.name} exhausted after {max_r} attempts")
                     op_log.set_final_status("failed")
                     _finalize_run(ctx, run_id, output_dir, t_start, stages,
                                   failed=True, failed_stage=sd.name, failed_error=f"Verifier exhausted",
                                   board=board, task_map=task_map)
+                    _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=sd.name, config_path=config_path)
                     return False, f"Failed at {sd.name}: verifier exhausted"
             else:
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=True)
@@ -555,6 +564,7 @@ def run_workflow(
                 _finalize_run(ctx, run_id, output_dir, t_start, stages,
                               failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
                               board=board, task_map=task_map)
+                _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
                 return False, f"Failed at {failed_stage}: fallback chain exhausted"
             run = wm.get_run(run_id)
             continue
@@ -891,7 +901,7 @@ def _revert_tasks(
         tid = task_map.get(sd.name)
         if tid is not None:
             ok, task, _ = board.get_task(tid)
-            if ok and task is not None and task.status == TaskStatus.COMPLETED:
+            if ok and task is not None and task.get("status") == TaskStatus.COMPLETED:
                 _start_task(board, agent_id, tid)
 
 

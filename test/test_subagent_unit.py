@@ -9,6 +9,7 @@ stop_mode branching logic, local tool interception, and exhaustion handling.
 """
 import sys
 import os
+import atexit
 import json
 import logging
 import shutil
@@ -737,3 +738,11 @@ if __name__ == "__main__":
     _td = os.path.join(SESSION_PATH, "test-unit-001")
     if os.path.exists(_td):
         shutil.rmtree(_td, ignore_errors=True)
+
+
+# Module-level cleanup — runs regardless of test runner (pytest / python -m unittest)
+def _cleanup_test_unit():
+    _td = os.path.join(SESSION_PATH, "test-unit-001")
+    if os.path.exists(_td):
+        shutil.rmtree(_td, ignore_errors=True)
+atexit.register(_cleanup_test_unit)

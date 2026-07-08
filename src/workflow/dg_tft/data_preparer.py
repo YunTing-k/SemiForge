@@ -47,68 +47,123 @@ You are a data preparation specialist for DG-TFT device modeling. Convert raw me
 
 The output directory already exists. Write all output files into it.
 
-**Required output format**:
-- IV training file suffix: *_train.xlsx
-- Required sheet name: {iv_sheet}
-- Required columns: {iv_columns}
-- Report filename: {report_name}
-- CV output: CV_train.xlsx (expected sheets: {cv_sheets})
-- I-t files go to: it/ subdirectory (or root if found directly under `{raw_dir}`)
+**Engine requirements your output MUST meet**:
+
+IV files:
+  - Filename pattern: `IDVBG*_train.xlsx`, `IDVTG*_train.xlsx`, `IDVD*_train.xlsx`
+  - Sheet name: `long` (case-sensitive — files without this sheet are silently ignored by the engine)
+  - Required columns: `VD_V`, `VBG_V`, `VTG_V`, `ID_A` (all four mandatory; missing → engine crash)
+
+CV file:
+  - Filename: exactly `CV_train.xlsx` (hardcoded in engine, not a wildcard)
+  - Internal layout: Row 0 = description text, Row 1 = column headers, Row 2+ = numeric data
+    The engine reads with `header=None` and uses `iloc[1]` for headers, `iloc[2:]` for data.
+    If your source CV file has headers on Row 0, you MUST fix this — insert an empty Row 0.
+  - Column headers must contain text the engine can parse: VTG=X.XXV, VBG=X.XXV, VDS=X.XXV,
+    frequency (kHz/MHz/Hz), temperature (T=...K). The engine regex-matches these from Row 1.
+
+I-t files:
+  - Exact expected filenames in `{output_dir}/it/`:
+    `I-t with different VBG1.xlsx`, `I-t with different VBG2.xlsx`, `I-t with different VBG3.xlsx`,
+    `I-t with different VTG1.xlsx`, `I-t with different VTG2.xlsx`, `I-t with different VTG3.xlsx`,
+    `I-t with different VBG_temperature.xlsx`, `I-t with different VTG_temperature.xlsx`
+  - The engine tries these 8 exact names first, then falls back to `I-t.xlsx`, then auto-discover.
+    Missing some is OK (engine skips gracefully), but naming must be correct for the ones you have.
 
 **Python usage rules**:
 - Use `{python_exe} -c "..."` for all inline Python code — do NOT write scripts to files
-- Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json`
+- Always import libraries at the start of every `-c` command: `import pandas as pd, openpyxl, os, shutil, json, glob`
 - CSV columns may have leading spaces — use `df.columns = df.columns.str.strip()` to clean them
 - Use standard GNU bash commands (rm, not del) for any non-Python operations — the shell is git bash
 
+**Data precision rules — CRITICAL**:
+- NEVER round or truncate floating-point values. Measurement data (especially ID_A in nA/µA range) must be preserved at full precision.
+- Use `pd.to_excel()` WITHOUT a `float_format` argument — pandas/openpyxl already stores full float64 precision. Adding float_format would silently TRUNCATE significant digits. DO NOT add float_format.
+- When reshaping wide→long: verify that no NaN values were introduced. If melt/pivot produces NaN, that indicates incorrect column mapping, not missing data — stop and fix the reshape logic.
+- Do NOT use `df.fillna(0.0)` or `df.dropna()` — if you see NaN after reshape, your column mapping is wrong. Fix it, do not mask it.
+- When fixing CV/I-t layout, use openpyxl row insertion (`ws.insert_rows()`) — never re-serialize data cells through pandas. Data values in cells must pass through unchanged.
+- The engine fits physical parameters (Vth, mobility, subthreshold slope) from this data; any precision loss here directly corrupts the modeling results.
+
 **Step-by-step instructions**:
 
-1. First, check what files exist in `{raw_dir}` and `{raw_dir}/it/`. One brief `glob_file` call is enough. Also scan for I-t files in root: look for files whose name starts with `I-t` in the root listing.
+1. First, `glob_file` to list all files in `{raw_dir}` and `{raw_dir}/it/` (if the it/ subdir exists).
 
-2. Process each file by data type:
+2. **IV files** — process each:
+   - Filename contains `IDVBG`, `IDVTG`, or `IDVD` → it's an IV file.
+   - If the file already matches `ID*_VDS*V_train.xlsx` with sheet `long` and columns `{iv_columns}`, just copy it.
+   - Otherwise, process by format:
 
    **IV CSV files** (e.g., `IDVBG VDS01V.csv`):
    - Read: `df = pd.read_csv("{raw_dir}/IDVBG VDS01V.csv")`
    - Clean: `df.columns = df.columns.str.strip(); df.columns = [c.replace("(V)","_V").replace("(A)","_A") for c in df.columns]`
    - Save: `df.to_excel("{output_dir}/IDVBG_VDS01V_train.xlsx", sheet_name="{iv_sheet}", index=False)`
 
-    **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
-    - XLSX files often have wide-format/pivot layout: column headers are descriptive text like
-      `ID-VBG, VDS=0.1 V` and data rows are measurement values. You MUST reshape these to
-      **long format** with exactly these 4 columns: `VD_V, VBG_V, VTG_V, ID_A`.
-    - How to reshape: use `pd.read_excel()`, then use `pd.melt()` or `df.stack()` to
-      convert wide→long, then rename columns to the standard names.
-    - Example approach: `df = pd.read_excel("file.xlsx"); df = df.melt(id_vars=[], var_name="param", value_name="value");`
-      then extract VD/VBG/VTG/ID from the "param" column using regex, and pivot again if needed.
-    - **CRITICAL**: After reshaping, verify ALL 4 columns `VD_V, VBG_V, VTG_V, ID_A` exist.
-      If any is missing, your output is invalid and the verifier will reject it.
-    - If the file already has clean headers matching `{iv_columns}`, skip reshaping and just copy.
+   **IV XLSX files** (e.g., `IDVBG_VDS0.1V.xlsx`):
+   - XLSX files often have wide-format/pivot layout: column headers are text like
+     `ID-VBG, VDS=0.1 V` and rows are measurement values. You MUST reshape these to
+     **long format** with exactly these 4 columns: `VD_V, VBG_V, VTG_V, ID_A`.
+   - How to reshape: use `pd.read_excel()`, then `pd.melt()` or `df.stack()` to
+     convert wide→long, then rename columns to the standard names.
+   - **CRITICAL**: After reshaping, verify ALL 4 columns `VD_V, VBG_V, VTG_V, ID_A` exist.
+     If any is missing, your output is invalid and the verifier will reject it.
 
    **Family mapping rules**:
    - `IDVBG_*` -> `IDVBG_VDS<Vvalue>_V_train.xlsx` (extract V from filename)
    - `IDVTG_*` -> `IDVTG_VDS<Vvalue>_V_train.xlsx`
-   - `IDVD_*VBG*` -> `IDVD_VBG<Vvalue>_V_train.xlsx` (CRITICAL: check for VBG in name)
-   - `IDVD_*VTG*` -> `IDVD_VTG<Vvalue>_V_train.xlsx` (CRITICAL: check for VTG in name)
-   - Skip: `DUAL_REF_*.csv`, `Refernce.xlsx`
-   - **IMPORTANT**: If both CSV and XLSX exist for the same measurement (same V value), only process the XLSX version. Normalize V values: 01V = 0.1V, 05V = 0.5V, 5V = 5V. Check if output file already exists before writing and skip duplicates.
+   - `IDVD_*VBG*` -> `IDVD_VBG<Vvalue>_V_train.xlsx` (check for VBG in name)
+   - `IDVD_*VTG*` -> `IDVD_VTG<Vvalue>_V_train.xlsx` (check for VTG in name)
+   - Skip: `DUAL_REF_*`, `Refernce.xlsx`, `~$*` temp files
+   - Normalize V values: 01V = 0.1V, 05V = 0.5V, 5V = 5V.
+   - If both CSV and XLSX exist for the same measurement → only process XLSX. Check if output already exists before writing.
 
-3. **CV file** (e.g., `CV_wide_tables.xlsx`):
-   - Copy as-is to preserve original merged-cell structure: `shutil.copy("{raw_dir}/CV_wide_tables.xlsx", "{output_dir}/CV_train.xlsx")`
+3. **CV file** — find and fix:
 
-4. **I-t files**:
-   - Priority 1: If `{raw_dir}/it/` exists and contains files, copy all: `shutil.copytree("{raw_dir}/it", "{output_dir}/it")`
-   - Priority 2: If no `it/` subdirectory (or it's empty), scan `{raw_dir}/` for files matching `I-t*` pattern. Create `{output_dir}/it/` and copy each matching file: `os.makedirs("{output_dir}/it", exist_ok=True); for f in glob.glob("{raw_dir}/I-t*.xlsx"): shutil.copy(f, "{output_dir}/it/")`
-   - Omit this step if no I-t files are found anywhere.
+   a. Use `glob_file` to find the CV data file. Look for filenames containing `CV`, `cv`, `capacitance`, `C-V`, `C_F` (case-insensitive). It's usually an `.xlsx` file. If exactly one match, use it. If multiple, pick the one with `wide` or `tables` in the name; if still ambiguous, pick the largest.
 
-5. Call `submit_handoff` with a summary of your work:
-   - `observations`: What you found in the raw data (file types, formats, column naming patterns)
-   - `actions`: What you did (which files were processed, how they were converted)
-   - `potential_issues`: Things the verifier should double-check (missing VDS scans, ambiguous columns, incomplete files)
-   - `output_manifest`: Counts of produced files (iv_files, cv_files, it_files)
+   b. **MUST** use `inspect_xlsx` on this file to check the row layout. Look at the first 3 rows of each sheet:
+      - Engine expects: **Row 0 = description text**, **Row 1 = column headers** (with text like "Bias", "Capacitance", "VTG=...", "VBG=..."), **Row 2+ = numeric data**.
+      - If Row 0 of your source file **already has** column-header-like text (words like "bias", "cap", "voltage", "vtg", "vbg") AND Row 1 is numeric → the source has headers on Row 0. You MUST shift everything down by inserting a blank row.
+      - If Row 0 is short text or empty, and Row 1 has column headers → already correct, no fix needed.
+
+   c. If a fix is needed, use openpyxl to insert a blank row at position 1 (top of each sheet):
+      `wb = openpyxl.load_workbook("{raw_dir}/the_cv_file.xlsx"); for ws in wb.worksheets: ws.insert_rows(1); wb.save("{output_dir}/CV_train.xlsx")`
+
+   d. If no fix is needed, just copy: `shutil.copy("{raw_dir}/the_cv_file.xlsx", "{output_dir}/CV_train.xlsx")`
+
+   e. **CRITICAL**: The output MUST be named exactly `CV_train.xlsx`. Do NOT use pandas `to_excel()` — use `shutil.copy` or openpyxl `wb.save()` only. Pandas re-serialization destroys merged cells and internal sheet metadata.
+
+4. **I-t files** — discover, classify, and rename:
+
+   a. If `{raw_dir}/it/` exists, `glob_file` to list all `.xlsx`/`.xls` files there. If no `it/` subdir, scan `{raw_dir}` for files matching `I-t*` or `IT*` (case-insensitive). Skip `~$*` temp files.
+
+   b. For each I-t file, use `inspect_xlsx` to read the first sheet's column names (just the header row — no data needed). Determine the file's **family** and **role**:
+      - If column names contain `vbg` or `VBG` → **VBG** family (back-gate sweep)
+      - If column names contain `vtg` or `VTG` → **VTG** family (top-gate sweep)
+      - If filename or column names contain `temp`, `temperature`, `T(k)`, `T(K)` → **temperature dataset**
+      - If you can't determine the family from columns, check the filename — `VBG`/`vbg` vs `VTG`/`vtg`.
+
+   c. Group files by (family, is_temperature):
+      - Non-temperature VBG files → name them `I-t with different VBG1.xlsx`, `VBG2`, `VBG3` (sorted alphabetically or by voltage value in filename)
+      - Non-temperature VTG files → `I-t with different VTG1.xlsx`, `VTG2`, `VTG3`
+      - Temperature VBG → `I-t with different VBG_temperature.xlsx` (only one expected)
+      - Temperature VTG → `I-t with different VTG_temperature.xlsx` (only one expected)
+
+   d. If a file cannot be classified as either VBG or VTG, default it to **VTG** (the engine's fallback behavior) and report this in `potential_issues`.
+
+   e. Copy files with their new names to `{output_dir}/it/`:
+      `os.makedirs("{output_dir}/it", exist_ok=True); shutil.copy("{raw_dir}/it/original_name.xlsx", "{output_dir}/it/I-t with different VBG1.xlsx")`
+
+5. **Report filename**: Write a `{report_name}` JSON file summarizing what you did.
+
+6. Call `submit_handoff` with a summary of your work:
+   - `observations`: What you found (file types, formats, column naming patterns, how many IV/CV/I-t files)
+   - `actions`: What you did (which files processed, how reshaped/renamed, CV row-shift if applied)
+   - `potential_issues`: Things the verifier should double-check (files you couldn't classify to VBG/VTG, ambiguous IV families, missing VDS scans, too-few I-t files)
+   - `output_manifest`: Counts — iv_files, cv_files, it_files
 
 **Each file should take ONE python -c command. After processing all files, call `submit_handoff`.** Do NOT output free text — your plain text response will be ignored.
 
-Do NOT ask the user any questions — work autonomously. Do NOT explore files excessively — just read, clean, and save.
+Do NOT ask the user any questions — work autonomously. Do NOT explore files excessively — read only what you need to classify and transform.
 """
 
 VERIFIER_PROMPT_TEMPLATE = """\
@@ -116,14 +171,43 @@ You are a verification specialist for DG-TFT data preparation. Your job is to in
 
 **Prepared data directory**: {output_dir}
 
+**Engine requirements this data MUST satisfy**:
+
+IV files:
+  - Filename pattern: `IDVBG*_train.xlsx`, `IDVTG*_train.xlsx`, `IDVD*_train.xlsx`
+  - Each must have a sheet named `long` (exact case) with columns: {iv_columns}
+  - Engine uses filename PREFIX to assign IV family — wrong prefix = engine misclassifies the data
+
+CV file:
+  - Filename: exactly `CV_train.xlsx` (hardcoded, not a wildcard)
+  - Internal layout: Row 0 = description text, Row 1 = column headers, Row 2+ = numeric data
+    Engine reads with `header=None` using `iloc[1]` for headers, `iloc[2:]` for data.
+    If Row 0 contains column-header-like text ("bias", "cap", "voltage", "vtg", "vbg") instead
+    of descriptive text, Row 1's data will be MISREAD as column headers — a silent corruption.
+  - Expected sheet names: {cv_sheets} (engine reads all sheets, but these are the standard four)
+
+I-t files:
+  - Expected in `{output_dir}/it/`:
+    `I-t with different VBG1.xlsx`, `VBG2.xlsx`, `VBG3.xlsx`
+    `I-t with different VTG1.xlsx`, `VTG2.xlsx`, `VTG3.xlsx`
+    `I-t with different VBG_temperature.xlsx`, `I-t with different VTG_temperature.xlsx`
+  - Engine tries these 8 exact names first — file_count alone is insufficient; naming matters
+
 **Instructions**:
 1. Use `glob_file` to list all files in the output directory (including the it/ subdirectory).
-2. For each `*_train.xlsx` IV family file (NOT CV_train.xlsx), use `inspect_xlsx` to check that it has a "{iv_sheet}" sheet with columns: {iv_columns}.
-3. For `CV_train.xlsx`, use `inspect_xlsx` to check that it exists and report its sheets (expected: {cv_sheets}).
-4. For the `it/` subdirectory, check if it exists and how many files it contains.
+2. For each `*_train.xlsx` file (NOT CV_train.xlsx):
+   - Verify filename matches `IDVBG*_train.xlsx`, `IDVTG*_train.xlsx`, or `IDVD*_train.xlsx`
+   - Use `inspect_xlsx` to check sheet `long` exists and contains columns: {iv_columns}
+3. For `CV_train.xlsx`:
+   - Verify it exists
+   - Use `inspect_xlsx` to read the first 3 rows of each sheet. Check: does Row 0 look like description text (short, non-column-header content)? Does Row 1 look like column headers (containing words like bias, cap, voltage)? Report if Row 0 appears to be headers instead of description — this means the layout is shifted and will silently corrupt engine reads.
+   - Report sheet names present
+4. For the `it/` subdirectory:
+   - List files and check against the 8 expected names above. Report which names are present and which are missing.
+   - Report file count
 5. After inspecting, call `report_verification` with your structured findings.
 
-**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Inspect EVERY *_train.xlsx IV file individually — do not skip any. Check sheets/columns for each one.
+**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Inspect EVERY *_train.xlsx IV file individually — do not skip any. Check sheets and columns for each one.
 """
 
 
@@ -203,6 +287,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
         python_exe=python_exe,
+        report_name=_PREP_WORKER_REPORT_NAME,
     )
     if handoff_history_text:
         prompt += f"\n\n**Previous attempt feedback** (use this to fix issues):\n{handoff_history_text}"

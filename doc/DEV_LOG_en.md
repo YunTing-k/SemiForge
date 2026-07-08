@@ -966,5 +966,59 @@ Confirmed that the Diagnosis subagent (`diagnostics.py` + `subagent_hooks.py` + 
 ### Git Commits
 
 ```
+9821d3c feat: Agent flow test suite (36 tests), Phase 6 legacy cleanup, minimal_run rationalization, Agent E awareness, knowledge sync
+```
+
+---
+
+## 2026-07-08 — Preparer/Verifier Prompt Refactor + Pipeline Bug Fixes
+
+### Three Production Bug Fixes
+
+**Bug 1 — Preparer ran 3 no-op attempts without spawning SubAgent**: `WORKER_PROMPT_TEMPLATE` contained `{report_name}` placeholder but `.format()` was not passed that key → `KeyError: 'report_name'` → SubAgent never spawned. Operation log showed three identical entries: `error: "'report_name'"`, `duration_s: 0.0`, `handoff: null`. Fix: added `report_name=_PREP_WORKER_REPORT_NAME` to `.format()`.
+
+**Bug 2 — `'dict' object has no attribute 'status'` crash**: `_revert_tasks` used `task.status` dot-access on a TypedDict (erased to plain dict at runtime). Scoreboard `get_task()` returns a dict but the code used attribute access. All four fallback paths were affected: Agent A fallback, Agent B/C/D hard-failure fallback, quality-fail fallback, Verifier→Preparer reset. Fix: `task.status` → `task.get("status")`.
+
+**Bug 3 — Preparer exhaustion caused silent failover cascade**: Old logic `pointer += 1` dropped through to Verifier → Verifier ran pointless LLM call on empty directory → returned to find Preparer retry counter already exhausted → oscillation until Verifier also exhausted. Fix: Preparer exhaustion now calls `_finalize_run` + `return False` immediately, terminating the pipeline.
+
+### Two Design Defect Fixes
+
+**Defect 1 — 4 early-return paths skipped Agent E**: Timeout (`L236`), Preparer exhaustion (`L311`), Verifier exhaustion (`L321`), and fallback chain exhaustion (`L564`) all returned without calling `_spawn_agent_e`. Fix: added `_spawn_agent_e(...)` before each return.
+
+**Defect 2 — retry_counts not cleared on Verifier→Preparer reset**: `retry_counts["data-prep_retries"]` retained old values, preventing Preparer from getting fresh retry opportunities. Fix: `retry_counts.pop("data-prep_retries", None)`.
+
+### Preparer Prompt Refactor — Engine Contract-Driven
+
+**Core principle**: Preparer makes no assumptions about incoming data format (no hardcoded filenames or layouts), but output MUST strictly satisfy engine requirements.
+
+**Added `Engine requirements your output MUST meet` block**: Precisely lists the engine's format contract for all three data types (extracted directly from engine source code):
+
+| Data | Contract Source | Key Requirements |
+|------|----------------|------------------|
+| IV | `fit_physical_kernel.py:248-286` | Filename `IDVBG*/IDVTG*/IDVD*_train.xlsx`, sheet=`long` (case-sensitive), 4 columns mandatory |
+| CV | `fit_physical_kernel.py:322-382` | Fixed name `CV_train.xlsx`, Row0=desc Row1=headers Row2+=data (`header=None, iloc[1], iloc[2:]` hardcoded) |
+| I-t | `analyze_it_hysteresis.py:32-41` | 8 exact filenames, VBG/VTG family grouping + temperature marking |
+
+**CV handling rewritten**: No longer guesses source file named `CV_wide_tables.xlsx`. `glob_file` by keyword → `inspect_xlsx` to check Row 0/1 layout → if Row 0 contains column headers → `openpyxl.insert_rows(1)` to insert blank row → `wb.save` to `CV_train.xlsx`. Data values untouched, only row positions shifted.
+
+**I-t handling rewritten**: Blind `copytree` → `glob_file` to list files → `inspect_xlsx` to read column headers → infer family and role from `vbg`/`vtg`/`temp` keywords → group and sort as VBG1/2/3, VTG1/2/3, *_temperature → `shutil.copy` with engine's 8 expected filenames. Unclassifiable files default to VTG + recorded in potential_issues.
+
+**Precision rules strengthened**: Added "use `openpyxl.insert_rows()` for CV/I-t layout fixes — never re-serialize through pandas" and "data cell values must pass through unchanged."
+
+### Verifier Prompt Refactor — Shared Engine Contract with Preparer
+
+Added `Engine requirements this data MUST satisfy` block, consistent with Preparer:
+
+- IV: Added filename prefix check (`IDVBG*` vs arbitrary `*_train.xlsx`)
+- CV: **Added Row 0/1 layout check** — detect if Row 0 is column headers instead of description text; if so, flag as silent corruption (engine will misread data offset by one row)
+- I-t: **Upgraded from "count files" to "check 8 exact expected filenames"** — list filenames, report missing and misnamed
+
+### test_subagent_unit.py Residual Directory Fix
+
+`session/test-unit-001` was left behind after test runs. Root cause: cleanup code was inside `if __name__ == "__main__"` block, which pytest does not execute. Fix: added `atexit.register(_cleanup_test_unit)` at module level, cleaning up regardless of test runner.
+
+### Git Commits
+
+```
 (pending)
 ```
