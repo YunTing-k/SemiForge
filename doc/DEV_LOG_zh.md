@@ -936,3 +936,87 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 - `final_interpret.md`: +185 行 Stage Principles for Interpretation
 
 ### Git Commits
+
+```
+6efed53 feat: Agent A-E全线完成 — 知识注入统一, fallback_ctx传播, Agent E全量解读, 动态阶段插入, contribute_knowledge YAML结构
+```
+
+---
+
+## 2026-07-08 — Agent 流程清理、minimal_run 合理化、Agent 流测试
+
+### Phase 6 遗留清理
+
+确认 Diagnosis subagent（`diagnostics.py` + `subagent_hooks.py` + `_run_stage_diagnosis` + `_launch_diagnosis_subagent`）是 Phase 6 (2026-06-26) 的遗留产物，已被 Agent A+E 完全取代。`agent_configs.json` 中 `DG_TFT_ENABLE_DIAGNOSIS = false` 默认关闭但代码仍在。
+
+**执行全量删除**：
+- 删除 `src/workflow/dg_tft/subagent_hooks.py`（315 行，6 个 hook 定义 + prompt 模板）
+- 删除 `src/workflow/dg_tft/diagnostics.py`（294 行，ErrorCategory 关键字分类引擎 + DiagnosticResult）
+- 删除 `test/dg_tft_diagnostics_test.py`（~994 行，85+ 测试）
+- `orchestrator.py`：移除 `_run_stage_diagnosis`、`_launch_diagnosis_subagent`、`_collect_log_snippet`、`_print_diagnosis` 四个函数（~180 行），移除 import、常量、注释
+- `report_builder.py`：移除 Diagnosis section（~25 行）及 `has_diag` 条件分支
+- `agent_configs.json`：移除 `DG_TFT_ENABLE_DIAGNOSIS`、`DG_TFT_DIAGNOSIS_MAX_STEPS`、`DG_TFT_DIAGNOSIS_TIMEOUT_S`
+- `TODO.md`：基线描述更新，Agent 介入点从 3 个改为 Agent A-E 全链路
+- `dg_tft_report_test.py`：1 个 diagnosis 测试改写为 quality+warnings 测试
+
+**Agent 矩阵精简为 7 个（完整对齐设计）**：Preparer / Verifier / Agent A / B / C / D / E
+
+### minimal_run 行为合理化
+
+**原行为**：Agent E 显式跳过，Agent A/B/C/D 仅在 quality fail 时跳过（旁路 quality gate），hard failure 时仍触发。
+
+**新行为**（用户要求）：
+- Agent A/B/C/D：**hard failure + quality fail 全部跳过**。L405（Agent A）+ L436（Agent B/C/D）加 `not _is_minimal_run` guard
+- Agent E：**永不跳过**。删除 `_is_minimal_run` return 语句
+- Agent E prompt 条件注入 minimal_run 标记：`"minimal_run mode: quick diagnostics only — ... do NOT critique model quality as if this were a full production run."`
+- 注入方式：`_spawn_agent_e_inner` 签名 +`config_path`，L1698-1703 条件追加，非 minimal_run 下零 token 开销
+
+**最终 minimal_run Agent 矩阵**：
+
+| Agent | 运行？ | 原因 |
+|-------|--------|------|
+| Preparer | ✅ | 无 minimal_run 检查 |
+| Verifier | ✅ | 同上 |
+| Agent A | ❌ | hard failure 分支 + not _is_minimal_run |
+| Agent B/C/D (hard failure) | ❌ | 同上 |
+| Agent B/C/D (quality fail) | ❌ | quality gate 旁路 |
+| Agent E | ✅ | 永不被跳过，prompt 含 minimal_run 标记 |
+
+### Bug 修复
+
+**Agent A prompt 缺失 `output_dir`**：L775 新增 `f"Output directory: {output_dir}"`，之前 `output_dir` 在函数签名但从未注入 prompt。
+
+**Agent E prompt 构建语法错误**：`prompt_lines.extend([...]` 后缺 `])` 关闭列表和调用，L1737 修复。
+
+### 知识文件同步
+
+`knowledge/final_interpret.md` 全面对齐当前代码：
+- §1 "minimal_run always runs Agent E" 更新：移除 "no longer skipped" 历史参照，改为纯陈述 "When minimal_run is active, prompt includes a flag..."
+- §3 删除：移除引用已删除的 `_run_stage_diagnosis` / `DiagnosticResult` 的整段
+- prompt summary 描述更新：从 "LAST attempt only" + "quality_pass 缺失" → "ALL attempts with quality_pass"
+- 所有过时声明清除，无 "previously"/"used to"/"no longer" 等历史参照
+
+### Agent 流测试套件
+
+**新建** `test/dg_tft_agent_flow_test.py`（36 tests，908 行）：
+
+| 测试类 | Tests | 覆盖 |
+|--------|-------|------|
+| TestNormalizeToolName | 7 | adjust_params / fallback / accept / 启发式 / error 解析 |
+| TestProcessAgentDecision | 4 | 四种决策返回 + op_log 记录 |
+| TestAgentA | 5 | fallback 决策、拒绝、错误降级、Prep handoff 接收、fallback_ctx 注入 |
+| TestAgentE | 3 | 成功/失败 FINAL_INTERPRETATION.md 落盘、minimal_run hint |
+| TestOrchestratorAgentAFlow | 2 | run_workflow 全路径：fallback→Verifier 终止、拒绝 fallback |
+| TestOrchestratorModelingAgentFlow | 3 | Agent B hard fail→adjust→retry、quality fail→accept、B fallback→A 拒绝 |
+| TestOrchestratorTwoStageFallback | 1 | D fallback→C adjust→恢复 成功 |
+| TestOrchestratorMinimalRun | 2 | ABCD 跳过+E 运行、Agent A 不 spawn |
+| TestRunAgentStage | 4 | Prep→Verifier 成功、Verifier fail 返回 False、fallback_ctx 注入 handoff、has_modeling_agent |
+| TestOperationLogAgentEntries | 2 | adjust→agent_adjust 记录、fallback→fallback_sent 记录 |
+
+**测试方法**：三层 mock 隔离 — SubAgent patch（mock SubAgent 构造，无 LLM 调用）→ run_stage patch（mock StageResult，无子进程）→ _assess_stage_quality patch（控制 quality gate）。全部使用 `tempfile.mkdtemp()` + `tearDown rmtree()`，`_save_runs = lambda: None` 阻止 WorkflowManager 落盘。911 全量测试通过，session/ 无残留。
+
+### Git Commits
+
+```
+(待提交)
+```

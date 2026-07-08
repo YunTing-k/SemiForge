@@ -413,16 +413,10 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("(crashed)", md)
         self.assertIn("nan at epoch 50", md)
 
-    def test_build_md_summary_with_both_diagnosis_and_quality(self):
+    def test_build_md_summary_with_quality_and_warnings(self):
         run_data = self._make_run_data()
         run_data["warnings"] = ["Minor drift detected"]
         run_data["extra"] = {
-            "diagnosis": {
-                "category": "TRAINING_NUMERICAL_ERROR",
-                "confidence": 0.9,
-                "evidence": ["loss is nan"],
-                "suggestion": "Lower learning rate",
-            },
             "quality_retry_history": [
                 {"attempt": 0, "ok": True, "quality_pass": True,
                  "adjustments": {}, "metrics": {"iv_rms_log10_error_dec": 0.005}},
@@ -430,9 +424,8 @@ class TestReportBuilder(unittest.TestCase):
         }
         manifest = _build_artifact_manifest(run_data, self.tmpdir)
         md = _build_md_summary(run_data, manifest, None)
-        self.assertIn("## 4. Diagnosis", md)
-        self.assertIn("## 5. Quality Gate", md)
-        self.assertIn("## 6. Issues", md)
+        self.assertIn("## 4. Quality Gate", md)
+        self.assertIn("## 5. Issues", md)
         self.assertIn("Minor drift detected", md)
 
     def test_build_artifact_manifest_with_attached_artifacts(self):

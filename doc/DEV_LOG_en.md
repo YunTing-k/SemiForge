@@ -884,3 +884,87 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 - `final_interpret.md`: +185 lines Stage Principles for Interpretation
 
 ### Git Commits
+
+```
+6efed53 feat: Agent A-E全线完成 — 知识注入统一, fallback_ctx传播, Agent E全量解读, 动态阶段插入, contribute_knowledge YAML结构
+```
+
+---
+
+## 2026-07-08 — Agent Flow Cleanup, minimal_run Rationalization, Agent Flow Test Suite
+
+### Phase 6 Legacy Cleanup
+
+Confirmed that the Diagnosis subagent (`diagnostics.py` + `subagent_hooks.py` + `_run_stage_diagnosis` + `_launch_diagnosis_subagent`) was a Phase 6 (2026-06-26) artifact, fully superseded by Agents A+E. `agent_configs.json` had `DG_TFT_ENABLE_DIAGNOSIS = false` by default but the code remained.
+
+**Full removal executed**:
+- Deleted `src/workflow/dg_tft/subagent_hooks.py` (315 lines, 6 hook definitions + prompt templates)
+- Deleted `src/workflow/dg_tft/diagnostics.py` (294 lines, ErrorCategory keyword classifier + DiagnosticResult)
+- Deleted `test/dg_tft_diagnostics_test.py` (~994 lines, 85+ tests)
+- `orchestrator.py`: removed 4 functions (~180 lines): `_run_stage_diagnosis`, `_launch_diagnosis_subagent`, `_collect_log_snippet`, `_print_diagnosis`, plus imports, constants, comments
+- `report_builder.py`: removed Diagnosis section (~25 lines) and `has_diag` conditional branches
+- `agent_configs.json`: removed 3 config keys (DG_TFT_ENABLE_DIAGNOSIS, DG_TFT_DIAGNOSIS_MAX_STEPS, DG_TFT_DIAGNOSIS_TIMEOUT_S)
+- `TODO.md`: baseline description updated, agent intervention points revised from 3 to Agent A-E full chain
+- `dg_tft_report_test.py`: 1 diagnosis test rewritten as quality+warnings test
+
+**Agent matrix streamlined to 7 (matching design)**: Preparer / Verifier / Agent A / B / C / D / E
+
+### minimal_run Behavior Rationalization
+
+**Before**: Agent E explicitly skipped; Agents A/B/C/D skipped only on quality fail (bypassed quality gate), but still spawned on hard failure.
+
+**After** (user request):
+- Agents A/B/C/D: **both hard failure AND quality fail are skipped**. L405 (Agent A) + L436 (Agent B/C/D) added `not _is_minimal_run` guard
+- Agent E: **never skipped**. Removed `_is_minimal_run` early return
+- Agent E prompt conditionally includes minimal_run hint: `"minimal_run mode: quick diagnostics only — ... do NOT critique model quality as if this were a full production run."`
+- Implementation: `_spawn_agent_e_inner` signature +`config_path`, L1698-1703 conditional append; zero token overhead in non-minimal_run path
+
+**Final minimal_run agent matrix**:
+
+| Agent | Runs? | Reason |
+|-------|-------|--------|
+| Preparer | Yes | No minimal_run gate anywhere |
+| Verifier | Yes | Same |
+| Agent A | No | hard failure branch + not _is_minimal_run |
+| Agent B/C/D (hard failure) | No | Same |
+| Agent B/C/D (quality fail) | No | quality gate bypassed |
+| Agent E | Yes | Never skipped, prompt includes minimal_run tag |
+
+### Bug Fixes
+
+**Agent A prompt missing `output_dir`**: L775 added `f"Output directory: {output_dir}"` — `output_dir` was in the function signature but never interpolated into the prompt.
+
+**Agent E prompt build syntax error**: `prompt_lines.extend([...]` missing `])` to close both the list and the method call. Fixed at L1737.
+
+### Knowledge File Sync
+
+`knowledge/final_interpret.md` fully aligned with current code:
+- Section 1 "minimal_run always runs Agent E" rewritten: removed "no longer skipped" historical reference, replaced with pure declarative "When minimal_run is active, prompt includes a flag..."
+- Section 3 deleted: removed entire section referencing the now-deleted `_run_stage_diagnosis` / `DiagnosticResult`
+- Prompt summary description updated: from "LAST attempt only" + "quality_pass missing" to "ALL attempts with quality_pass"
+- All stale claims removed; no "previously"/"used to"/"no longer" historical references remain
+
+### Agent Flow Test Suite
+
+**New** `test/dg_tft_agent_flow_test.py` (36 tests, 908 lines):
+
+| Class | Tests | Coverage |
+|-------|-------|----------|
+| TestNormalizeToolName | 7 | adjust_params / fallback / accept / heuristics / error parsing |
+| TestProcessAgentDecision | 4 | Four decision return types + op_log recording |
+| TestAgentA | 5 | Fallback decision, refusal, error degradation, Prep handoff receipt, fallback_ctx injection |
+| TestAgentE | 3 | Success/failure FINAL_INTERPRETATION.md, minimal_run hint, non-minimal no hint |
+| TestOrchestratorAgentAFlow | 2 | Full run_workflow: fallback to Verifier termination, refusal |
+| TestOrchestratorModelingAgentFlow | 3 | Agent B hard fail/adjust/retry, quality fail/accept, B fallback/A refusal |
+| TestOrchestratorTwoStageFallback | 1 | D fallback to C adjust/recovery success |
+| TestOrchestratorMinimalRun | 2 | ABCD skipped+E runs, Agent A not spawned |
+| TestRunAgentStage | 4 | Prep to Verifier success, Verifier fail returns False, fallback_ctx injection into handoff, has_modeling_agent |
+| TestOperationLogAgentEntries | 2 | adjust triggers agent_adjust record, fallback triggers fallback_sent record |
+
+**Method**: Three-layer mock isolation — SubAgent patch (mock SubAgent construction, no LLM) → run_stage patch (mock StageResult, no subprocess) → _assess_stage_quality patch (control quality gate). All use `tempfile.mkdtemp()` + `tearDown rmtree()`, `_save_runs = lambda: None` prevents WorkflowManager disk writes. 911 total tests pass, zero session/ residue.
+
+### Git Commits
+
+```
+(pending)
+```

@@ -48,13 +48,9 @@ lines; detailed metric breakdowns should follow but may be truncated.
 
 **Important behavior notes**:
 
-1. **minimal_run skip**: When `[runtime] minimal_run = yes`, Agent E is **skipped entirely**
-   (`_is_minimal_run` check at orchestrator.py). No report is produced, no knowledge
-   is contributed. **Bug note**: The `_is_minimal_run` guard at orchestrator.py only
-   works when `config_path` is provided. On the FAILURE path (orchestrator.py),
-   `_spawn_agent_e` is called without `config_path`, so `config_path and _is_minimal_run(...)`
-   evaluates to False — Agent E runs even during minimal_run on failure. The skip only works
-   on the SUCCESS path.
+1. **minimal_run mode**: When minimal_run is active, Agent E's prompt includes a `minimal_run mode`
+   flag and instructions to focus on hard errors only — do not critique model quality as if this
+   were a production run. All other agents (A, B, C, D) and quality gates are skipped in this mode.
 
 2. **Knowledge contribution mechanism**: Agent E has one stage-specific tool schema (`contribute_knowledge`),
    but **no local tool handlers** for final-interpret (the handlers dict is empty).
@@ -63,38 +59,21 @@ lines; detailed metric breakdowns should follow but may be truncated.
    if it finds a `"title"` key, it calls `_handle_contribute_knowledge` to write the file.
    The tool is NOT executed by a local handler. Agent E must call the tool as structured JSON
    (NOT embed knowledge contributions in free text), and the output format is:
-   `{"title": "...", "content": "..."}`.
+    `{"title": "...", "content": "..."}`.
 
-3. **Pre-computed error classification**: The orchestrator runs `_run_stage_diagnosis` for every
-   failed stage BEFORE Agent E is spawned. The resulting `DiagnosticResult` (category,
-   confidence, evidence, suggestion) is stored in `run.extra["diagnosis"]` but is **NOT
-   included in Agent E's prompt**. Agent E should read the full `operation_log.json` and/or
-   output directory to access this classification rather than re-classifying from scratch.
-
-4. **operation_log coverage gaps**: (1) Hard failures on first attempt are NEVER recorded in
+3. **operation_log coverage gaps**: (1) Hard failures on first attempt are NEVER recorded in
    operation_log — they appear only in `run.stage_results`. (2) Successful re-runs after
    agent adjustments (attempt_n > 1) are NOT logged — only the agent decision entry (with
    ok=False) is recorded. (3) Cascade victim stages that hard-fail have NO operation_log
    presence — Agent E must check artifact files directly for these.
 
 Agent E receives a pre-formatted stage results summary from the orchestrator, containing
-per-stage pass/fail status and metric values for each stage's **LAST attempt only**.
-The orchestrator iterates `op_log.data["stages"]` and takes `attempts[-1]` per stage —
-all retry history, agent decisions, parameter adjustments, and intermediate metric values
-from earlier attempts are discarded from the prompt summary. To access full history,
-Agent E must use `read_file` on `operation_log.json` (located in the output directory,
-which it must find via `glob_file`).
+ALL attempts per stage with per-attempt: pass/fail status, trigger, quality_pass,
+metrics, adjustments, and agent_reasoning. This covers the full retry history inline.
 
-**Warning**: The prompt shows `PASS`/`FAIL` based on `last.get('ok')` (subprocess exit
-code), NOT quality_pass. A stage that passed quality with borderline metrics looks identical
-to one that crashed hard. A stage with `ok=True` but `quality_pass=False` shows as PASS
-with metrics — Agent E must check `quality_pass` per attempt in operation_log.json to
-distinguish.
-
-**Prompt limitation**: The inline summary contains NO error text from failed stages — the
-`error` field from StageAttemptLog is never included. Root cause diagnosis from the inline
-prompt alone is impossible. Agent E MUST read operation_log.json or log files to see actual
-error messages.
+**Prompt limitation**: The inline summary does not include the raw `error` field from
+failed stages. Agent E should read `operation_log.json` or log files in the output
+directory for actual error messages when diagnosing hard failures.
 
 Important: The operation_log.json contains an `upstream` field in its schema, but this
 field is **never populated by the orchestrator** — it will always be the empty string.

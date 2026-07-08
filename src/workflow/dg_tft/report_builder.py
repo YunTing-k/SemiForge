@@ -238,9 +238,6 @@ def _build_json_summary(
         }
 
     extra = run_data.get("extra", {})
-    if isinstance(extra, dict) and "diagnosis" in extra:
-        summary["diagnosis"] = extra["diagnosis"]
-
     if isinstance(extra, dict) and "quality_retry_history" in extra:
         summary["quality"] = {
             "retries": len(extra["quality_retry_history"]),
@@ -331,34 +328,11 @@ def _build_md_summary(
             lines.append(f"- {icon} `{it['filename']}` ({size_kb:.1f} KB)")
         lines.append("")
 
-    # ── Diagnosis ──
-    extra = run_data.get("extra", {})
-    has_diag = isinstance(extra, dict) and "diagnosis" in extra
-    if has_diag:
-        diag = extra["diagnosis"]
-        lines.append("## 4. Diagnosis")
-        lines.append("")
-        lines.append(f"- **Category**: {diag.get('category', 'UNKNOWN')}")
-        lines.append(f"- **Confidence**: {diag.get('confidence', 0):.0%}")
-        evidence = diag.get("evidence", [])
-        if evidence:
-            lines.append(f"- **Evidence**: {', '.join(evidence[:5])}")
-        suggestion = diag.get("suggestion", "")
-        if suggestion:
-            lines.append(f"- **Suggestion**: {suggestion}")
-        subagent_text = diag.get("subagent_result", "")
-        if subagent_text:
-            lines.append("")
-            lines.append("### AI Diagnosis")
-            lines.append("")
-            for line in subagent_text.strip().splitlines():
-                lines.append(f"> {line}")
-        lines.append("")
-
     # ── Quality (Phase 7) ──
+    extra = run_data.get("extra", {})
     has_quality = isinstance(extra, dict) and "quality_retry_history" in extra
     if has_quality:
-        q_section = 5 if has_diag else 4
+        q_section = 4
         q_history = extra["quality_retry_history"]
         lines.append(f"## {q_section}. Quality Gate")
         lines.append("")
@@ -409,8 +383,6 @@ def _build_md_summary(
     warnings = run_data.get("warnings", [])
     errors = run_data.get("errors", [])
     issue_base = 4
-    if has_diag:
-        issue_base += 1
     if has_quality:
         issue_base += 1
     issue_section = issue_base
