@@ -326,7 +326,10 @@ class WorkflowManager:
                 self._next_run_id = data.get("next_run_id", 1)
                 self._runs = {}
                 for k, v in data.get("runs", {}).items():
-                    self._runs[int(k)] = WorkflowRun.from_dict(v)
+                    try:
+                        self._runs[int(k)] = WorkflowRun.from_dict(v)
+                    except Exception as e:
+                        sys_log.warning("Skipping corrupted run entry %s: %s", k, e)
                 prep_data = data.get("preparation_tracker", {})
                 if prep_data:
                     self.preparation_tracker.from_dict(prep_data)

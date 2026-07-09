@@ -314,7 +314,10 @@ def get_quality_thresholds(agent_configs: dict) -> dict[str, float]:
             val = agent_configs.get(cfg_key)
             if val is None:
                 continue
-            result[metric_key] = float(val)
+            try:
+                result[metric_key] = float(val)
+            except (ValueError, TypeError):
+                sys_log.warning("Invalid quality threshold value for %s: %s", cfg_key, val)
     return result
 
 

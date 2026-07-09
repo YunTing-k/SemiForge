@@ -1074,3 +1074,64 @@ caaa11a feat: extract expert knowledge from 06-29 Codex session into knowledge/e
 ```
 (待提交)
 ```
+
+---
+
+## 2026-07-09 — 8 轮集中审计 + Fallback 重构 + 知识文档一致性
+
+### 审计概览
+
+通过 8 轮手工+subagent 交叉审查 orchestrator/data_preparer/schema/SubAgent/config_builder/quality_guard/tool_def/manager/knowledge 文件，共发现并修复 20 个 Bug（不含知识文档一致性问题）：
+
+**P0 — 管线致命（3 个）**：
+- Verifier prompt I-t 文件名错误：`VBG2.xlsx` 缺少 `I-t with different` 前缀（引擎期望全带前缀）
+- `PrepHandoff.from_worker_report` key 不匹配（读 `files_processed`/`iv_families` 但实际 key 是 `observations`/`output_manifest`）
+- Agent A fallback 缺少 `wm.clear_stage_result` → resume check 找到旧 `ok=True` → 静默跳过
+
+**P1 — 影响功能（5 个）**：
+- Prep/Verifier 计数器脱节（Prep n=1 复用 attempt_1，Verifier n=2,3 校验空 attempt_2/3）
+- `_log_initial_attempt` 仅 attempt_n==1 调用 → retry 成功指标未记录
+- Config path 有效但文件被删 → 子进程拿不存在路径
+- `build_and_write_reports` 无 try/except → 崩溃绕过 Agent E
+- `run.output_root` 从未设置 → `dg_tft_report` 无法定位输出目录
+
+**P2 — 防御性（7 个）**：
+- `potential_issues` 无 None guard → `list(None)` 崩溃
+- `_check_output` 空 sheet → `StopIteration`
+- `_build_handoff_history` verifier_by_n dict → 同名 attempt 丢失早期反馈
+- `_get_handoff_history` legacy 路径盲重试（verifier 反馈存于 data-prep.agent_decision 从未读取）
+- `_run_verifier_subagent` 非 JSON 返回默认 `overall_ok: True`
+- `_check_prepared_output` CV_train 误匹配 IV 文件 → 假跳过 prep
+- `get_quality_thresholds` float() 非数字崩溃
+
+**P3 — 边缘（5 个）**：
+- CV_train 过滤大小写敏感、Hysteresis 目录验证缺失、`WorkflowRun.from_dict` d.pop() 破坏调用方、manager 单条损坏丢全部 run、fallback_depth 未清零
+
+### Fallback 机制重构 — direct_agent
+
+**问题**：Agent B/C/D 的 `fallback_to_previous` 回退上游 → 原参数重跑脚本必然成功 → 下游死循环。
+
+**修复**：新增 `direct_agent` 机制：
+- 上游已完成的 → 清除 result + 跳过脚本 → 直接 spawn 上游 agent 调参 → 脚本用新参数重跑
+- `fallback_depth` 计数器 >2 终止（防不可解决循环）
+- 3 个 fallback 路径（hard failure / quality fail / direct_agent 内部）全部采用
+- Prompt 扩展：`FALLBACK_RECEIVED + stage_result.ok` 时输出 "completed successfully but downstream failed"
+
+**测试更新**：`TestOrchestratorTwoStageFallback` 重写为 direct_agent 行为（Agent C 直接 spawn 而非重跑脚本）
+
+### 知识文件一致性 — 5 轮审计
+
+- `final_interpret.md`：修正 Agent E 输出路径（文件落盘而非 15 行截断）、handler 描述（存在 handler 而非空）、任务数量（5 而非 3）
+- `physical_kernel.md`/`hysteresis.md`：删除 "NOT INJECTED" 声明（知识已注入）
+- `data_inspection.md`：修正 inspect_xlsx 返回格式、fallback_to_previous 必填字段、Agent A 工具数量
+- 全部陈述改为纯现状（无 "no longer"/"fixed"/"out-of-date" 标记）
+
+### dg_tft_run 增强
+
+Tool result 增加 `FINAL_INTERPRETATION.md` 路径，提示主 agent 必须先读此文件再回复用户。
+
+### Git Commits
+
+```
+(待提交)
+```

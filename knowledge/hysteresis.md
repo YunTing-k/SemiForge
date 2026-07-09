@@ -18,7 +18,7 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | fit-physical | script | Yes (Agent B) | Hard failure / quality below threshold |
 | train-static | script | Yes (Agent C) | Hard failure / quality below threshold |
 | **train-hysteresis** | **script** | **Yes (Agent D)** | **Hard failure / quality below threshold** |
-| final-report | noop | No (Agent E) | — (always runs at end) |
+| final-report | script | No (Agent E) | — (always runs at end) |
 
 Agent stages spawn LLM subagents. Script stages run subprocesses — fit-physical uses scipy (CPU-only), train-static and train-hysteresis use CUDA Python.
 When a script stage hard-fails (exit code ≠ 0) or produces quality below threshold,
@@ -123,11 +123,10 @@ terminal current is `I_static × 10^{dlog}`, where `dlog` is the dynamic correct
 ### Fallback Chain
 
 - Agent D falls back to **train-static** (StageName.TRAIN_STATIC), which is upstream.
-  This means: if the hysteresis model cannot be trained because the static model
-  checkpoint is invalid or produces unrealistic steady-state currents, fallback
-  re-runs the static model training.
-- When Agent D accepts quality or the fallback resolves, the pipeline proceeds to
-  final-report.
+  When fallback occurs, Agent C is spawned directly to review and adjust train-static
+  parameters (the train-static script is not re-run with unchanged parameters).
+  After Agent C adjusts, train-static re-runs with new parameters, then train-hysteresis
+  re-runs.
 
 ## 3. INI Parameters
 
@@ -181,7 +180,7 @@ Training completes but results are not meaningful — only for pipeline infrastr
 
 ### Knowledge Injection Status
 
-**This knowledge file is currently NOT injected into Agent D's prompt.** The `build_agent_prompt()` function exists in `knowledge/loader.py` but is never called by the orchestrator. Agent D receives a generic 3-line inline prompt with no stage-specific knowledge. Until the loader is integrated, the tuning guidance and parameter recommendations in this file are not accessible to the agent at runtime.
+This knowledge file is injected into Agent D's system prompt via `build_agent_prompt("train-hysteresis")` at agent spawn time. The agent receives the engine behavior details, parameter tuning guidance, quality metric interpretation, and decision framework documented here.
 
 ## 4. Quality Metrics
 

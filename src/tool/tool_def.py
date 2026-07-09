@@ -2346,6 +2346,7 @@ def _check_prepared_output(output_dir: str) -> bool:
     """
     import glob as _glob
     train_files = _glob.glob(os.path.join(output_dir, "*_train.xlsx"))
+    train_files = [f for f in train_files if "cv_train" not in os.path.basename(f).lower()]
     report_exists = os.path.isfile(os.path.join(output_dir, "worker_report.json"))
     manifest_exists = os.path.isfile(os.path.join(output_dir, "manifest.json"))
     cv_exists = os.path.isfile(os.path.join(output_dir, "CV_train.xlsx"))
@@ -2396,7 +2397,7 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         if entry == "full":
             from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR, PREP_SUBDIR_NAME
             runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-            run_output_dir = os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}")
+            run_output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
             attempt_1_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
             from src.workflow.dg_tft.data_preparer import _check_output as _prep_check
             existing_ok, _ = _prep_check(attempt_1_dir)
@@ -2416,13 +2417,40 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         )
 
         sys_log.info("%s: run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
+
+        from pathlib import Path as _Path
+        from src.constants import FINAL_INTERPRETATION_FILENAME, SESSION_PATH, DG_TFT_RUNS_SUBDIR
+        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
+        run_output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
+        interpretation_path = os.path.join(run_output_dir, FINAL_INTERPRETATION_FILENAME)
+        has_interpretation = _Path(interpretation_path).exists()
+
+        info_parts = [
+            f"Run {run_id} completed. Success: {workflow_ok}.",
+            summary,
+        ]
+        if has_interpretation:
+            info_parts.append(
+                f"IMPORTANT: A detailed final interpretation has been written to "
+                f"`{interpretation_path}`. Read this file FIRST before answering the "
+                f"user — it contains the full per-stage analysis, modeling quality "
+                f"assessment, failure diagnosis (if any), and deployment readiness. "
+                f"This is the authoritative output of the entire pipeline."
+            )
+        else:
+            info_parts.append(
+                f"NOTE: No final interpretation was generated. Check `{run_output_dir}` "
+                f"for raw stage outputs and operation logs."
+            )
+
         result = {
             "status": SUCCESS_LABEL,
-            "info": f"Run completed. Run ID: {run_id}. Success: {workflow_ok}. {summary}",
+            "info": "\n".join(info_parts),
             "run_id": run_id,
             "created_at": now,
             "workflow_ok": workflow_ok,
             "summary": summary,
+            "interpretation_file": interpretation_path if has_interpretation else None,
         }
         return result
     except Exception as e:

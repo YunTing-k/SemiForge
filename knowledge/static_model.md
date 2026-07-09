@@ -118,11 +118,12 @@ deviation.
 ### Fallback Chain
 
 - Agent C falls back to **fit-physical** (StageName.FIT_PHYSICAL), which is upstream.
-  This means: if the static model fails because the physical kernel parameters are
-  poor (e.g., Vth estimates are off by >0.5V, mobility is unreasonable, or the EKV
-  kernel fundamentally cannot describe the device), fallback re-runs the physical fit.
-- When train-hysteresis falls back to train-static: the static model checkpoint is
-  regenerated, and hysteresis training restarts from the new accepted checkpoint.
+  When fallback occurs, Agent B is spawned directly to review and adjust fit-physical
+  parameters (the fit-physical script is not re-run with unchanged parameters).
+  After Agent B adjusts, fit-physical re-runs with new parameters, then train-static
+  re-runs.
+- When train-hysteresis falls back to train-static: Agent C is spawned directly,
+  and after adjustment, train-static re-runs, then train-hysteresis re-runs.
 
 ## 3. INI Parameters
 

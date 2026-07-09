@@ -189,6 +189,7 @@ def run_workflow(
     profile: DatasetProfile | None = _load_profile(run) if config_path else None
     prep_output_dir: str = dataset_dir
     fallback_ctx: dict[str, Any] | None = None
+    fallback_depth: int = 0
 
     sys_log.info(
         "Orchestrator starting run %d (entry=%s) with %d stages, output=%s",
@@ -254,6 +255,7 @@ def run_workflow(
             # and should not see its own previous fallback as "why it was re-run"
             pointer += 1
             fallback_ctx = None
+            fallback_depth = 0
             continue
 
         # ── Announce stage ──
@@ -297,11 +299,13 @@ def run_workflow(
                             wm.clear_stage_result(run_id, StageName.DATA_PREP)
                             retry_counts.pop("data-prep_retries", None)
                         fallback_ctx = None
+                        fallback_depth = 0
                         run = wm.get_run(run_id)
                         continue
                     else:
                         _console(ctx, f"  [{WF_STATUS_WARN}]{sd.name} attempt {current} failed, retrying...[/{WF_STATUS_WARN}]")
                         fallback_ctx = None
+                        fallback_depth = 0
                         run = wm.get_run(run_id)
                         continue
                 # Exhausted — fail if required
@@ -336,12 +340,15 @@ def run_workflow(
                 _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
                 pointer += 1
             fallback_ctx = None
+            fallback_depth = 0
             run = wm.get_run(run_id)
             continue
 
         # ── Script stage ──
         # ── Lazy config building: build runtime config before first script stage ──
-        if not config_path:
+        if not config_path or not os.path.isfile(config_path):
+            if config_path and not os.path.isfile(config_path):
+                sys_log.warning("Config path %s not found, rebuilding", config_path)
             _console(ctx, f"  [bright_black]Building runtime config ...[/bright_black]")
             if not profile:
                 from src.workflow.dg_tft.dataset_inspector import inspect_dataset
@@ -386,6 +393,62 @@ def run_workflow(
             if attempt_n > 1:
                 _console(ctx, f"  [bright_black]Retrying stage {sd.name} (attempt {attempt_n})...[/bright_black]")
                 _start_task(board, ctx.agent_id, task_map.get(sd.name))
+
+            # ── Direct-agent: downstream fell back to an already-completed stage → spawn agent to review params ──
+            if (attempt_n == 1 and has_agent and not hard_failure_agent_used
+                    and fallback_ctx and fallback_ctx.get("direct_agent")):
+                if fallback_depth > 2:
+                    _console(ctx, f"  [{WF_STATUS_ERROR}]Fallback depth exceeded ({fallback_depth}) → unable to resolve[/{WF_STATUS_ERROR}]")
+                    failed_stage = sd.name
+                    failed_error = f"Fallback chain could not resolve after {fallback_depth} hops"
+                    break
+                hard_failure_agent_used = True
+                fallback_depth += 1
+                # Build synthetic result: stage passed but downstream requested review
+                downstream_name = ""
+                downstream_reason = ""
+                from_stage = fallback_ctx.get("from_stage", "")
+                if isinstance(fallback_ctx.get("arguments"), dict):
+                    downstream_reason = fallback_ctx["arguments"].get("reason", "")[:200]
+                direct_sr = StageResult(
+                    ok=True, stage=sd.name,
+                    error="",
+                    summary=f"Downstream stage {from_stage} failed and requested upstream review.",
+                )
+                _console(ctx, f"  [bright_black]{_AGENT_LABELS.get(sd.name, 'Agent')} ← {from_stage or 'downstream'} fell back → reviewing upstream params...[/bright_black]")
+                agent_result = _spawn_modeling_agent(
+                    ctx, run_id, sd, direct_sr, output_dir, config_path, op_log,
+                    trigger=AttemptTrigger.FALLBACK_RECEIVED,
+                    known_failures=[f"Downstream {from_stage} failed: {downstream_reason}"] if downstream_reason else [],
+                    preferences=preferences,
+                    attempt_n=attempt_n,
+                    fallback_ctx=fallback_ctx,
+                )
+                decision = _process_agent_decision(
+                    ctx, run_id, sd, config_path, op_log,
+                    agent_result, retry_remaining,
+                )
+                if decision == "retry":
+                    # Agent adjusted params → clear direct_agent, re-run script in next iteration
+                    fallback_ctx.pop("direct_agent", None)
+                    continue
+                if decision == "fallback":
+                    fb_target = agent_result.get("arguments", {}).get("target", "")
+                    new_pointer = _find_stage_pointer(stages, fb_target)
+                    if new_pointer >= 0:
+                        pointer = new_pointer
+                        _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                        if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
+                            wm.clear_stage_result(run_id, fb_target)
+                            fallback_ctx = agent_result
+                            fallback_ctx["direct_agent"] = True
+                        else:
+                            wm.clear_stage_result(run_id, fb_target)
+                            fallback_ctx = agent_result
+                        run = wm.get_run(run_id)
+                        _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
+                        break
+                # accept / error → proceed to run script (params unchanged or adjusted)
 
             t_stage_start = time.monotonic()
             sr = run_stage(
@@ -465,9 +528,17 @@ def run_workflow(
                         if new_pointer >= 0:
                             pointer = new_pointer
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
-                            wm.clear_stage_result(run_id, fb_target)
+                            if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
+                                # Upstream already passed — clear result so retry loop enters,
+                                # then spawn its agent directly to review params
+                                wm.clear_stage_result(run_id, fb_target)
+                                fallback_ctx = agent_result
+                                fallback_ctx["direct_agent"] = True
+                                _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target} (direct agent review)[/{WF_STATUS_WARN}]")
+                            else:
+                                wm.clear_stage_result(run_id, fb_target)
+                                _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                             run = wm.get_run(run_id)
-                            _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                             fallback_ctx = agent_result
                             break
                     # accept / error / exhausted → mark failed and move on
@@ -544,9 +615,15 @@ def run_workflow(
                 if new_pointer >= 0:
                     pointer = new_pointer
                     _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
-                    wm.clear_stage_result(run_id, fb_target)
+                    if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
+                        wm.clear_stage_result(run_id, fb_target)
+                        fallback_ctx = agent_result
+                        fallback_ctx["direct_agent"] = True
+                        _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target} (direct agent review)[/{WF_STATUS_WARN}]")
+                    else:
+                        wm.clear_stage_result(run_id, fb_target)
+                        _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                     run = wm.get_run(run_id)
-                    _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                     fallback_ctx = agent_result
                     break
             # accept / error → move on
@@ -946,7 +1023,10 @@ def _finalize_run(
                 _resolve_task(board, ctx.agent_id, tid, completed=False)
 
     run_data = run.to_dict()
-    build_and_write_reports(run_data, output_dir, prep_info=prep_info)
+    try:
+        build_and_write_reports(run_data, output_dir, prep_info=prep_info)
+    except Exception as e:
+        sys_log.error("Failed to build reports: %s", e)
 
     if failed:
         sys_log.error("Workflow run %d failed at %s", run_id, failed_stage)
@@ -1326,9 +1406,14 @@ def _spawn_modeling_agent_inner(
         failures_text = ", ".join(known_failures) if known_failures else "none reported"
         soft_guard = get_soft_guard_prompt()
 
+        if trigger == AttemptTrigger.FALLBACK_RECEIVED and stage_result.ok:
+            status_line = "completed successfully but a downstream stage has failed and requested your review"
+        else:
+            status_line = "failed" if trigger == AttemptTrigger.QUALITY_FAIL and not stage_result.ok else "completed with quality below threshold"
+
         prompt_lines = [
             f"You are {agent_label} ({sd.name} diagnostics).",
-            f"The {sd.name} stage has {'failed' if trigger == AttemptTrigger.QUALITY_FAIL and not stage_result.ok else 'completed with quality below threshold'}.",
+            f"The {sd.name} stage has {status_line}.",
             f"Error: {errors}",
             f"Quality failures: {failures_text}",
             f"Attempt number: {attempt_n}",

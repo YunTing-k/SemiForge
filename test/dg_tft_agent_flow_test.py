@@ -581,12 +581,13 @@ class TestOrchestratorTwoStageFallback(unittest.TestCase):
     @patch("src.workflow.dg_tft.orchestrator.run_stage")
     @patch("src.workflow.dg_tft.orchestrator._assess_stage_quality")
     def test_d_fallback_to_c_then_c_adjusts_and_recovers(self, mock_q, mock_run, mock_sa):
-        """D quality fail → fallback to C → C adjusts and re-runs → D re-runs → success."""
+        """D quality fail → fallback to C → C adjusts via direct-agent → D re-runs → success."""
         call_order = []
         def make_agent(*args, **kwargs):
             st = kwargs.get("subagent_type", "")
             call_order.append(st)
-            if st == MODELING_AGENT_LABEL and "train-hysteresis" in str(kwargs.get("prompt", "")):
+            prompt = str(kwargs.get("prompt", ""))
+            if st == MODELING_AGENT_LABEL and "train-hysteresis" in prompt:
                 return _make_mock_subagent(json.dumps(
                     {"target": "train-static", "reason": "upstream data issue", "evidence": ""},
                 ))
@@ -595,18 +596,25 @@ class TestOrchestratorTwoStageFallback(unittest.TestCase):
             ))
         mock_sa.side_effect = make_agent
 
+        # First pass: all script stages run. Second pass (after direct-agent adjust):
+        # train-static re-runs with new params, train-hysteresis re-runs and quality passes.
         mock_run.side_effect = [
             StageResult(ok=True, stage="check-data", summary="OK"),
             StageResult(ok=True, stage="fit-physical", summary="OK"),
             StageResult(ok=True, stage="train-static", summary="OK"),
             StageResult(ok=True, stage="train-hysteresis", summary="low"),
-            StageResult(ok=True, stage="train-static", summary="re-run"),
-            StageResult(ok=True, stage="train-static", summary="re-run ok"),
-            StageResult(ok=True, stage="train-hysteresis", summary="ok now"),
+            # direct-agent spawns Agent C (train-static) → adjust → script re-runs
+            StageResult(ok=True, stage="train-static", summary="adjusted re-run"),
+            # train-hysteresis re-runs after adjustment
+            StageResult(ok=True, stage="train-hysteresis", summary="ok after adjustment"),
         ]
+        quality_hyst_calls = [0]
         def quality(ctx, stage_name, output_dir, config_path):
             if stage_name == "train-hysteresis":
-                return False, ["High RMS"]
+                quality_hyst_calls[0] += 1
+                if quality_hyst_calls[0] == 1:
+                    return False, ["High RMS"]
+                return True, []
             return True, []
         mock_q.side_effect = quality
 

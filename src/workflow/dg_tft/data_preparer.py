@@ -143,8 +143,8 @@ I-t files:
       - If you can't determine the family from columns, check the filename — `VBG`/`vbg` vs `VTG`/`vtg`.
 
    c. Group files by (family, is_temperature):
-      - Non-temperature VBG files → name them `I-t with different VBG1.xlsx`, `VBG2`, `VBG3` (sorted alphabetically or by voltage value in filename)
-      - Non-temperature VTG files → `I-t with different VTG1.xlsx`, `VTG2`, `VTG3`
+   - Non-temperature VBG files → name them `I-t with different VBG1.xlsx`, `I-t with different VBG2.xlsx`, `I-t with different VBG3.xlsx` (sorted alphabetically or by voltage value in filename)
+   - Non-temperature VTG files → `I-t with different VTG1.xlsx`, `I-t with different VTG2.xlsx`, `I-t with different VTG3.xlsx`
       - Temperature VBG → `I-t with different VBG_temperature.xlsx` (only one expected)
       - Temperature VTG → `I-t with different VTG_temperature.xlsx` (only one expected)
 
@@ -188,8 +188,8 @@ CV file:
 
 I-t files:
   - Expected in `{output_dir}/it/`:
-    `I-t with different VBG1.xlsx`, `VBG2.xlsx`, `VBG3.xlsx`
-    `I-t with different VTG1.xlsx`, `VTG2.xlsx`, `VTG3.xlsx`
+    `I-t with different VBG1.xlsx`, `I-t with different VBG2.xlsx`, `I-t with different VBG3.xlsx`
+    `I-t with different VTG1.xlsx`, `I-t with different VTG2.xlsx`, `I-t with different VTG3.xlsx`
     `I-t with different VBG_temperature.xlsx`, `I-t with different VTG_temperature.xlsx`
   - Engine tries these 8 exact names first — file_count alone is insufficient; naming matters
 
@@ -302,9 +302,9 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         subject=_PREP_SUBJECT,
         console=None,
     )
-    ctx.agent_list[agent.agent_id] = agent.progress
     agent.build_tools()
     agent.build_messages()
+    ctx.agent_list[agent.agent_id] = agent.progress
     try:
         result = agent.run()
     finally:
@@ -361,7 +361,6 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
         handoff_text = json.dumps(handoff, ensure_ascii=False, indent=2)
         prompt += f"\n\n**Preparer handoff** (what the worker found and did — use this to focus your checks):\n```json\n{handoff_text}\n```"
 
-    from src.tool.subagent_tools import get_tools
     from src.agent.subagent import SubAgent
     from src.constants import VERIFIER_AGENT_LABEL
 
@@ -373,9 +372,9 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
         subject="DG-TFT data verification",
         console=None,
     )
-    ctx.agent_list[agent.agent_id] = agent.progress
     agent.build_tools()
     agent.build_messages()
+    ctx.agent_list[agent.agent_id] = agent.progress
     try:
         result = agent.run()
     finally:
@@ -388,12 +387,11 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
             return json.loads(result) if isinstance(result, str) else dict(result)
         except (json.JSONDecodeError, TypeError, ValueError):
             sys_log.warning("Verifier returned non-JSON result, using as summary: %s", str(result)[:200])
-            return {"overall_ok": True, "summary": str(result)[:500]}
+            return {"overall_ok": False, "summary": str(result)[:500]}
     else:
         err = agent.error or "unknown error"
         sys_log.warning("Verifier SubAgent did not call report_verification: %s", err)
         fallback = {"overall_ok": False, "summary": f"Verifier failed to produce structured feedback: {err}"}
-        _write_verifier_result(output_dir, fallback)
         return fallback
 
 
@@ -663,22 +661,37 @@ def _get_handoff_history(op_log: Any) -> str:
 
     Cross-references verifier feedback with matching data-prep attempts by
     attempt number so the Preparer sees what the Verifier found on retry.
+    When no dedicated verifier stage entries exist, falls back to the
+    agent_decision field stored in data-prep entries.
     """
     from .operation_log import OperationLog
     if not isinstance(op_log, OperationLog):
         return ""
     prep_attempts = op_log.get_stage_attempts("data-prep")
     verifier_attempts = op_log.get_stage_attempts("verifier")
-    verifier_by_n = {va.get("n"): va for va in verifier_attempts}
     lines: list[str] = []
+
+    # Group verifier attempts by n (list, not dict — ensures no silent drops)
+    verifier_by_n: dict[int, list[dict]] = {}
+    for va in verifier_attempts:
+        n = va.get("n", 0)
+        verifier_by_n.setdefault(n, []).append(va)
+
     for ad in prep_attempts:
         n = ad.get("n", 0)
         h = ad.get("handoff")
         if h:
             lines.append(f"Attempt {n} preparer handoff: {json.dumps(h, ensure_ascii=False)}")
-        va = verifier_by_n.get(n)
-        if va:
+        for va in verifier_by_n.get(n, []):
             fb = va.get("agent_decision")
+            if fb:
+                lines.append(f"Attempt {n} verifier feedback: {json.dumps(fb, ensure_ascii=False)}")
+        # Fallback: when no dedicated verifier entries exist, check the
+        # agent_decision stored directly on the data-prep entry (used by
+        # run_data_preparation_with_retry which records verifier results
+        # in the data-prep stage, not a separate verifier stage).
+        if not verifier_attempts:
+            fb = ad.get("agent_decision")
             if fb:
                 lines.append(f"Attempt {n} verifier feedback: {json.dumps(fb, ensure_ascii=False)}")
     return "\n".join(lines)
@@ -724,7 +737,7 @@ def _check_output(output_dir: str) -> tuple[bool, list[str]]:
 
     # CRITICAL: at least one IV family file with long sheet and required columns
     iv_files = sorted(base.glob("*_train.xlsx"))
-    iv_files = [f for f in iv_files if "CV_train" not in f.name]
+    iv_files = [f for f in iv_files if "cv_train" not in f.name.lower()]
     if not iv_files:
         issues.append("[CRITICAL] No IV family *_train.xlsx files found")
         critical = True
@@ -739,6 +752,11 @@ def _check_output(output_dir: str) -> tuple[bool, list[str]]:
                     wb.close()
                     continue
                 ws = wb[_PREP_IV_SHEET_NAME]
+                if ws.max_row < 1:
+                    issues.append(f"[CRITICAL] {f.name}: sheet '{_PREP_IV_SHEET_NAME}' is empty (no rows)")
+                    critical = True
+                    wb.close()
+                    continue
                 headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
                 required = set(_PREP_REQUIRED_IV_COLUMNS)
                 present = set(h or "" for h in headers)

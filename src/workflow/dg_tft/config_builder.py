@@ -124,6 +124,9 @@ def _build_resolution(
 
     hysteresis_enabled = profile.has_hysteresis
     hysteresis_dir = profile.suggested_hysteresis_dir or str(data_path)
+    if hysteresis_enabled and hysteresis_dir and not Path(hysteresis_dir).is_dir():
+        sys_log.warning("Hysteresis enabled but hysteresis dir not found: %s — disabling", hysteresis_dir)
+        hysteresis_enabled = False
 
     return {
         "data_dir": str(data_path),

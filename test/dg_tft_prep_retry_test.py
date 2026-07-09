@@ -46,16 +46,16 @@ class TestPrepHandoff(unittest.TestCase):
     def test_from_worker_report(self):
         from src.workflow.dg_tft.schema import PrepHandoff
         report = {
-            "files_processed": ["IDVBG_VDS0.1V_train.xlsx", "IDVTG_VDS5V_train.xlsx"],
-            "iv_families": ["IDVBG", "IDVTG"],
-            "cv_found": True,
-            "it_found": False,
-            "issues": ["IDVD series missing"],
+            "observations": ["Found 3 IV CSVs, 1 CV file, 8 I-t files"],
+            "actions": ["Processed IDVBG_VDS0.1V_train.xlsx", "Processed IDVTG_VDS5V_train.xlsx"],
+            "potential_issues": ["IDVD series missing"],
+            "output_manifest": {"iv_files": 10, "cv_files": 1, "it_files": 8},
         }
         ho = PrepHandoff.from_worker_report(report)
-        self.assertIn("IDVBG", ho.observations[0])
-        self.assertEqual(ho.output_manifest["iv_files"], 2)
+        self.assertIn("Found 3 IV CSVs", ho.observations[0])
+        self.assertEqual(ho.output_manifest["iv_files"], 10)
         self.assertEqual(ho.output_manifest["cv_files"], 1)
+        self.assertEqual(ho.output_manifest["it_files"], 8)
         self.assertEqual(ho.potential_issues, ["IDVD series missing"])
 
 
@@ -227,11 +227,10 @@ class TestReadWorkerHandoff(unittest.TestCase):
         from src.workflow.dg_tft.data_preparer import _read_worker_handoff
         with tempfile.TemporaryDirectory() as td:
             report = {
-                "files_processed": ["a.xlsx"],
-                "iv_families": ["IDVBG"],
-                "cv_found": False,
-                "it_found": False,
-                "issues": ["missing CV"],
+                "observations": ["Found 1 IV file"],
+                "actions": ["Processed a.xlsx"],
+                "potential_issues": ["missing CV"],
+                "output_manifest": {"iv_files": 1, "cv_files": 0, "it_files": 0},
             }
             with open(os.path.join(td, "worker_report.json"), "w", encoding="utf-8") as f:
                 json.dump(report, f)

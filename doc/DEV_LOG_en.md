@@ -1022,3 +1022,76 @@ Added `Engine requirements this data MUST satisfy` block, consistent with Prepar
 ```
 (pending)
 ```
+
+---
+
+## 2026-07-09 — 8-Round Deep Audit + Fallback Refactor + Knowledge Consistency
+
+### Audit Overview
+
+8 rounds of manual + subagent cross-audit across orchestrator/data_preparer/schema/SubAgent/config_builder/quality_guard/tool_def/manager/knowledge files. 20 bugs found and fixed (excluding knowledge document consistency issues):
+
+**P0 — Pipeline-critical (3)**:
+- Verifier prompt I-t filenames wrong: `VBG2.xlsx` missing `I-t with different` prefix (engine expects prefix on all 8)
+- `PrepHandoff.from_worker_report` key mismatch (read `files_processed`/`iv_families` but actual keys are `observations`/`output_manifest`)
+- Agent A fallback missing `wm.clear_stage_result` → resume check finds old `ok=True` → silently skipped
+
+**P1 — Functional impact (5)**:
+- Prep/Verifier counter desync (Prep n=1 reuses attempt_1, Verifier n=2,3 checks empty attempt_2/3)
+- `_log_initial_attempt` only on attempt_n==1 → retry success metrics never recorded
+- Config path valid but file deleted → subprocess given nonexistent path
+- `build_and_write_reports` unguarded → crash bypasses Agent E
+- `run.output_root` never set → `dg_tft_report` cannot find output directory
+
+**P2 — Defensive (7)**:
+- `potential_issues` no None guard → `list(None)` crash
+- `_check_output` empty sheet → `StopIteration`
+- `_build_handoff_history` verifier_by_n dict → same-n attempt drops earlier feedback
+- `_get_handoff_history` legacy path blind retry (verifier feedback in data-prep.agent_decision never read)
+- `_run_verifier_subagent` non-JSON return defaults to `overall_ok: True`
+- `_check_prepared_output` CV_train false-matches IV files → false prep skip
+- `get_quality_thresholds` float() no try/except → non-numeric crash
+
+**P3 — Edge cases (5)**:
+- CV_train filter case-sensitive, Hysteresis dir missing validation, `WorkflowRun.from_dict` d.pop() mutates caller, manager single corrupt entry kills all runs, fallback_depth never reset
+
+### Fallback Mechanism Refactor — direct_agent
+
+**Problem**: Agent B/C/D `fallback_to_previous` re-ran upstream script with unchanged params → guaranteed success → downstream infinite loop.
+
+**Fix**: New `direct_agent` mechanism:
+- Upstream already completed → clear result + skip script → directly spawn upstream agent to review/adjust
+- `fallback_depth` counter >2 terminates (prevents unresolvable cycles)
+- All 3 fallback paths (hard failure / quality fail / internal direct_agent) adopt this
+- Prompt extended: `FALLBACK_RECEIVED + stage_result.ok` shows "completed successfully but downstream failed"
+
+**Test update**: `TestOrchestratorTwoStageFallback` rewritten for direct_agent behavior (Agent C spawned directly, not script re-run)
+
+### Knowledge Document Consistency — 5 Audit Rounds
+
+- `final_interpret.md`: Fixed Agent E output path (file written, not 15-line truncation), handler description (handler exists, not empty), task count (5 not 3)
+- `physical_kernel.md`/`hysteresis.md`: Removed "NOT INJECTED" claims (knowledge IS injected)
+- `data_inspection.md`: Fixed inspect_xlsx return format, fallback_to_previous required fields, Agent A tool count
+- All statements now pure facts (no "no longer"/"fixed"/"out-of-date" markers)
+
+### dg_tft_run Enhancement
+
+Tool result now includes `FINAL_INTERPRETATION.md` path, instructing main agent to read this file first before responding to user.
+
+### Additional Fixes
+
+- `fallback_depth` reset to 0 at all `fallback_ctx = None` sites (prevented false exhaustion on independent chains)
+- `_run_verifier_subagent` error-path double-write removed (layer violation)
+- `agent.progress` orphan guard: moved registration after `build_tools`/`build_messages` into try block
+- `WorkflowRun.from_dict` `d.pop()` → `d.get()` (no caller mutation)
+- `manager.py` per-entry try/except (one corrupted run doesn't kill all)
+- `_check_prepared_output` CV_train filter added (case-insensitive)
+- Config path validity check added (`os.path.isfile`)
+- Quality thresholds float parsing guarded with try/except
+- Hysteresis dir existence validated before enabling
+
+### Git Commits
+
+```
+(pending)
+```

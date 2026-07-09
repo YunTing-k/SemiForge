@@ -14,13 +14,13 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 |-------|------|--------------------|-------------------|
 | data-prep | agent | No | — (always runs) |
 | verifier | agent | No | — (always runs) |
-| **check-data** | **script** | **Diagnostic (Agent A)** | **Hard failure only** |
+| **check-data** | **script** | **No (Agent A only)** | **Hard failure only** |
 | fit-physical | script | Yes (Agent B) | Hard failure / quality below threshold |
 | train-static | script | Yes (Agent C) | Hard failure / quality below threshold |
 | train-hysteresis | script | Yes (Agent D) | Hard failure / quality below threshold |
 | final-report | script | No (Agent E) | — (always runs at end) |
 
-Note: Agent A is a **diagnostic agent** (dedicated `diagnostic` subagent type) distinct from the modeling agents (B/C/D). Agent A has two tools (`inspect_xlsx` for investigation, `fallback_to_previous` for decision) and uses `stop_mode="schema"` — it does not produce free text. Modeling agents (B/C/D) additionally have `adjust_params` and `accept_quality`.
+Note: Agent A is a **diagnostic agent** (dedicated `diagnostic` subagent type) with two subagent tools (`inspect_xlsx` for investigation, `fallback_to_previous` for decision) and four base tools (`read_file`, `glob_file`, `grep_file`, `bash`). It uses `stop_mode="schema"` — it must call one of its stop tools to produce a result. Free-text output is not captured.
 
 Script stages run via subprocess; fit-physical uses scipy (CPU-only, no CUDA). train-static, train-hysteresis use PyTorch GPU.
 When a script stage hard-fails (exit code != 0) or produces quality below threshold,
@@ -333,8 +333,6 @@ When check-data hard-fails:
    Downstream stages will attempt execution but typically fail quickly due to missing upstream artifacts.
 7. Only after all stages are iterated does the orchestrator check `failed_stage` and call `_finalize_run(failed=True)`.
 
-Note: `_run_stage_diagnosis()` does NOT run for check-data failures — the check-data hard-failure path uses `break` before reaching the diagnosis code. Only Agent A's fallback decision runs.
-
 **Agent A prompt content**: Agent A's prompt (orchestrator.py) includes:
 - `stage_result.error` (stderr, truncated to 2000 chars)
 - `stage_result.summary` (stdout last lines, if available)
@@ -378,14 +376,13 @@ The exit-code fallback for check-data defaults to `DATA_ERROR` (confidence 0.5).
 
 ### Agent A Decision Framework
 
-Agent A has a single tool: `fallback_to_previous`. It uses `stop_mode="schema"` — this means:
+Agent A has two subagent tools: `inspect_xlsx` (investigation) and `fallback_to_previous` (decision). It uses `stop_mode="schema"` — this means:
 
 - Agent A must call `fallback_to_previous` to produce a result. Free-text output is **not captured**.
 - If Agent A runs out of steps without calling the tool, the orchestrator gets `agent.status.value != "done"`,
   falls through to the error handler, and returns `{"fallback": "", "reason": "Agent A did not produce a result"}`.
   This is treated as "no fallback" — the pipeline terminates.
-- The tool requires these fields: `target` (which stage to fall back to), `reason` (why),
-  `evidence` (supporting evidence), `suggestion` (suggested fix).
+- The tool requires `target` (which stage to fall back to) and `reason` (why). Additionally, `evidence` (supporting evidence) and `suggestion` (suggested fix) are optional fields.
 
 | Decision | Trigger | Consequence |
 |----------|---------|-------------|
@@ -410,7 +407,7 @@ Agent A is spawned as a **dedicated `diagnostic` subagent type**, which auto-res
 - `bash`: Inline python for numeric validation (e.g., `python -c "import pandas as pd; df = pd.read_excel(...); print(df.dtypes)"`)
 
 **Subagent tools** (auto-resolved from `_AGENT_TYPE_CONFIG`):
-- `inspect_xlsx` (investigation, has handler): Returns `{{sheet_name: [columns], ...}}` — quick structural check without reading raw xlsx bytes
+- `inspect_xlsx` (investigation, has handler): Returns `{"status": "success"|"fail", "sheet_count": N, "sheets": {"Name": {"columns": [...]}}}` — quick structural check without reading raw xlsx bytes
 - `fallback_to_previous` (stop tool, `stop_mode="schema"`): Submits `{{target, reason, evidence, suggestion}}` to trigger fallback to Verifier
 
 **Not available**: `write_file`, `edit_file` (read-only diagnostics), `web_search`, `web_fetch` (unnecessary for local file inspection), `create_task`/`update_task`/`query_task` (no independent scoreboard needed).

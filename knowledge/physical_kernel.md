@@ -18,7 +18,7 @@ data-prep → verifier → check-data → fit-physical → train-static → trai
 | **fit-physical** | **script** | **Yes (Agent B)** | **Hard failure / quality below threshold** |
 | train-static | script | Yes (Agent C) | Hard failure / quality below threshold |
 | train-hysteresis | script | Yes (Agent D) | Hard failure / quality below threshold |
-| final-report | noop | No (Agent E) | — (always runs at end) |
+| final-report | script | No (Agent E) | — (always runs at end) |
 
 Agent stages spawn LLM subagents. Script stages run subprocesses — fit-physical uses scipy (CPU-only, no CUDA dependency), while train-static and train-hysteresis use CUDA Python.
 When a script stage hard-fails (exit code ≠ 0) or produces quality below threshold,
@@ -38,10 +38,10 @@ It is controlled by the `[physical_fit]` INI section (max_iv_points, max_cv_poin
 max_nfev_scale) and reads `[preprocessing]` for IV stage alignment settings.
 
 On failure, **Agent B** is spawned with four stage-specific tools: `adjust_params`, `fallback_to_previous`,
-`accept_quality`, and `inspect_xlsx`. It also has all standard SubAgent tools (`read_file`, `glob_file`,
-`bash`, `grep_file`, `write_file`, `edit_file`). Agent B's fallback target is **check-data**.
+`accept_quality`, and `inspect_xlsx`. It also has standard SubAgent base tools (`read_file`, `glob_file`,
+`bash`, `grep_file`, `web_fetch`, `web_search`). Agent B's fallback target is **check-data**.
 
-> **CRITICAL — Knowledge Injection Status**: This knowledge file is currently NOT injected into Agent B's system prompt. `_spawn_modeling_agent_inner` (orchestrator.py) builds a generic prompt with error text and tool options but contains zero engine-specific knowledge. Agent B starts blind — it must discover everything through `read_file` calls. Until the knowledge loader is integrated (TODO Step 9), this document's tuning guidance is for human reference only.
+> **Knowledge Injection Status**: This knowledge file is injected into Agent B's system prompt via `build_agent_prompt("fit-physical")` at agent spawn time. The `adjust_params` schema provides parameter names, types, and bounds, but no diagnostic context — this knowledge file fills the gap with engine behavior details, quality metric interpretation, and specific tuning guidance.
 
 ### Principles: EKV Level-2 Parameter Extraction
 
@@ -142,9 +142,9 @@ and fast/slow trap partitioning.
   This means: if the physical fit fails because the data is the problem, the fallback goes to
   check-data, which re-validates the dataset and may itself fallback to Verifier and then Preparer.
   This could trigger a complete data re-preparation cycle.
-- When train-static falls back to fit-physical: the fit-physical stage is re-executed, which
-  regenerates `fitted_params.json` and the Verilog-A template. The train-static stage should
-  then re-examine whether the new physical parameters improve its fitting quality.
+- When train-static falls back to fit-physical: Agent B is spawned directly to review
+  and adjust fit-physical parameters. After adjustment, fit-physical re-runs, then
+  train-static re-runs from the new physical baseline.
 
 ## 3. INI Parameters
 
@@ -178,7 +178,7 @@ When `[runtime] minimal_run = yes`, these values are hard-overridden in `run_mod
 - `max_nfev_scale`: 0.1
 - All preprocessing settings (iv_stage_alignment, etc.) remain as configured
 
-> **Note on Agent B's adjust_params tool**: The auto-generated `adjust_params` schema provides only parameter names, types, and bounds — it has NO diagnostic context (e.g., it does not explain that Stage 6 NFEV is fixed at 450 regardless of max_nfev_scale, or that reducing max_iv_points below the file cap minimum can drop subthreshold points). This knowledge file's tuning guidance fills this gap, but it is currently not injected into Agent B's prompt. See Knowledge Injection Status note above.
+> **Note on Agent B's adjust_params tool**: The auto-generated `adjust_params` schema provides only parameter names, types, and bounds — it has NO diagnostic context (e.g., it does not explain that Stage 6 NFEV is fixed at 450 regardless of max_nfev_scale, or that reducing max_iv_points below the file cap minimum can drop subthreshold points). This knowledge file's tuning guidance fills this gap.
 
 ## 4. Quality Metrics
 

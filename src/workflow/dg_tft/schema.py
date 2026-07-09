@@ -157,7 +157,7 @@ class WorkflowRun:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> WorkflowRun:
         stage_results = {}
-        for k, v in d.pop("stage_results", {}).items():
+        for k, v in d.get("stage_results", {}).items():
             stage_results[k] = StageResult(**v)
         d["status"] = WorkflowStatus(d["status"])
         if "prep_id" not in d:
@@ -189,23 +189,24 @@ class PrepHandoff:
             observations=list(d.get("observations", [])),
             actions=list(d.get("actions", [])),
             potential_issues=list(d.get("potential_issues", [])),
-            output_manifest=dict(d.get("output_manifest", {})),
+            output_manifest=dict(d.get("output_manifest") or {}),
         )
 
     @classmethod
     def from_worker_report(cls, report: dict[str, Any]) -> PrepHandoff:
         """Construct a PrepHandoff from a worker_report.json dict."""
-        files = report.get("files_processed", [])
-        families = report.get("iv_families", [])
-        issues = report.get("issues", [])
+        observations = report.get("observations", [])
+        actions = report.get("actions", [])
+        potential_issues = report.get("potential_issues", [])
+        output_manifest = report.get("output_manifest", {})
         return cls(
-            observations=[f"Processed {len(files)} files across families: {', '.join(families)}" if families else ""],
-            actions=[f"Output files: {', '.join(files[:10])}" if files else ""] + ([f"({len(files) - 10} more)" if len(files) > 10 else ""] if len(files) > 10 else []),
-            potential_issues=list(issues),
+            observations=list(observations) if observations else [],
+            actions=list(actions) if actions else [],
+            potential_issues=list(potential_issues) if potential_issues else [],
             output_manifest={
-                "iv_files": sum(1 for f in files if "CV_train" not in f),
-                "cv_files": 1 if report.get("cv_found") else 0,
-                "it_files": 0,  # inferred separately
+                "iv_files": output_manifest.get("iv_files", 0),
+                "cv_files": output_manifest.get("cv_files", 0),
+                "it_files": output_manifest.get("it_files", 0),
             },
         )
 
