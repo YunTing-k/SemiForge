@@ -917,5 +917,134 @@ class TestOperationLogAgentEntries(unittest.TestCase):
         self.assertIn("fallback_sent", triggers)
 
 
+# ======================================================================
+# Handoff chain integration — verifies from_stage injection, prompt
+# content, op_log n-values, and retry entries
+# ======================================================================
+
+class TestFallbackHandoffChain(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmpdir, "output"), exist_ok=True)
+        self.config_path = _write_minimal_config(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    @patch("src.agent.subagent.SubAgent")
+    @patch("src.workflow.dg_tft.orchestrator.run_stage")
+    @patch("src.workflow.dg_tft.orchestrator._assess_stage_quality")
+    def test_fallback_ctx_has_from_stage(self, mock_q, mock_run, mock_sa):
+        """Bug 1 regression: from_stage must be present in fallback_ctx when B/C/D fall back."""
+        captured_prompts = []
+
+        def intercept_agent(*args, **kwargs):
+            st = kwargs.get("subagent_type", "")
+            prompt = str(kwargs.get("prompt", ""))
+            captured_prompts.append((st, prompt))
+            is_hyst_agent = st == MODELING_AGENT_LABEL and "agent d" in prompt.lower()
+            if is_hyst_agent:
+                return _make_mock_subagent(json.dumps({
+                    "target": "train-static", "reason": "hysteresis needs better static base",
+                    "evidence": "amplitude loss", "suggestion": "double epochs",
+                }))
+            return _make_mock_subagent(json.dumps({
+                "applied": {"epochs": 50}, "applied_summary": "epochs=50",
+                "warnings": [], "ini_snapshot": "",
+            }))
+        mock_sa.side_effect = intercept_agent
+
+        mock_run.side_effect = [
+            StageResult(ok=True, stage="check-data", summary="OK"),
+            StageResult(ok=True, stage="fit-physical", summary="OK"),
+            StageResult(ok=True, stage="train-static", summary="OK"),
+            StageResult(ok=True, stage="train-hysteresis", summary="low"),
+            StageResult(ok=True, stage="train-static", summary="re-run"),
+            StageResult(ok=True, stage="train-hysteresis", summary="ok after fix"),
+        ]
+        hyst_quality_calls = [0]
+        def quality(ctx, stage_name, output_dir, config_path):
+            if stage_name == "train-hysteresis":
+                hyst_quality_calls[0] += 1
+                if hyst_quality_calls[0] == 1:
+                    return False, ["Amplitude loss"]
+                return True, []
+            return True, []
+        mock_q.side_effect = quality
+
+        ctx = _make_mock_ctx()
+        ok, rid, _ = ctx.workflow_man.create_run("/data/test", output_root=self.tmpdir)
+        profile = DatasetProfile(static_ok=True, cv_ok=True, has_hysteresis=True,
+                                 suggested_hysteresis_dir="/data/hyst")
+        ctx.workflow_man.set_dataset_profile(rid, profile)
+        result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
+                                       config_path=self.config_path)
+        self.assertTrue(result)
+
+        # Verify train-static agent prompt names the downstream stage that fell back
+        train_static_prompts = [p for st, p in captured_prompts
+                                if st == MODELING_AGENT_LABEL
+                                and "agent c" in p.lower()
+                                and "train-static diagnostics" in p.lower()]
+        self.assertTrue(len(train_static_prompts) > 0, "train-static agent should have been spawned")
+        ts_prompt = train_static_prompts[0]
+        self.assertIn("fallback from", ts_prompt.lower(),
+                      "prompt must mention which stage fell back (from_stage)")
+        self.assertIn("train-hysteresis", ts_prompt.lower(),
+                      "prompt must name 'train-hysteresis' as the fallback source")
+
+    @patch("src.agent.subagent.SubAgent")
+    @patch("src.workflow.dg_tft.orchestrator.run_stage")
+    @patch("src.workflow.dg_tft.orchestrator._assess_stage_quality")
+    def test_oplog_has_distinct_n_values_for_retries(self, mock_q, mock_run, mock_sa):
+        """Bug 3+5 regression: op_log must have distinct n values (no duplicate n=1),
+        and retry script runs must be logged."""
+        mock_sa.return_value = _make_mock_subagent(json.dumps({
+            "applied": {"epochs": 50}, "applied_summary": "epochs=50",
+            "warnings": [], "ini_snapshot": "",
+        }))
+        mock_run.side_effect = [
+            StageResult(ok=True, stage="check-data", summary="OK"),
+            StageResult(ok=True, stage="fit-physical", summary="low"),
+            StageResult(ok=True, stage="fit-physical", summary="re-run 1"),
+            StageResult(ok=True, stage="fit-physical", summary="re-run 2"),
+            StageResult(ok=True, stage="train-static", summary="OK"),
+        ]
+        fit_q_count = [0]
+        def quality(ctx, stage_name, output_dir, config_path):
+            if stage_name == "fit-physical":
+                fit_q_count[0] += 1
+                if fit_q_count[0] <= 2:
+                    return False, ["High RMS"]
+            return True, []
+        mock_q.side_effect = quality
+
+        ctx = _make_mock_ctx()
+        ok, rid, _ = ctx.workflow_man.create_run("/data/test", output_root=self.tmpdir)
+        profile = DatasetProfile(static_ok=True, cv_ok=True, has_hysteresis=False)
+        ctx.workflow_man.set_dataset_profile(rid, profile)
+        result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
+                                       config_path=self.config_path)
+        self.assertTrue(result)
+
+        op_log_path = os.path.join(self.tmpdir, "output", "operation_log.json")
+        self.assertTrue(Path(op_log_path).exists())
+        with open(op_log_path, "r", encoding="utf-8") as f:
+            log_data = json.load(f)
+        stages = log_data.get("stages", {})
+
+        # fit-physical should have multiple entries with distinct n values
+        fp_entries = stages.get("fit-physical", [])
+        self.assertGreaterEqual(len(fp_entries), 3,
+                                "fit-physical should have >=3 entries: initial + 2 retries")
+        n_values = [a.get("n") for a in fp_entries]
+        self.assertEqual(n_values, list(range(1, len(n_values) + 1)),
+                         f"n values must be sequential without duplicates, got {n_values}")
+        triggers = [a.get("trigger") for a in fp_entries]
+        self.assertEqual(triggers[0], "initial", "first entry should be 'initial'")
+        self.assertIn("agent_adjust", triggers, "should have agent_adjust trigger")
+
+
 if __name__ == "__main__":
     unittest.main()
