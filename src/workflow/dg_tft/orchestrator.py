@@ -1505,9 +1505,12 @@ def _spawn_modeling_agent_inner(
     sections = get_stage_sections(sd.name)
 
     def _adjust_params_handler(arguments: dict, _ctx) -> dict:
-        raw = arguments.get("adjustments", {}) if isinstance(arguments, dict) else {}
+        if not isinstance(arguments, dict):
+            return {"status": "fail", "reason": "adjust_params arguments must be a dict"}
+        reasoning = arguments.get("reasoning", "") if isinstance(arguments, dict) else ""
+        raw = {k: v for k, v in arguments.items() if k != "reasoning"}
         if not raw:
-            return {"status": "fail", "reason": "adjustments must be a non-empty dict of key=value pairs"}
+            return {"status": "fail", "reason": "no parameter values provided (only 'reasoning' found)"}
         sanitized, warnings = validate_agent_adjustments(raw, param_table, sections, sd.name)
         if not sanitized:
             return {"status": "fail", "reason": f"All {len(warnings)} params rejected: {'; '.join(warnings[:3])}"}
@@ -1520,6 +1523,7 @@ def _spawn_modeling_agent_inner(
             "warnings": warnings,
             "ini_snapshot": snapshot,
             "applied_summary": applied_str,
+            "reasoning": reasoning,
         }
 
     handlers[SUBAGENT_TOOL_ADJUST_PARAMS] = _adjust_params_handler
@@ -1576,6 +1580,10 @@ def _normalize_tool_name(parsed: dict[str, Any]) -> str:
     if not isinstance(parsed, dict):
         return "error"
 
+    tool = parsed.get("_tool", "")
+    if tool in ("adjust_params", "fallback_to_previous", "accept_quality"):
+        return tool
+
     tool_map = {
         "adjust_params": "adjust_params",
         "fallback_to_previous": "fallback_to_previous",
@@ -1623,29 +1631,16 @@ def _process_agent_decision(
         reasoning = agent_result.get("reasoning", "")
         agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
-        # Handler output (pre-validated and applied) or legacy raw arguments
+        # Handler output (pre-validated and applied) — the handler already
+        # wrote to INI; if 'applied' is empty, params were rejected or the
+        # handler was not reached (legacy/stale result).
         applied = arguments.get("applied", {}) if isinstance(arguments, dict) else {}
         warnings = arguments.get("warnings", []) if isinstance(arguments, dict) else []
         snapshot = arguments.get("ini_snapshot", "") if isinstance(arguments, dict) else ""
 
         if not applied:
-            # Fallback: attempt raw validation (backward compat)
-            sections = get_stage_sections(sd.name)
-            param_table = _get_stage_param_table(sd.name)
-            if sections is None or param_table is None:
-                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params: no param table for {sd.name}[/{WF_STATUS_WARN}]")
-                return "accept"
-            raw_params = arguments.get("adjustments", {}) if isinstance(arguments, dict) else {}
-            if not raw_params:
-                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params called with empty adjustments[/{WF_STATUS_WARN}]")
-                return "accept"
-            sanitized, warnings = validate_agent_adjustments(raw_params, param_table, sections, sd.name)
-            if not sanitized:
-                _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label}: all params rejected by guard[/{WF_STATUS_WARN}]")
-                return "accept"
-            applied = {str(k): v for k, v in sanitized.items()}
-            primary_section = sections[0]
-            snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
+            _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params: no params were applied (all rejected or no handler)[/{WF_STATUS_WARN}]")
+            return "accept"
 
         for w in warnings[:3]:
             sys_log.warning("[%s] %s", sd.name, w)

@@ -1177,5 +1177,35 @@ direct_agent 审查返回 "retry"（调参后重跑脚本）后，仅 `.pop("dir
 ### Git Commits
 
 ```
+1d97800 — fix: 工作流审计第1轮 — 5个Bug修复 (P0: Agent A fallback缺clear_stage_result→死循环; P1: fallback_ctx泄漏, fallback_depth泄漏; P2: dynamic_prep偏差1, 死代码三目) + set_output_root持久化
+```
+
+---
+
+## 2026-07-14 — 工作流审计第2轮 — Agent 参数调整管道
+
+### 审计报告
+
+| Bug | 严重度 | 位置 | 问题 | 修复 |
+|---|---|---|---|---|
+| Bug 1 | **P0致命** | `orchestrator.py:1508` | **Schema-handler不匹配**：`params_to_tool_schema` 生成**扁平**属性 (`{"epochs": 2000, "reasoning": "..."}`)，但 `_adjust_params_handler` 期望**嵌套** `arguments.get("adjustments", {})`。LLM按schema调用 → handler返回 `"fail"` → SubAgent耗尽 → error → 静默当作accept。**Agent B/C/D 参数调整在生产中从未生效过。** | Handler现在直接提取非`reasoning`的key作为adjustments。同时将`reasoning`保留在handler输出中。 |
+| Bug 2 | **P1高** | `quality_guard.py:553` | `configparser.write()` 剥离注释、改变大小写、重排序section — 与设计意图矛盾（config_builder.py:162-163明确避免configparser）。每次agent调参都触发。 | 替换为直接文本替换（匹配`_apply_overrides`模式）。同时修复section header解析：`rstrip("]")` 在有 `\n` 后缀时失效 → 改用 `split("]")[0]`。 |
+| Bug 3 | **P2中** | `orchestrator.py:1574` + `subagent.py:658` | SubAgent捕获`accept_quality` stop_schema结果时缺少tool名称 → `_normalize_tool_name` → `"error"` → `"accept"`（偶然正确），日志显示误导性的`"unknown decision 'error'"`。 | SubAgent现在注入`_tool` key。`_normalize_tool_name`优先检查`_tool`。 |
+| Bug 4 | **P3低** | `orchestrator.py:1631-1648` | 冗余的INI写回退路径（handler已写入）。 | 简化：`applied`为空 → 警告 + accept。 |
+
+### 测试更新
+
+- `test_process_agent_decision_adjust_params_retry` — 更新为handler输出格式（顶层`"applied"`）
+- `test_process_agent_decision_empty_adjustments` — 更新为handler格式
+- `test_tool_key_detection` — `_tool` key检测新增测试
+- 205 tests pass（总数911，1个预存失败与此无关）
+
+### 影响
+
+Agent B、C、D 现在可以实际修改INI参数。整个建模agent调优循环首次正确运行。
+
+### Git Commits
+
+```
 (待提交)
 ```

@@ -512,12 +512,16 @@ class TestModelingAgentHelpers(unittest.TestCase):
             from src.agent.subagent import SubAgent  # mock out SubAgent so it doesn't try real LLM
             from src.workflow.dg_tft.stage_runner import run_stage
 
+            # Handler output format: adjust_params handler writes INI inline and returns
+            # {"status": "ok", "applied": {...}, "warnings": [...], ...}
             agent_result = {
                 "decision": "adjust_params",
                 "arguments": {
-                    "section": "physical_fit",
-                    "adjustments": {"max_nfev_scale": 3.0},
-                    "reasoning": "Need more NF evaluations",
+                    "status": "ok",
+                    "applied": {"max_nfev_scale": 3.0},
+                    "warnings": [],
+                    "ini_snapshot": "physical_fit.max_nfev_scale = 3.0",
+                    "applied_summary": "max_nfev_scale=3.0",
                 },
                 "reasoning": "Need more NF evaluations",
             }
@@ -525,12 +529,6 @@ class TestModelingAgentHelpers(unittest.TestCase):
                 ctx, 1, sd, ini_path, None, agent_result, 3,
             )
             self.assertEqual(result, "retry")
-
-            # Verify INI was updated
-            import configparser
-            cfg = configparser.ConfigParser()
-            cfg.read(ini_path, encoding="utf-8")
-            self.assertEqual(cfg.get("physical_fit", "max_nfev_scale"), "3.0")
 
     def test_process_agent_decision_accept_quality(self):
         from src.workflow.dg_tft.orchestrator import _process_agent_decision
@@ -569,7 +567,11 @@ class TestModelingAgentHelpers(unittest.TestCase):
         sd = StageDef(name="fit-physical", action="act", required=True)
         agent_result = {
             "decision": "adjust_params",
-            "arguments": {"section": "physical_fit", "adjustments": {}, "reasoning": "no changes"},
+            "arguments": {
+                "status": "fail",
+                "applied": {},
+                "warnings": ["all params rejected"],
+            },
             "reasoning": "no changes",
         }
         result = _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)

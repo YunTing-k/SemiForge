@@ -1137,5 +1137,35 @@ For `"verifier"/"check-data"` entry, Verifier copied user data to `attempt_1`, t
 ### Git Commits
 
 ```
+1d97800 — fix: workflow audit round 1 — 5 bugs fixed (P0: Agent A fallback missing clear_stage_result → infinite loop; P1: fallback_ctx leak after direct_agent retry, fallback_depth leak; P2: dynamic_prep off-by-one, dead ternary) + set_output_root persistence
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 2 — Agent Adjust-Params Pipeline
+
+### Audit Report
+
+| Bug | Severity | Location | Issue | Fix |
+|---|---|---|---|---|
+| Bug 1 | **P0-CRITICAL** | `orchestrator.py:1508` | **Schema-handler mismatch**: `params_to_tool_schema` generates **flat** properties (`{"epochs": 2000, "reasoning": "..."}`), but `_adjust_params_handler` expected **nested** `arguments.get("adjustments", {})`. LLM conforms to schema → handler returns `"fail"` → SubAgent exhausts → error → silently treated as accept. **Agent B/C/D parameter adjustment has NEVER worked in production.** | Handler now extracts non-`reasoning` keys directly as adjustments. Also preserved `reasoning` in handler output. |
+| Bug 2 | **P1-HIGH** | `quality_guard.py:553` | `configparser.write()` strips comments, changes case, reorders sections — contradicts design intent (config_builder.py:162-163 explicitly avoids configparser). Applied on every agent param adjustment. | Replaced with direct text replacement (matching `_apply_overrides` pattern). Also fixed section header parsing: `rstrip("]")` broken with trailing `\n` → used `split("]")[0]`. |
+| Bug 3 | **P2-MEDIUM** | `orchestrator.py:1574` + `subagent.py:658` | SubAgent captured `accept_quality` stop_schema without tool name → `_normalize_tool_name` → `"error"` → `"accept"` by accident, with misleading `"unknown decision 'error'"` log. | SubAgent now injects `_tool` key. `_normalize_tool_name` checks `_tool` first. |
+| Bug 4 | **P3-LOW** | `orchestrator.py:1631-1648` | Redundant INI-write fallback path (handler already wrote). | Simplified: `applied` empty → warn + accept. |
+
+### Test Updates
+
+- `test_process_agent_decision_adjust_params_retry` — updated to handler output format (`"applied"` at top level)
+- `test_process_agent_decision_empty_adjustments` — updated to handler format
+- `test_tool_key_detection` — new test for `_tool` key detection
+- 205 tests pass (911 total, 1 pre-existing failure unrelated)
+
+### Impact
+
+Agent B, C, and D can now actually modify INI parameters. The entire modeling agent tuning loop functions correctly for the first time.
+
+### Git Commits
+
+```
 (pending)
 ```

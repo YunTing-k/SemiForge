@@ -656,7 +656,7 @@ class SubAgent:
             return
 
         if self.stop_mode == "schema" and func_name in self.stop_schemas:
-            self.result = json.dumps(arguments, ensure_ascii=False)
+            self.result = json.dumps({"_tool": func_name, **arguments}, ensure_ascii=False)
             self.status = AgentStatus.DONE
             self.progress.status = AgentStatus.DONE
             sys_log.info(f"SubAgent {self.agent_id}: captured stop_schema tool {func_name}, DONE")

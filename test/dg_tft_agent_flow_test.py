@@ -130,6 +130,11 @@ class TestNormalizeToolName(unittest.TestCase):
     def test_accept_quality(self):
         self.assertEqual(_normalize_tool_name({"accept_quality": {}}), "accept_quality")
 
+    def test_tool_key_detection(self):
+        self.assertEqual(_normalize_tool_name({"_tool": "adjust_params", "epochs": 2000, "reasoning": "test"}), "adjust_params")
+        self.assertEqual(_normalize_tool_name({"_tool": "fallback_to_previous", "target": "verifier", "reason": "bad data"}), "fallback_to_previous")
+        self.assertEqual(_normalize_tool_name({"_tool": "accept_quality", "reasoning": "ok"}), "accept_quality")
+
     def test_applied_heuristic(self):
         self.assertEqual(_normalize_tool_name({"applied": {"epochs": 50}}), "adjust_params")
 

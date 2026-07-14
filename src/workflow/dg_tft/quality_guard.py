@@ -513,10 +513,9 @@ def apply_agent_adjustments(
 ) -> str:
     """Write validated Agent adjustments to an INI config file.
 
-    Writes each ``section.key`` pair to the INI, creating sections as needed.
-    When *param_table* is provided, per-param ``section`` and ``ini_key``
-    overrides are respected — each parameter is written to its declared INI
-    section using the declared INI key (if ``ini_key`` is set).
+    Uses direct text replacement to preserve INI formatting (comments,
+    indentation, section/key order).  When *param_table* is provided,
+    per-param ``section`` and ``ini_key`` overrides are respected.
 
     Returns a snapshot string for the operation log.
 
@@ -532,26 +531,61 @@ def apply_agent_adjustments(
     Returns:
         A multi-line string of written adjustments (for logging).
     """
-    import configparser as _cp
-    import io
+    from pathlib import Path as _Path
 
-    cfg = _cp.ConfigParser()
-    cfg.read(config_path, encoding="utf-8")
+    path = _Path(config_path)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
 
-    snapshot_lines: list[str] = []
+    lookup: dict[str, str] = {}
     for key, value in adjustments.items():
-        # Resolve target section and key from param_table if available
         pdef = param_table.get(key, {}) if param_table else {}
         target_section = pdef.get("section", ini_section) if isinstance(pdef, dict) else ini_section
         ini_key = (pdef.get("ini_key", key) if isinstance(pdef, dict) else key)
+        lookup[f"{target_section}.{ini_key}"] = str(value)
 
-        if not cfg.has_section(target_section):
-            cfg.add_section(target_section)
-        cfg.set(target_section, ini_key, str(value))
-        snapshot_lines.append(f"{target_section}.{ini_key} = {value}")
+    current_section = ""
+    matched: set[str] = set()
+    snapshot_lines: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("[") and stripped.rstrip().endswith("]"):
+            current_section = stripped[1:].split("]")[0].strip()
+            continue
+        if "=" not in stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        option = stripped.split("=", 1)[0].strip()
+        full_key = f"{current_section}.{option}"
+        if full_key in lookup:
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f"{indent}{option} = {lookup[full_key]}\n"
+            matched.add(full_key)
+            snapshot_lines.append(f"{full_key} = {lookup[full_key]}")
 
-    with open(config_path, "w", encoding="utf-8") as f:
-        cfg.write(f)
+    for full_key in lookup:
+        if full_key not in matched:
+            sec, opt = full_key.split(".", 1)
+            sec_hdr = f"[{sec}]\n"
+            append_line = f"{opt} = {lookup[full_key]}\n"
+            insert_idx = None
+            for j, line in enumerate(lines):
+                stripped = line.lstrip()
+                if stripped.startswith("[") and stripped.rstrip().endswith("]"):
+                    if stripped[1:].split("]")[0].strip() == sec:
+                        insert_idx = j
+                        break
+            if insert_idx is not None:
+                end_idx = len(lines)
+                for j in range(insert_idx + 1, len(lines)):
+                    if lines[j].lstrip().startswith("["):
+                        end_idx = j
+                        break
+                lines = lines[:end_idx] + [append_line] + lines[end_idx:]
+            else:
+                lines.append(sec_hdr)
+                lines.append(append_line)
+            snapshot_lines.append(f"{full_key} = {lookup[full_key]}")
+
+    path.write_text("".join(lines), encoding="utf-8")
 
     snapshot = "\n".join(snapshot_lines)
     sys_log.info("Applied %d adjustments to %s", len(adjustments), config_path)
