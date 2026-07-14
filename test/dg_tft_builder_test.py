@@ -110,7 +110,9 @@ class TestBuildRuntimeConfig(unittest.TestCase):
 
     def test_generates_config_with_temperature_and_hysteresis(self):
         ctx, template = _make_ctx(self.tmpdir, hspice_path=str(self.tmpdir / "hspice.exe"))
-        profile = _make_profile(has_temp=True, has_hyst=True, hyst_dir="/data/it")
+        hyst_dir = self.tmpdir / "it"
+        hyst_dir.mkdir()
+        profile = _make_profile(has_temp=True, has_hyst=True, hyst_dir=str(hyst_dir))
 
         result = build_runtime_config(ctx, profile, "/data/device", run_id=42, work_dir=str(self.tmpdir / "work"))
 
@@ -121,7 +123,7 @@ class TestBuildRuntimeConfig(unittest.TestCase):
         cfg = configparser.ConfigParser()
         cfg.read(result["config_path"], encoding="utf-8")
         self.assertEqual(cfg.get("paths", "data_dir"), str(Path("/data/device").resolve()))
-        self.assertEqual(cfg.get("paths", "hysteresis_data_dir"), "/data/it")
+        self.assertEqual(cfg.get("paths", "hysteresis_data_dir"), str(hyst_dir))
         self.assertEqual(cfg.get("temperature", "mode"), "auto")
         self.assertEqual(cfg.get("hysteresis", "enabled"), "yes")
         self.assertEqual(cfg.get("deployment", "run_hspice"), "yes")
@@ -176,7 +178,9 @@ class TestResolution(unittest.TestCase):
 
     def test_resolution_json_content(self):
         ctx, template = _make_ctx(self.tmpdir, hspice_path=str(self.tmpdir / "hspice.exe"))
-        profile = _make_profile(has_temp=True, has_hyst=True, hyst_dir="/data/it")
+        hyst_dir = self.tmpdir / "it"
+        hyst_dir.mkdir()
+        profile = _make_profile(has_temp=True, has_hyst=True, hyst_dir=str(hyst_dir))
 
         result = build_runtime_config(ctx, profile, "/data/device", run_id=1, work_dir=str(self.tmpdir / "work"))
 
