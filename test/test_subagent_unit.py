@@ -499,17 +499,20 @@ def test_get_tools_adjust_params_override_new_stage():
 
 
 def test_contribute_knowledge_handler_writes_file():
-    """contribute_knowledge handler writes to knowledge/_discovered/ with slugified title."""
+    """contribute_knowledge handler writes to _discovered/ with slugified title."""
     import tempfile
     import os
-    import json
     from src.tool.subagent_tools import _contribute_knowledge_handler
 
-    orig_cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as tmpdir:
-        os.chdir(tmpdir)
-        try:
+        import src.workflow.dg_tft.knowledge.loader as loader_mod
+        orig_default = loader_mod.default_knowledge_dir
 
+        kg_dir = os.path.join(tmpdir, "knowledge")
+        os.makedirs(os.path.join(kg_dir, "_discovered"))
+        loader_mod.default_knowledge_dir = lambda: kg_dir
+
+        try:
             class FakeCtx:
                 run_id = 999
 
@@ -526,9 +529,8 @@ def test_contribute_knowledge_handler_writes_file():
                 text = f.read()
             assert "# Test Discovery" in text
             assert "Some interesting pattern" in text
-
         finally:
-            os.chdir(orig_cwd)
+            loader_mod.default_knowledge_dir = orig_default
 
     print("[PASS] contribute_knowledge handler — slugified filename, file written")
 
