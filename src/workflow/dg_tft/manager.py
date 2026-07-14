@@ -208,6 +208,17 @@ class WorkflowManager:
                 self._save_runs()
             return True
 
+    def set_output_root(self, run_id: int, output_root: str) -> bool:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return False
+            run.output_root = output_root
+            run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._runs[run_id] = run
+            self._save_runs()
+            return True
+
     def attach_artifact(self, run_id: int, key: str, path: str) -> bool:
         with self._lock:
             run = self._runs.get(run_id)

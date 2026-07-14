@@ -1133,5 +1133,49 @@ Tool result 增加 `FINAL_INTERPRETATION.md` 路径，提示主 agent 必须先�
 ### Git Commits
 
 ```
+c90c718 — feat: 8轮深度审计 — 20个Bug修复 + fallback重构(direct_agent) + 知识文档一致性 + dg_tft_run增强
+```
+
+---
+
+## 2026-07-14 — 工作流审计第1轮 + output_root 持久化
+
+### output_root Gap 修复（P1）
+
+**问题**：`dg_tft_run` 计算了 `run_output_dir` 但从未将其持久化到 `run.output_root`。`dg_tft_report` 依靠解析 `artifacts/config.ini` 来兜底，不可靠。
+
+**修复**：新增 `WorkflowManager.set_output_root()` 方法。在 `dg_tft_run` 中 `create_run` 之后无条件调用，在 entry 路由之前。同时去掉了 `dg_tft_run` 末尾重复的 `run_output_dir` 计算。
+
+### 工作流审计 — 5个Bug发现并修复
+
+**Bug 1 — P0致命**：Agent A → Verifier 回退缺少 `clear_stage_result`（`orchestrator.py:503`）。
+
+当 Agent A 决定回退到 Verifier 时（"full"/"verifier" 入口，VERIFIER 已在阶段列表中），`wm.clear_stage_result` 从未被调用。while 循环重新进入 VERIFIER，`_stage_done` 返回 True（Verifier 已通过），被跳过，check-data 再次因相同原因失败 — 无限循环。
+
+**修复**：在 Agent A 回退路径中加入 `wm.clear_stage_result(run_id, fb_target)`。
+
+**Bug 2 — P1**：direct_agent "retry" 决策后 `fallback_ctx` 未完全清除（`orchestrator.py:438`）。
+
+direct_agent 审查返回 "retry"（调参后重跑脚本）后，仅 `.pop("direct_agent")` 了，其他 key（fallback、from_stage、arguments）仍存在。脚本成功后退出内层重试循环，637行的 `fallback_ctx is not None` 触发误导性日志 + 一次浪费的迭代（被 `_stage_done` skip 兜底）。
+
+**修复**：用 `fallback_ctx = None; fallback_depth = 0` 替换 `.pop()` 调用。
+
+**Bug 3 — P1**：`fallback_depth` 在正常脚本阶段完成时未清零（`orchestrator.py:656`）。
+
+`fallback_ctx` 被置为 None 但 `fallback_depth` 仍然保留。如 TRAIN_STATIC 有 quality-fail 回退（depth=1），完成后，TRAIN_HYSTERESIS 又有 quality-fail 回退，depth=2。再来第三次 quality fail 就会触发 >2 守卫 — 误停止。
+
+**修复**：在 `fallback_ctx = None` 旁边加入 `fallback_depth = 0`。
+
+**Bug 4 — P2**：动态 DATA_PREP 尝试编号偏差1（`orchestrator.py:303`）。
+
+"verifier"/"check-data" 入口下，Verifier 复制用户数据到 `attempt_1`，然后动态 DATA_PREP 被种子化为 `retry_counts=1` → Preparer 首次实际运行 = `attempt_2`。这保护了 Verifier 的 attempt_1 但将实际重试次数从 3 降为 2。改为 `=0` — Preparer 写入 attempt_1（覆盖 Verifier 的原始数据副本，无处理价值），恢复完整的 3 次重试。
+
+**Bug 5 — P3美观**：死代码三目运算符（`orchestrator.py:277`）。
+
+`prep_max_retries if sd.name == StageName.DATA_PREP else prep_max_retries` — 两边结果相同。简化为直接 `prep_max_retries`。
+
+### Git Commits
+
+```
 (待提交)
 ```

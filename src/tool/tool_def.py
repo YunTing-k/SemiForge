@@ -2387,6 +2387,11 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         if not ok:
             return {"status": FAIL_LABEL, "info": f"Failed to create workflow run for {dataset_dir}"}
 
+        from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR
+        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
+        run_output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
+        wm.set_output_root(run_id, run_output_dir)
+
         # Compute entry from legacy flags if not explicitly set
         if entry == "full" and direct:
             entry = "check-data"
@@ -2395,9 +2400,7 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
 
         # Route preprocessing: avoid double prep when data already exists
         if entry == "full":
-            from src.constants import SESSION_PATH, DG_TFT_RUNS_SUBDIR, PREP_SUBDIR_NAME
-            runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-            run_output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
+            from src.constants import PREP_SUBDIR_NAME
             attempt_1_dir = os.path.join(run_output_dir, PREP_SUBDIR_NAME, "attempt_1")
             from src.workflow.dg_tft.data_preparer import _check_output as _prep_check
             existing_ok, _ = _prep_check(attempt_1_dir)
@@ -2419,9 +2422,7 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         sys_log.info("%s: run %d finished: ok=%s summary=%s", func_name, run_id, workflow_ok, summary)
 
         from pathlib import Path as _Path
-        from src.constants import FINAL_INTERPRETATION_FILENAME, SESSION_PATH, DG_TFT_RUNS_SUBDIR
-        runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
-        run_output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
+        from src.constants import FINAL_INTERPRETATION_FILENAME
         interpretation_path = os.path.join(run_output_dir, FINAL_INTERPRETATION_FILENAME)
         has_interpretation = _Path(interpretation_path).exists()
 

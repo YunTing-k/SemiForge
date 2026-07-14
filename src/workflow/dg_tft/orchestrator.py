@@ -274,11 +274,12 @@ def run_workflow(
             if not agent_ok:
                 retry_key = f"{sd.name}_retries"
                 current = retry_counts.get(retry_key, 0)
-                max_r = prep_max_retries if sd.name == StageName.DATA_PREP else prep_max_retries
+                max_r = prep_max_retries
                 if current < max_r:
                     if sd.name == StageName.VERIFIER:
                         _console(ctx, f"  [{WF_STATUS_WARN}]Verifier failed → back to Preparer (attempt {current}/{max_r})[/{WF_STATUS_WARN}]")
                         prep_idx = _find_stage_pointer(stages, StageName.DATA_PREP)
+                        dynamic_prep = False
                         if prep_idx < 0:
                             # Non-"full" entry (verifier/check-data): dynamically insert DATA_PREP
                             prep_sd = get_stage_by_name(StageName.DATA_PREP)
@@ -289,6 +290,7 @@ def run_workflow(
                                 if board is not None:
                                     _add_stage_task(board, ctx.agent_id, run_id, task_map, prep_sd)
                                 prep_idx = 0
+                                dynamic_prep = True
                                 _console(ctx, f"  [bright_black]({entry} entry: inserted DATA_PREP for fallback)[/bright_black]")
                             else:
                                 _console(ctx, f"  [{WF_STATUS_ERROR}]Cannot fallback to DATA_PREP: stage definition not found[/{WF_STATUS_ERROR}]")
@@ -297,7 +299,10 @@ def run_workflow(
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             wm.clear_stage_result(run_id, StageName.DATA_PREP)
-                            retry_counts.pop("data-prep_retries", None)
+                            if dynamic_prep:
+                                retry_counts["data-prep_retries"] = 0
+                            else:
+                                retry_counts.pop("data-prep_retries", None)
                         fallback_ctx = None
                         fallback_depth = 0
                         run = wm.get_run(run_id)
@@ -429,8 +434,8 @@ def run_workflow(
                     agent_result, retry_remaining,
                 )
                 if decision == "retry":
-                    # Agent adjusted params → clear direct_agent, re-run script in next iteration
-                    fallback_ctx.pop("direct_agent", None)
+                    fallback_ctx = None
+                    fallback_depth = 0
                     continue
                 if decision == "fallback":
                     fb_target = agent_result.get("arguments", {}).get("target", "")
@@ -496,6 +501,7 @@ def run_workflow(
                                 new_pointer = insert_pos
                                 _console(ctx, f"  [bright_black]({entry} entry: inserted VERIFIER for fallback)[/bright_black]")
                         if new_pointer >= 0:
+                            wm.clear_stage_result(run_id, fb_target)
                             pointer = new_pointer
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             run = wm.get_run(run_id)
@@ -649,6 +655,7 @@ def run_workflow(
         _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=not bool(failed_stage))
         pointer += 1
         fallback_ctx = None
+        fallback_depth = 0
         run = wm.get_run(run_id)
 
     # All stages processed — some may have failed

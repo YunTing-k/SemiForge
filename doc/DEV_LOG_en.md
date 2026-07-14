@@ -1093,5 +1093,49 @@ Tool result now includes `FINAL_INTERPRETATION.md` path, instructing main agent 
 ### Git Commits
 
 ```
+c90c718 — feat: 8-round deep audit — 20 bugs fixed + fallback refactor (direct_agent) + knowledge consistency + dg_tft_run enhancement
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 1 + output_root Persistence
+
+### output_root Gap Fixed (P1)
+
+**Problem**: `dg_tft_run` computed `run_output_dir` but never persisted it to `run.output_root`. `dg_tft_report` fell back to parsing `artifacts/config.ini`, which was unreliable.
+
+**Fix**: Added `WorkflowManager.set_output_root()` mutation in `manager.py`. Called unconditionally in `dg_tft_run` right after `create_run`, before entry routing. Also deduplicated redundant `run_output_dir` computation at the end of `dg_tft_run`.
+
+### Workflow Audit — 5 Bugs Found & Fixed
+
+**Bug 1 — P0-Critical**: Agent A → Verifier fallback missing `clear_stage_result` (`orchestrator.py:503`).
+
+When Agent A decided to fallback to Verifier (for "full" or "verifier" entry where VERIFIER is already in stages), `wm.clear_stage_result` was never called. The while loop re-entered at VERIFIER, `_stage_done` returned True (Verifier already passed), it was skipped, check-data failed again identically — infinite loop.
+
+**Fix**: Added `wm.clear_stage_result(run_id, fb_target)` in the Agent A fallback path.
+
+**Bug 2 — P1**: `fallback_ctx` not fully cleared after direct_agent "retry" decision (`orchestrator.py:438`).
+
+After a direct_agent review returned "retry" (adjust params, re-run script), only `fallback_ctx.pop("direct_agent", None)` was called, leaving other keys (fallback, from_stage, arguments). When the script succeeded and broke out of the inner retry loop, `fallback_ctx is not None` at line 637 triggered a misleading "Fallback active" log + wasted iteration (rescued by `_stage_done` skip).
+
+**Fix**: `fallback_ctx = None; fallback_depth = 0` replaces the `.pop()` call.
+
+**Bug 3 — P1**: `fallback_depth` not reset at normal script stage completion (`orchestrator.py:656`).
+
+`fallback_ctx` was set to None but `fallback_depth` remained. If TRAIN_STATIC had a quality-fail fallback (depth=1), then completed, then TRAIN_HYSTERESIS had a quality-fail fallback, depth=2. A third quality fail anywhere would hit the >2 guard — false abort.
+
+**Fix**: Added `fallback_depth = 0` alongside the existing `fallback_ctx = None`.
+
+**Bug 4 — P2**: Dynamic DATA_PREP attempt numbering off-by-one (`orchestrator.py:303`).
+
+For `"verifier"/"check-data"` entry, Verifier copied user data to `attempt_1`, then dynamic DATA_PREP was seeded with `retry_counts=1` → first actual Preparer run = `attempt_2`. This preserved Verifier's attempt_1 but reduced effective retries from 3 to 2. Changed to `=0` — Preparer writes to attempt_1 (overwriting Verifier's raw-data copy, which had no processed value), regaining full 3 retries.
+
+**Bug 5 — P3-Cosmetic**: Dead ternary at retry limit calculation (`orchestrator.py:277`).
+
+`prep_max_retries if sd.name == StageName.DATA_PREP else prep_max_retries` — both branches identical. Simplified to bare `prep_max_retries`.
+
+### Git Commits
+
+```
 (pending)
 ```
