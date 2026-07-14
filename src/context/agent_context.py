@@ -188,6 +188,25 @@ class AgentContext:
             self.files_read[file_path] += 1
 
 
+    def merge_subagent_stats(self, agent) -> None:
+        """Absorb a sub-agent's token/request stats into this context's totals.
+
+        Call this after ``agent.run()`` for every sub-agent spawned directly
+        (including by the DG-TFT workflow orchestrator) so that ``/context``
+        reports accurate aggregate consumption.
+        """
+        s = agent.stats
+        self.total_llm_requests += s["total_llm_requests"]
+        self.user_prompts += s["user_prompts"]
+        self.content_prompts += s["content_prompts"]
+        self.reasoning_prompts += s["reasoning_prompts"]
+        self.total_input_tokens += s["total_input_tokens"]
+        self.total_output_tokens += s["total_output_tokens"]
+        self.total_tokens += s["total_tokens"]
+        self.total_uncached_tokens += s["total_uncached_tokens"]
+        self.tool_calls_prompts += s["tool_calls_prompts"]
+        self.tool_results_prompts += s["tool_results_prompts"]
+
     def add_cron_task(self, cron_task: CronTask):
         """add cron task to context"""
         self.cron_tasks.append(cron_task)  # add task in runtime

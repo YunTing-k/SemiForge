@@ -87,6 +87,10 @@ def _make_mock_ctx(extra_configs=None):
             self.console = None
             self.session_uuid = "test_agent_flow"
 
+        def merge_subagent_stats(self, agent):
+            """No-op for tests — real AgentContext merges into total_* counters."""
+            pass
+
     return Ctx()
 
 

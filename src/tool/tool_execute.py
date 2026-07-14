@@ -348,16 +348,7 @@ def check_background_agents(main_ctx: AgentContext) -> bool:
                 agent.status = AgentStatus.TIMEOUT
                 agent.progress.status = AgentStatus.TIMEOUT
 
-        main_ctx.total_llm_requests += agent.stats["total_llm_requests"]
-        main_ctx.user_prompts += agent.stats["user_prompts"]
-        main_ctx.content_prompts += agent.stats["content_prompts"]
-        main_ctx.reasoning_prompts += agent.stats["reasoning_prompts"]
-        main_ctx.total_input_tokens += agent.stats["total_input_tokens"]
-        main_ctx.total_output_tokens += agent.stats["total_output_tokens"]
-        main_ctx.total_tokens += agent.stats["total_tokens"]
-        main_ctx.total_uncached_tokens += agent.stats["total_uncached_tokens"]
-        main_ctx.tool_calls_prompts += agent.stats["tool_calls_prompts"]
-        main_ctx.tool_results_prompts += agent.stats["tool_results_prompts"]
+        main_ctx.merge_subagent_stats(agent)
 
         agent_id_str = f"{agent.agent_id} ({agent.subagent_type})"
         if agent.status == AgentStatus.DONE:
@@ -478,16 +469,7 @@ def execute_subagents(agent_calls: list[dict[str, Any]], main_ctx: AgentContext,
             agent.progress.status = AgentStatus.TIMEOUT
     """update stats"""
     for _, agent in subagents:
-        main_ctx.total_llm_requests += agent.stats["total_llm_requests"]
-        main_ctx.user_prompts += agent.stats["user_prompts"]
-        main_ctx.content_prompts += agent.stats["content_prompts"]
-        main_ctx.reasoning_prompts += agent.stats["reasoning_prompts"]
-        main_ctx.total_input_tokens += agent.stats["total_input_tokens"]
-        main_ctx.total_output_tokens += agent.stats["total_output_tokens"]
-        main_ctx.total_tokens += agent.stats["total_tokens"]
-        main_ctx.total_uncached_tokens += agent.stats["total_uncached_tokens"]
-        main_ctx.tool_calls_prompts += agent.stats["tool_calls_prompts"]
-        main_ctx.tool_results_prompts += agent.stats["tool_results_prompts"]
+        main_ctx.merge_subagent_stats(agent)
     """gather subagent results"""
     messages = []
     summary_entries: dict[str, dict] = {}

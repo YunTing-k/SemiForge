@@ -1256,5 +1256,28 @@ Agent E now sees: every error message, full agent reasoning, quality_pass per at
 ### Git Commits
 
 ```
+8c9a827 — fix: workflow audit round 4 — Agent E data completeness
+2d82e3c — fix: workflow audit round 5 — knowledge contribution chain
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 6 — Sub-Agent Token Stats Aggregation
+
+### Issue
+
+`/context` reported only the main agent's token consumption. All 5 DG-TFT workflow sub-agent spawn sites (Preparer, Verifier, Agent A, Agents B/C/D, Agent E) tracked their stats internally and wrote `stats.json` to disk, but **never merged them into `ctx.total_*`**. The two existing merge paths (`spawn` tool foreground and background) duplicated the same 10-line pattern but the workflow's direct `SubAgent()` instantiations bypassed both.
+
+**Impact**: `/context` under-reported token usage by up to 40x. `stats.json` files existed as dead audit artifacts — correct data, never consumed.
+
+### Fix
+
+1. Added `ctx.merge_subagent_stats(agent)` method to `AgentContext` — single source of truth for 10-field merge
+2. Called at all 5 workflow spawn sites (+ added `merge_subagent_stats` no-op to test MockCtx)
+3. Unified 2 duplicate merge blocks in `tool_execute.py`
+
+### Git Commits
+
+```
 (pending)
 ```

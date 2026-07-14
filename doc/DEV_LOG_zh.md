@@ -1296,5 +1296,28 @@ Agent E现在可以看到：所有错误信息、完整agent推理、每次尝�
 ### Git Commits
 
 ```
+8c9a827 — fix: 工作流审计第4轮 — Agent E数据完整性
+2d82e3c — fix: 工作流审计第5轮 — 知识贡献链
+```
+
+---
+
+## 2026-07-14 — 工作流审计第6轮 — 子Agent Token统计汇总
+
+### 问题
+
+`/context` 只报告主agent的token消耗。5个DG-TFT工作流子agent创建点（Preparer、Verifier、Agent A、B/C/D、Agent E）在内部追踪统计并写入`stats.json`，但**从未合并到`ctx.total_*`**。
+
+**影响**：`/context`少报达40倍。`stats.json`作为死审计产物存在。
+
+### 修复
+
+1. `AgentContext`新增`ctx.merge_subagent_stats(agent)`方法 — 10字段合并唯一来源
+2. 在全部5个工作流创建点 + test MockCtx增加no-op
+3. `tool_execute.py`重复代码统一
+
+### Git Commits
+
+```
 (待提交)
 ```

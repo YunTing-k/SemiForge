@@ -310,6 +310,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
     finally:
         agent.progress.status = agent.status
         agent.progress.if_archived = True
+    ctx.merge_subagent_stats(agent)
 
     handoff: dict[str, Any] | None = None
     if agent.status.value == "done" and result:
@@ -380,6 +381,7 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
     finally:
         agent.progress.status = agent.status
         agent.progress.if_archived = True
+    ctx.merge_subagent_stats(agent)
 
     if agent.status.value == "done" and result:
         sys_log.info("Verifier SubAgent completed: %s", result[:200] if result else "(empty)")

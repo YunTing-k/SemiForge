@@ -933,6 +933,7 @@ def _spawn_agent_a(
     finally:
         agent.progress.status = agent.status
         agent.progress.if_archived = True
+    ctx.merge_subagent_stats(agent)
 
     if agent.status.value != "done" or not result:
         err = agent.error or "Agent A did not produce a result"
@@ -1569,6 +1570,7 @@ def _spawn_modeling_agent_inner(
     finally:
         agent.progress.status = agent.status
         agent.progress.if_archived = True
+    ctx.merge_subagent_stats(agent)
 
     if agent.status.value != "done" or not result:
         err = agent.error or f"{agent_label} did not produce a result"
@@ -1891,6 +1893,7 @@ def _spawn_agent_e_inner(
     finally:
         agent.progress.status = agent.status
         agent.progress.if_archived = True
+    ctx.merge_subagent_stats(agent)
 
     if result and agent.status.value == "done":
         # Write full interpretation to file
