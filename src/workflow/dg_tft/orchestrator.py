@@ -299,10 +299,9 @@ def run_workflow(
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             wm.clear_stage_result(run_id, StageName.DATA_PREP)
-                            if dynamic_prep:
-                                retry_counts["data-prep_retries"] = 0
-                            else:
-                                retry_counts.pop("data-prep_retries", None)
+                            verifier_n = retry_counts.get("verifier_retries", 1)
+                            retry_counts["data-prep_retries"] = verifier_n
+                            retry_counts["verifier_retries"] = verifier_n
                         fallback_ctx = None
                         fallback_depth = 0
                         run = wm.get_run(run_id)
