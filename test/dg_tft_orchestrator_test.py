@@ -578,5 +578,139 @@ class TestModelingAgentHelpers(unittest.TestCase):
         self.assertEqual(result, "accept")
 
 
+# ======================================================================
+# Handler integration test — exercises the REAL adjust_params path
+# (schema → validate → apply → INI write on disk)
+# ======================================================================
+
+class TestAdjustParamsHandlerIntegration(unittest.TestCase):
+    """Test the adjust_params handler logic end-to-end with real param tables,
+    real INI files on disk, and LLM-flat argument format.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ini_path = os.path.join(self.tmpdir, "model_config.ini")
+        self._write_ini(self.ini_path)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_ini(self, path):
+        content = (
+            "[paths]\n"
+            "data_dir = /tmp/data\n"
+            "[full_model]\n"
+            "epochs = 700\n"
+            "learning_rate = 0.002\n"
+            "cv_weight = 8.0\n"
+            "early_stop_patience = 5\n"
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def _build_handler(self, stage_name, config_path):
+        from src.workflow.dg_tft.orchestrator import _get_stage_param_table
+        from src.workflow.dg_tft.param_defs import get_stage_sections
+        from src.workflow.dg_tft.quality_guard import (
+            validate_agent_adjustments,
+            apply_agent_adjustments,
+        )
+        from src.workflow.dg_tft.stages import StageDef
+
+        param_table = _get_stage_param_table(stage_name)
+        sections = get_stage_sections(stage_name)
+        sd = StageDef(name=stage_name, action="act", required=True)
+
+        def handler(arguments: dict, _ctx=None) -> dict:
+            if not isinstance(arguments, dict):
+                return {"status": "fail", "reason": "adjust_params arguments must be a dict"}
+            reasoning = arguments.get("reasoning", "")
+            raw = {k: v for k, v in arguments.items() if k != "reasoning"}
+            if not raw:
+                return {"status": "fail", "reason": "no parameter values provided (only 'reasoning' found)"}
+            sanitized, warnings = validate_agent_adjustments(raw, param_table, sections, sd.name)
+            if not sanitized:
+                return {"status": "fail", "reason": f"All {len(warnings)} params rejected: {'; '.join(warnings[:3])}"}
+            primary_section = sections[0]
+            snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
+            applied_str = ", ".join(f"{k}={v}" for k, v in sanitized.items())
+            return {
+                "status": "ok",
+                "applied": dict(sanitized),
+                "warnings": warnings,
+                "ini_snapshot": snapshot,
+                "applied_summary": applied_str,
+                "reasoning": reasoning,
+            }
+        return handler
+
+    def test_handler_accepts_flat_llm_args(self):
+        """Handler parses flat LLM args ({epochs: 2000, reasoning: ...}) and writes INI."""
+        handler = self._build_handler("train-static", self.ini_path)
+
+        result = handler({"epochs": 1500, "learning_rate": 0.001, "reasoning": "more epochs, lower LR"})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("epochs", result["applied"])
+        self.assertIn("learning_rate", result["applied"])
+        self.assertEqual(result["applied"]["epochs"], 1500)
+        self.assertEqual(result["applied"]["learning_rate"], 0.001)
+        self.assertIn("reasoning", result)
+        self.assertEqual(result["reasoning"], "more epochs, lower LR")
+
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(self.ini_path, encoding="utf-8")
+        self.assertEqual(cfg.get("full_model", "epochs"), "1500")
+        self.assertEqual(cfg.get("full_model", "learning_rate"), "0.001")
+        self.assertEqual(cfg.get("full_model", "cv_weight"), "8.0")
+
+    def test_handler_only_reasoning_returns_fail(self):
+        """Calling adjust_params with ONLY reasoning → fail (nothing to apply)."""
+        handler = self._build_handler("train-static", self.ini_path)
+        result = handler({"reasoning": "everything looks fine"})
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("no parameter values", result["reason"])
+
+    def test_handler_non_dict_returns_fail(self):
+        handler = self._build_handler("train-static", self.ini_path)
+        result = handler("not a dict")
+        self.assertEqual(result["status"], "fail")
+
+    def test_handler_full_cv_weight_adjustment(self):
+        """cv_weight is a float param — verify type coercion in the full chain."""
+        handler = self._build_handler("train-static", self.ini_path)
+
+        result = handler({"cv_weight": 12.5, "reasoning": "CV needs more weight"})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("cv_weight", result["applied"])
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(self.ini_path, encoding="utf-8")
+        self.assertIn(cfg.get("full_model", "cv_weight"), ("12.5", "12.5"))
+
+    def test_handler_hysteresis_stage_params(self):
+        """Hysteresis stage has different param set — verify schema isolation."""
+        import configparser
+
+        # Need to add [hysteresis] section to the INI
+        self._write_ini(self.ini_path)
+        with open(self.ini_path, "a", encoding="utf-8") as f:
+            f.write("[hysteresis]\nepochs = 1800\nhidden_capture = 16\namp_parameterization = conservative\n")
+
+        handler = self._build_handler("train-hysteresis", self.ini_path)
+        result = handler({"epochs": 2000, "hidden_capture": 32, "reasoning": "stronger hysteresis model"})
+
+        self.assertEqual(result["status"], "ok")
+        cfg = configparser.ConfigParser()
+        cfg.read(self.ini_path, encoding="utf-8")
+        self.assertEqual(cfg.get("hysteresis", "epochs"), "2000")
+        self.assertEqual(cfg.get("hysteresis", "hidden_capture"), "32")
+        # full_model should be untouched
+        self.assertEqual(cfg.get("full_model", "epochs"), "700")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1167,5 +1167,30 @@ Agent B, C, and D can now actually modify INI parameters. The entire modeling ag
 ### Git Commits
 
 ```
+dfef88e — fix: workflow audit round 2 — agent adjust-params pipeline (P0: schema-handler mismatch — adjust_params NEVER worked; P1: configparser.write breaks INI; P2: accept_quality not detected; P3: redundant INI-write fallback)
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 3 — Fallback Handoff Chain
+
+### Audit Report
+
+| Bug | Severity | Location | Issue | Fix |
+|---|---|---|---|---|
+| Bug 1 | **P0-CRITICAL** | `orchestrator.py:415` | `from_stage` always empty — downstream stage identity lost in all fallback paths | Inject `from_stage` at all 3 `fallback_ctx` assignment sites (Agent A, hard failure, quality fail) |
+| Bug 2 | **P1-HIGH** | `orchestrator.py:1474` | "Why you were re-run" prompt never names which downstream stage | Uses `from_stage` from fallback_ctx |
+| Bug 3 | **P1-HIGH** | `orchestrator.py:570-571` | Script re-run after adjust_params never logged to op_log (`attempt_n == 1` guard) | Renamed `_log_initial_attempt` → `_log_stage_attempt`, always logs with dynamic n |
+| Bug 4 | **P2-MEDIUM** | `orchestrator.py:1664` | AGENT_ADJUST hardcoded `ok=False` before script re-runs | Changed to `ok=True` |
+| Bug 5 | **P2-MEDIUM** | `orchestrator.py:1273` | `_log_initial_attempt` hardcoded `n=1` → duplicate entries after fallback re-runs | Dynamic n from op_log |
+| Bug 6 | **P3-LOW** | `orchestrator.py:413` | `downstream_name` dead code | Removed |
+
+### Impact
+
+Agent E's final interpretation now has a complete record of every attempt chain including retries. Upstream agents know which downstream stage fell back. The op_log is a reliable single source of truth.
+
+### Git Commits
+
+```
 (pending)
 ```

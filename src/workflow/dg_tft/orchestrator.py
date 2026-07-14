@@ -410,9 +410,8 @@ def run_workflow(
                 hard_failure_agent_used = True
                 fallback_depth += 1
                 # Build synthetic result: stage passed but downstream requested review
-                downstream_name = ""
-                downstream_reason = ""
                 from_stage = fallback_ctx.get("from_stage", "")
+                downstream_reason = ""
                 if isinstance(fallback_ctx.get("arguments"), dict):
                     downstream_reason = fallback_ctx["arguments"].get("reason", "")[:200]
                 direct_sr = StageResult(
@@ -485,6 +484,7 @@ def run_workflow(
                         fb_target = agent_a_result["fallback"]
                         fb_reason = agent_a_result.get("reason", "")
                         _console(ctx, f"  [{WF_STATUS_WARN}]Agent A → fallback to {fb_target}[/{WF_STATUS_WARN}] [bright_black]({fb_reason[:100]})[/bright_black]")
+                        agent_a_result["from_stage"] = StageName.CHECK_DATA
                         fallback_ctx = agent_a_result
                         new_pointer = _find_stage_pointer(stages, fb_target)
                         if new_pointer < 0 and fb_target == StageName.VERIFIER:
@@ -529,6 +529,7 @@ def run_workflow(
                     if decision == "retry":
                         continue  # re-run same stage
                     if decision == "fallback":
+                        agent_result["from_stage"] = sd.name
                         fb_target = agent_result.get("arguments", {}).get("target", "")
                         new_pointer = _find_stage_pointer(stages, fb_target)
                         if new_pointer >= 0:
@@ -567,8 +568,7 @@ def run_workflow(
                 wm.add_warning(run_id, f"Stage {sd.name} reported success but missing artifacts: {missing}")
                 sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
-            if attempt_n == 1:
-                _log_initial_attempt(op_log, sd.name, sr, output_dir, stage_duration)
+            _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration)
 
             # ── Quality check ──
             quality_ok, quality_issues = _assess_stage_quality(ctx, sd.name, output_dir, config_path)
@@ -616,6 +616,7 @@ def run_workflow(
             if decision == "retry":
                 continue
             if decision == "fallback":
+                agent_result["from_stage"] = sd.name
                 fb_target = agent_result.get("arguments", {}).get("target", "")
                 new_pointer = _find_stage_pointer(stages, fb_target)
                 if new_pointer >= 0:
@@ -1254,24 +1255,26 @@ def _noop_stage(sd: StageDef) -> bool:
 
 # ── Quality gate (Phase 7) ─────────────────────────────────────────
 
-def _log_initial_attempt(
+def _log_stage_attempt(
     op_log: OperationLog | None,
     stage_name: str,
     sr: StageResult,
     output_dir: str,
     duration_s: float = 0.0,
 ) -> None:
-    """Log attempt_1 to the operation log unconditionally.
+    """Log a script stage execution to the operation log.
 
-    Called after every successful stage run, before the quality gate.
-    minimal_run runs also get logged — the overhead is negligible.
+    Called after every successful script run, before the quality gate.
+    Uses dynamic n to avoid duplicate entries when stages re-run after fallback.
     """
     if op_log is None:
         return
+    n = op_log.get_last_attempt_n(stage_name) + 1
+    trigger = AttemptTrigger.INITIAL if n == 1 else AttemptTrigger.QUALITY_FAIL
     metrics = parse_metrics(output_dir, stage_name)
     entry = StageAttemptLog(
-        n=1,
-        trigger=AttemptTrigger.INITIAL,
+        n=n,
+        trigger=trigger,
         metrics=dict(metrics),
         ok=sr.ok,
         error=sr.error or "",
@@ -1470,9 +1473,10 @@ def _spawn_modeling_agent_inner(
         # ── Downstream fallback context ──
         if fallback_ctx and fallback_ctx.get("decision") == "fallback_to_previous":
             fb_args = fallback_ctx.get("arguments", {}) if isinstance(fallback_ctx.get("arguments"), dict) else {}
+            from_stage = fallback_ctx.get("from_stage", "")
             prompt_lines.append("")
-            prompt_lines.append("**Why you were re-run (downstream fallback):**")
-            prompt_lines.append(f"  Fallback from downstream stage, reason: {fb_args.get('reason', '')[:200]}")
+            prompt_lines.append(f"**Why you were re-run (fallback from {from_stage or 'downstream'}):**")
+            prompt_lines.append(f"  Reason: {fb_args.get('reason', '')[:200]}")
             prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')[:200]}")
             prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')[:200]}")
 
@@ -1661,7 +1665,7 @@ def _process_agent_decision(
                 agent_reasoning=reasoning,
                 ini_snapshot=snapshot,
                 adjustments={str(k): str(v) for k, v in applied.items()},
-                ok=False,
+                ok=True,
             ))
 
         return "retry" if retry_remaining > 0 else "accept"

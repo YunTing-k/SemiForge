@@ -1207,5 +1207,30 @@ Agent B、C、D 现在可以实际修改INI参数。整个建模agent调优循�
 ### Git Commits
 
 ```
+dfef88e — fix: 工作流审计第2轮 — agent调整参数管道 (P0: schema-handler不匹配—adjust_params从未生效; P1: configparser.write破坏INI; P2: accept_quality未检测; P3: 冗余INI写入回退)
+```
+
+---
+
+## 2026-07-14 — 工作流审计第3轮 — 回退交接链
+
+### 审计报告
+
+| Bug | 严重度 | 位置 | 问题 | 修复 |
+|---|---|---|---|---|
+| Bug 1 | **P0致命** | `orchestrator.py:415` | `from_stage` 始终为空 — 所有回退路径中下游stage身份丢失 | 在所有3个`fallback_ctx`赋值点注入`from_stage` |
+| Bug 2 | **P1高** | `orchestrator.py:1474` | "Why you were re-run" prompt未指明哪个下游stage回退 | 使用`from_stage` |
+| Bug 3 | **P1高** | `orchestrator.py:570-571` | adjust_params后脚本重跑从不记入op_log | `_log_initial_attempt`→`_log_stage_attempt`，始终记录，动态n |
+| Bug 4 | **P2中** | `orchestrator.py:1664` | AGENT_ADJUST硬编码`ok=False`（脚本重跑前） | 改为`ok=True` |
+| Bug 5 | **P2中** | `orchestrator.py:1273` | `_log_initial_attempt`硬编码`n=1` → 回退重跑后重复条目 | 动态n |
+| Bug 6 | **P3低** | `orchestrator.py:413` | `downstream_name`死代码 | 删除 |
+
+### 影响
+
+Agent E的最终解释现在可以完整看到每一条重试链。上游agent知道是哪个下游stage发起了回退。op_log现在是可靠的唯一真相来源。
+
+### Git Commits
+
+```
 (待提交)
 ```
