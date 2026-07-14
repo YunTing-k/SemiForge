@@ -1192,5 +1192,35 @@ Agent E's final interpretation now has a complete record of every attempt chain 
 ### Git Commits
 
 ```
+423647e — fix: workflow audit round 3 — fallback handoff chain (P0: from_stage always empty; P1: re-run not logged to op_log, prompt never names downstream; P2: ok=False hardcode, duplicate n=1 entries; P3: dead code) + handler integration tests
+47707b4 — test: fallback handoff chain integration tests — verify from_stage injection, op_log distinct n values, prompt downstream naming
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 4 — Agent E Data Completeness
+
+### Audit Report
+
+| Bug | Severity | Location | Issue | Fix |
+|---|---|---|---|---|
+| Bug 1 | P1-HIGH | Agent E prompt | `error` field omitted from prompt — only visible via file tools | Added `error[:200]` to per-attempt summary |
+| Bug 2 | MEDIUM | Agent E prompt | `agent_reasoning` truncated to 120 chars | Removed truncation |
+| Bug 3 | P1-HIGH | `orchestrator.py:571→574` | `_log_stage_attempt` before quality → `quality_pass` never set | Moved log after quality; now stores `quality_pass` + `quality_issues` |
+| Bug 4 | P1-HIGH | `orchestrator.py:1663` | `FALLBACK_RECEIVED` never written to op_log | Injected `_fallback_received=True` in direct_agent path; `_process_agent_decision` writes correct trigger |
+
+### Not Fixed (Marginal)
+
+- stderr truncation (2000 chars) — full in sys_log
+- Pre-adjustment values — INI-diffable
+- Verifier feedback in prompt — Agent E reads operation_log.json
+
+### Impact
+
+Agent E now sees: every error message, full agent reasoning, quality_pass per attempt, quality_issues, correct triggers (FALLBACK_RECEIVED vs AGENT_ADJUST). op_log is a complete record.
+
+### Git Commits
+
+```
 (pending)
 ```

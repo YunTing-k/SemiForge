@@ -428,11 +428,12 @@ def run_workflow(
                     attempt_n=attempt_n,
                     fallback_ctx=fallback_ctx,
                 )
+                agent_result["_fallback_received"] = True
                 decision = _process_agent_decision(
                     ctx, run_id, sd, config_path, op_log,
                     agent_result, retry_remaining,
                 )
-                if decision == "retry":
+                if decision == "retry":  # direct_agent adjust → re-run
                     fallback_ctx = None
                     fallback_depth = 0
                     continue
@@ -568,11 +569,13 @@ def run_workflow(
                 wm.add_warning(run_id, f"Stage {sd.name} reported success but missing artifacts: {missing}")
                 sys_log.warning("Stage [%s] succeeded but missing artifacts: %s", sd.name, missing)
 
-            _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration)
-
             # ── Quality check ──
             quality_ok, quality_issues = _assess_stage_quality(ctx, sd.name, output_dir, config_path)
             sr.metrics = parse_metrics(output_dir, sd.name)
+
+            _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration,
+                               quality_pass=quality_ok, quality_issues=quality_issues,
+                               is_retry=(attempt_n > 1))
 
             wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
             for p in sd.key_artifacts:
@@ -1261,11 +1264,16 @@ def _log_stage_attempt(
     sr: StageResult,
     output_dir: str,
     duration_s: float = 0.0,
+    quality_pass: bool | None = None,
+    quality_issues: list[str] | None = None,
+    is_retry: bool = False,
 ) -> None:
     """Log a script stage execution to the operation log.
 
-    Called after every successful script run, before the quality gate.
-    Uses dynamic n to avoid duplicate entries when stages re-run after fallback.
+    Args:
+        quality_pass: None if no quality gate applied, True/False otherwise.
+        quality_issues: Description of specific quality failures, if any.
+        is_retry: True if this is a re-run (after agent adjustment or fallback).
     """
     if op_log is None:
         return
@@ -1279,7 +1287,12 @@ def _log_stage_attempt(
         ok=sr.ok,
         error=sr.error or "",
         duration_s=duration_s,
+        quality_pass=quality_pass,
     )
+    if quality_issues:
+        entry.agent_decision = {"quality_issues": quality_issues}
+    if is_retry:
+        entry.agent_decision = {"is_retry": True, **(entry.agent_decision or {})}
     op_log.append_attempt(stage_name, entry)
 
 def _assess_stage_quality(
@@ -1658,9 +1671,10 @@ def _process_agent_decision(
             _console(ctx, f"  [bright_black]Reasoning: {reasoning[:120]}[/bright_black]")
 
         if op_log:
+            agent_trigger = AttemptTrigger.FALLBACK_RECEIVED if agent_result.get("_fallback_received") else AttemptTrigger.AGENT_ADJUST
             op_log.append_attempt(sd.name, StageAttemptLog(
                 n=op_log.get_last_attempt_n(sd.name) + 1,
-                trigger=AttemptTrigger.AGENT_ADJUST,
+                trigger=agent_trigger,
                 agent_decision=arguments,
                 agent_reasoning=reasoning,
                 ini_snapshot=snapshot,
@@ -1778,16 +1792,24 @@ def _spawn_agent_e_inner(
                 ok = "OK" if a.get("ok") else "FAIL"
                 trigger = a.get("trigger", "")
                 quality = a.get("quality_pass", "")
+                err = a.get("error", "")
                 metrics = a.get("metrics", {})
                 adj = a.get("adjustments", {})
-                reason = a.get("agent_reasoning", "")[:120]
-                parts = [f"    Attempt {n}: {ok}, trigger={trigger}, quality_pass={quality}"]
+                reason = a.get("agent_reasoning", "")
+                decision = a.get("agent_decision", {})
+                parts = [f"    Attempt {n}: {ok}, trigger={trigger}"]
+                if quality != "" and quality is not None:
+                    parts.append(f"quality_pass={quality}")
+                if err:
+                    parts.append(f"error=\"{err[:200]}\"")
                 if metrics:
                     parts.append("metrics=" + ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if v is not None))
                 if adj:
                     parts.append("adjustments=" + ", ".join(f"{k}={v}" for k, v in adj.items()))
                 if reason:
                     parts.append(f"agent_reasoning=\"{reason}\"")
+                if isinstance(decision, dict) and decision.get("quality_issues"):
+                    parts.append(f"quality_issues={decision['quality_issues']}")
                 stage_summary_lines.append(" | ".join(parts))
 
     # ── Build prompt ──

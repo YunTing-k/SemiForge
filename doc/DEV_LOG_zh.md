@@ -1232,5 +1232,35 @@ Agent E的最终解释现在可以完整看到每一条重试链。上游agent�
 ### Git Commits
 
 ```
+423647e — fix: 工作流审计第3轮 — 回退交接链 + handler集成测试
+47707b4 — test: 回退交接链集成测试 — from_stage注入、op_log不重复n值、prompt下游名称
+```
+
+---
+
+## 2026-07-14 — 工作流审计第4轮 — Agent E 数据完整性
+
+### 审计报告
+
+| Bug | 严重度 | 位置 | 问题 | 修复 |
+|---|---|---|---|---|
+| Bug 1 | P1高 | Agent E prompt | `error`字段未注入prompt | 加入`error[:200]` |
+| Bug 2 | 中 | Agent E prompt | `agent_reasoning`截断120字符 | 移除截断 |
+| Bug 3 | P1高 | `orchestrator.py:571→574` | `_log_stage_attempt`在质量检查前调用→`quality_pass`从未设置 | 移至质量检查后；存储`quality_pass`+`quality_issues` |
+| Bug 4 | P1高 | `orchestrator.py:1663` | `FALLBACK_RECEIVED`从未写入op_log | 注入`_fallback_received`标志；`_process_agent_decision`写正确trigger |
+
+### 未修复（边缘/边际效益低）
+
+- stderr截断2000字符 — 完整在sys_log
+- 调整前参数值不记录 — INI可diff
+- Verifier详细反馈不在prompt — Agent E主动读operation_log.json
+
+### 影响
+
+Agent E现在可以看到：所有错误信息、完整agent推理、每次尝试的quality_pass状态、quality_issues、正确的trigger类型。op_log是完整可查的记录。
+
+### Git Commits
+
+```
 (待提交)
 ```
