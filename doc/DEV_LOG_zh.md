@@ -1262,5 +1262,39 @@ Agent E现在可以看到：所有错误信息、完整agent推理、每次尝�
 ### Git Commits
 
 ```
+8c9a827 — fix: 工作流审计第4轮 — Agent E数据完整性 + quality_issues存储
+```
+
+---
+
+## 2026-07-14 — 工作流审计第5轮 — 知识贡献链
+
+### 审计报告
+
+| Bug | 严重度 | 位置 | 问题 | 修复 |
+|---|---|---|---|---|
+| Bug 1 | **P0致命** | `subagent_tools.py:331` | Handler写至CWD相对路径`"knowledge/_discovered"` → CWD≠项目根时文件落错位置 | 使用`default_knowledge_dir() / "_discovered"`（项目根绝对路径） |
+| Bug 2 | **P0致命** | `orchestrator.py:1869` | `discovered_dir="knowledge/_discovered"`是CWD相对字符串 → loader读错目录 | 同上 |
+| Bug 3 | **P1高** | `loader.py:223` | `load_discovered_summaries`无fallback（与`load_knowledge`/`load_experience`不一致） | 增加`None`默认→`default_knowledge_dir() / "_discovered"` |
+| Bug 4 | **P1高** | `final_interpret.md:50,427-429` | 知识文档描述`{"title", "content"}` — **缺少`summary`**。schema声明为required。LLM缺summary会被拒绝。 | 两处位置都加入`summary` |
+| Bug 5 | 中 | `subagent_tools.py:405-408` | `_STAGE_TOOLS["final-interpret"]`的handlers为空 — 陈旧/分裂配置 | 加入`_contribute_knowledge_handler` |
+| Bug 6 | 低 | `loader.py:73` | `_default_knowledge_dir`私有→公开`default_knowledge_dir()`+废弃别名 |
+
+### 知识链在production中从未工作
+
+1. Handler写入`{CWD}/knowledge/_discovered/` (Bug 1) — 可能完全错误
+2. Loader读取`{CWD}/knowledge/_discovered/` (Bug 2) — 同样的错误路径
+3. 知识文档告诉LLM `{"title", "content"}` 缺少`summary` — schema拒绝 (Bug 4)
+4. `_STAGE_TOOLS["final-interpret"]`无handler (Bug 5) 如果绕过`_AGENT_TYPE_CONFIG`
+
+**证据**：`knowledge/_discovered/`目录为空 — 此链在production中从未产生输出。
+
+### 影响
+
+`contribute_knowledge`现已端到端正确连线。Handler和loader始终指向`{PROJECT_ROOT}/knowledge/_discovered/`（无视CWD）。知识文档正确记录全部required字段。跨运行学习循环现已可用。
+
+### Git Commits
+
+```
 (待提交)
 ```

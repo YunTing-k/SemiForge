@@ -1222,5 +1222,39 @@ Agent E now sees: every error message, full agent reasoning, quality_pass per at
 ### Git Commits
 
 ```
+8c9a827 — fix: workflow audit round 4 — Agent E data completeness (P1: error field omitted from prompt, quality_pass never set, FALLBACK_RECEIVED never logged; medium: reasoning truncation) + quality_issues stored
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 5 — Knowledge Contribution Chain
+
+### Audit Report
+
+| Bug | Severity | Location | Issue | Fix |
+|---|---|---|---|---|
+| Bug 1 | **P0-CRITICAL** | `subagent_tools.py:331` | Handler writes to CWD-relative `"knowledge/_discovered"` → files land in wrong dir if CWD ≠ project root | Use `default_knowledge_dir() / "_discovered"` (project-root-absolute) |
+| Bug 2 | **P0-CRITICAL** | `orchestrator.py:1869` | `discovered_dir="knowledge/_discovered"` is CWD-relative string → loader reads from wrong dir | Same: `default_knowledge_dir() / "_discovered"` |
+| Bug 3 | **P1-HIGH** | `loader.py:223` | `load_discovered_summaries` had no fallback unlike `load_knowledge`/`load_experience` | Added `None` default → `default_knowledge_dir() / "_discovered"` |
+| Bug 4 | **P1-HIGH** | `final_interpret.md:50,427-429` | Knowledge doc describes `{"title", "content"}` — **missing `summary`**. Schema declares it required. LLM following doc would get invalid-tool-call error. | Added `summary` to both doc locations |
+| Bug 5 | MEDIUM | `subagent_tools.py:405-408` | `_STAGE_TOOLS["final-interpret"]` had empty handlers — stale/split config | Added `_contribute_knowledge_handler` |
+| Bug 6 | LOW | `loader.py:73` | `_default_knowledge_dir` was private — now public `default_knowledge_dir()` with deprecated alias |
+
+### The knowledge chain was completely broken
+
+1. Handler wrote to `{CWD}/knowledge/_discovered/` (Bug 1) — could be wrong entirely
+2. Loader read from `{CWD}/knowledge/_discovered/` (Bug 2) — same wrong path
+3. Knowledge doc told LLM `{"title", "content"}` without `summary` — schema rejection (Bug 4)
+4. `_STAGE_TOOLS["final-interpret"]` had no handler (Bug 5) if bypassed `_AGENT_TYPE_CONFIG`
+
+**Evidence**: `knowledge/_discovered/` dir is empty — the chain has NEVER produced output in production.
+
+### Impact
+
+`contribute_knowledge` is now wired correctly end-to-end. Handler and loader always point to `{PROJECT_ROOT}/knowledge/_discovered/` regardless of CWD. Knowledge doc correctly documents all required fields. This enables the cross-run learning loop.
+
+### Git Commits
+
+```
 (pending)
 ```

@@ -470,12 +470,12 @@ def test_get_tools_train_hysteresis():
 
 
 def test_get_tools_final_interpret():
-    """get_tools('final-interpret') returns contribute_knowledge without handler (stop_schema tool)."""
+    """get_tools('final-interpret') returns contribute_knowledge schema + handler."""
     schemas, handlers = get_tools("final-interpret")
     schema_names = {s["function"]["name"] for s in schemas}
     assert schema_names == {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE}
-    assert SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE not in handlers
-    print("[PASS] get_tools final-interpret — 1 stop_schema tool")
+    assert SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE in handlers
+    print("[PASS] get_tools final-interpret — schema + handler")
 
 
 def test_get_tools_adjust_params_override():

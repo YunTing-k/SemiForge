@@ -1865,8 +1865,9 @@ def _spawn_agent_e_inner(
         prompt_lines.extend(stage_summary_lines)
 
     # ── Expert knowledge + discovered summaries ──
+    from src.workflow.dg_tft.knowledge.loader import default_knowledge_dir
     knowledge_block = build_agent_prompt("final-report", user_preferences=preferences,
-                                         discovered_dir="knowledge/_discovered")
+                                         discovered_dir=str(default_knowledge_dir() / "_discovered"))
     if knowledge_block:
         prompt_lines.insert(0, knowledge_block)
         prompt_lines.insert(0, "")

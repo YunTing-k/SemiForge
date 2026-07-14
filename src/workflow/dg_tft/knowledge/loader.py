@@ -68,9 +68,14 @@ _EXPERIENCE_BLOCK = """\
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
-def _default_knowledge_dir() -> Path:
+def default_knowledge_dir() -> Path:
     """Project-root knowledge/ directory (expert + experience knowledge)."""
     return Path(__file__).resolve().parent.parent.parent.parent.parent / "knowledge"
+
+
+def _default_knowledge_dir() -> Path:
+    """Deprecated alias — use default_knowledge_dir() instead."""
+    return default_knowledge_dir()
 
 
 def load_knowledge(
@@ -200,7 +205,7 @@ def list_known_stages() -> list[str]:
 
 def load_discovered_summaries(
     stage: str,
-    discovered_dir: str | Path,
+    discovered_dir: str | Path | None = None,
 ) -> str:
     """Scan discovered knowledge files for YAML frontmatter summaries.
 
@@ -211,7 +216,8 @@ def load_discovered_summaries(
 
     Args:
         stage: Stage name for filtering (future; currently returns all).
-        discovered_dir: Path to ``knowledge/_discovered/``.
+        discovered_dir: Path to ``knowledge/_discovered/``. If None, uses
+                        ``default_knowledge_dir() / "_discovered"``.
 
     Returns:
         Formatted text block listing discovered knowledge items, or empty
@@ -220,7 +226,7 @@ def load_discovered_summaries(
     import glob
     import yaml
 
-    root = Path(discovered_dir)
+    root = Path(discovered_dir) if discovered_dir else default_knowledge_dir() / "_discovered"
     if not root.is_dir():
         return ""
 

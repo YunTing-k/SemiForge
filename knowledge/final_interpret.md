@@ -47,7 +47,7 @@ optionally call the single `contribute_knowledge` tool. The full report is writt
    flag and instructions to focus on hard errors only — do not critique model quality as if this
    were a production run. All other agents (A, B, C, D) and quality gates are skipped in this mode.
 
-2. **Knowledge contribution mechanism**: Agent E has one stage-specific tool schema (`contribute_knowledge`) with a local tool handler (`_contribute_knowledge_handler` in `subagent_tools.py`) that writes to `knowledge/_discovered/`. Agent E calls `contribute_knowledge` as structured JSON: `{"title": "...", "content": "..."}`. The handler writes the knowledge file locally during SubAgent runtime.
+2. **Knowledge contribution mechanism**: Agent E has one stage-specific tool schema (`contribute_knowledge`) with a local tool handler (`_contribute_knowledge_handler` in `subagent_tools.py`) that writes to `knowledge/_discovered/`. Agent E calls `contribute_knowledge` as structured JSON: `{"title": "...", "summary": "...", "content": "..."}`. The handler writes the knowledge file locally during SubAgent runtime.
 
 3. **operation_log coverage gaps**: (1) Hard failures on first attempt are not recorded in
    operation_log — they appear only in `run.stage_results`. (2) Successful re-runs after
@@ -425,6 +425,7 @@ Do NOT call `contribute_knowledge` for:
 
 The `contribute_knowledge` tool accepts:
 - `title`: Short English title summarizing the discovery (used as filename slug)
+- `summary`: One-line summary of the discovery (injected into future agent prompts for quick scanning; agents use `read_file` to load full content)
 - `content`: Full discovery text in English Markdown — must include conditions,
   observations, metric values, and actionable conclusions
 

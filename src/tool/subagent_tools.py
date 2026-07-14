@@ -327,8 +327,9 @@ def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, A
     import os
     import re
     from datetime import datetime
+    from src.workflow.dg_tft.knowledge.loader import default_knowledge_dir
 
-    knowledge_dir = os.path.join("knowledge", "_discovered")
+    knowledge_dir = os.path.join(str(default_knowledge_dir()), "_discovered")
     os.makedirs(knowledge_dir, exist_ok=True)
 
     title = arguments.get("title", "").strip()
@@ -404,7 +405,7 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
     ),
     "final-interpret": (
         [_CONTRIBUTE_KNOWLEDGE_SCHEMA],
-        {},
+        {SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: _contribute_knowledge_handler},
     ),
 }
 
