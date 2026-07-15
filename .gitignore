@@ -24,6 +24,7 @@
 /src/device_modeling/validation/
 /src/workflow/**/__pycache__
 /test/__pycache__
+/test/test_config.py
 /testdata/
 /knowledge/_discovered/
 doc/TODO.md
