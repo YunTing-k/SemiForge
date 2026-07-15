@@ -5,7 +5,7 @@
 /run.bat
 /clean.bat
 /ref/
-/log
+/log/*.txt
 /session/
 /session_sample/
 !/session/.gitkeep
