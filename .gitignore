@@ -27,5 +27,6 @@
 /testdata/
 /knowledge/_discovered/
 doc/TODO.md
+update_requirements.bat
 AGENTS.md
 nul

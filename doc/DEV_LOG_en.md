@@ -1279,5 +1279,51 @@ Agent E now sees: every error message, full agent reasoning, quality_pass per at
 ### Git Commits
 
 ```
+0c6ce93 — fix: workflow audit round 6 — sub-agent token stats aggregation (5 workflow spawn sites + tool_execute)
+```
+
+---
+
+## 2026-07-14 — Workflow Audit Round 7 — Verifier→Preparer Fallback Attempt Dir Mismatch
+
+### Issue
+
+When Verifier fell back to Preparer, Preparer re-wrote `attempt_1` but Verifier checked `attempt_2` (empty directory) — permanent failure loop.
+
+### Fix
+
+Synchronized `retry_counts["data-prep_retries"] = retry_counts["verifier_retries"] = verifier_n` so both advance to the same attempt number.
+
+### Git Commits
+
+```
+0d1bf72 — fix: workflow audit round 7 — Verifier→Preparer fallback attempt dir mismatch (CRITICAL: Verifier checks empty attempt_2 after Preparer re-writes attempt_1; synced retry counters)
+```
+
+---
+
+## 2026-07-15 — v1.6.0 — README & Documentation Overhaul
+
+### Background
+
+Project README and doc/ files were stale, containing non-existent content (`/design_list`, `SIMULATOR_PATH`) and missing large amounts of new functionality (DG-TFT workflow params, 5 agent types, 3 builtin commands).
+
+### Changes
+
+| File | Action | Details |
+|------|--------|---------|
+| `README.md` | **Full rewrite** | Background (bilingual), project contributions (bilingual), 8 key features (platform + KAN pipeline + workflow tiers), dual-interpreter install flow, API/runtime config, first launch bilingualized, 8 subagent types table, 7 further reading links, acknowledgements with contributors + based-on TECoSim-Agent v0.2.4 |
+| `doc/basic_usage.md` | **Rewrite** | Removed non-existent `/design_list`/`/run_list`, added `/dg_tft_list`/`/dg_tft_status`/`/dg_tft_report` |
+| `doc/configuration.md` | **-6 +24 params** | Removed non-existent `SIMULATOR_PATH`/`SIMULATOR_TIMEOUT_S`/`RESUME_DISPLAY_GLOB_*`/`RESUME_DISPLAY_GREP_*`, added `REMIND_UNRESOLVED_TASK`/`RESUME_DISPLAY_SUBAGENT_AS_MD` and full DG-TFT parameter tables (dual interpreters/workflow control/quality thresholds/timeouts/log streaming) |
+| `doc/deployment.md` | **New** | Migrated from `src/device_modeling/dg_tft/deployment/README.md`, full bilingual translation |
+| `doc/mcp_skills_setup.md` | Unchanged | Existing; now properly referenced from README |
+| `doc/knowledge_template.md` | Unchanged | Same |
+| `requirements_agent.txt` | **Fix** | `pywin32`/`pywin32-ctypes` now gated with `; platform_system == "Windows"` |
+| `requirements_cuda.txt` | **Fix** | Removed `triton-windows` (local-path reference, unreproducible) |
+| `src/constants.py` | **Version** | `SEMIFORGE_AGENT_MINOR_VERSION` 1.5 → 1.6 |
+
+### Git Commits
+
+```
 (pending)
 ```

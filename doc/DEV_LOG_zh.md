@@ -1319,5 +1319,51 @@ Agent E现在可以看到：所有错误信息、完整agent推理、每次尝�
 ### Git Commits
 
 ```
+0c6ce93 — fix: 工作流审计第6轮 — 子Agent Token统计汇总
+```
+
+---
+
+## 2026-07-14 — 工作流审计第7轮 — Verifier→Preparer 回退 attempt 目录不同步
+
+### 问题
+
+Verifier 回退到 Preparer 后，Preparer 重写 `attempt_1` 目录但 Verifier 检查 `attempt_2`（空目录）→ 永失败。
+
+### 修复
+
+同步 `retry_counts["data-prep_retries"] = retry_counts["verifier_retries"] = verifier_n`，确保两者 attempt 编号一致。
+
+### Git Commits
+
+```
+0d1bf72 — fix: 工作流审计第7轮 — Verifier→Preparer 尝试目录不同步
+```
+
+---
+
+## 2026-07-15 — v1.6.0 — README 与文档全面重写
+
+### 背景
+
+项目 README 及 doc/ 下文档年久失修，包含不存在的内容（`/design_list`、`SIMULATOR_PATH`），缺少大量新增功能（DG-TFT 工作流参数、5个智能体类型、3个内建命令）。
+
+### 修改清单
+
+| 文件 | 操作 | 内容 |
+|------|------|------|
+| `README.md` | **完全重写** | 背景（双语）、项目贡献（双语）、8项Key Features（通用平台+KAN管线+工作流三层）、双解释器安装流程、API/运行参数配置、首次启动双语化、8类子Agent表格、7项延伸阅读链接、致谢区标注贡献者与基于TECoSim-Agent v0.2.4 |
+| `doc/basic_usage.md` | **重写** | 删除不存在命令`/design_list`/`/run_list`，新增`/dg_tft_list`/`/dg_tft_status`/`/dg_tft_report` |
+| `doc/configuration.md` | **删除6项+新增24项** | 删除不存在的`SIMULATOR_PATH`/`SIMULATOR_TIMEOUT_S`/`RESUME_DISPLAY_GLOB_*`/`RESUME_DISPLAY_GREP_*`，新增`REMIND_UNRESOLVED_TASK`/`RESUME_DISPLAY_SUBAGENT_AS_MD`及完整DG-TFT参数表（双解释器/工作流控制/质量门限/超时/日志） |
+| `doc/deployment.md` | **新增** | 从`src/device_modeling/dg_tft/deployment/README.md`迁移，全文中英双语化 |
+| `doc/mcp_skills_setup.md` | 不变 | 已存在，README 从之前未引用改为正式引用 |
+| `doc/knowledge_template.md` | 不变 | 同上 |
+| `requirements_agent.txt` | **修复** | `pywin32`/`pywin32-ctypes` 添加 `; platform_system == "Windows"` 标记 |
+| `requirements_cuda.txt` | **修复** | 删除 `triton-windows`（本地路径引用，他人无法安装） |
+| `src/constants.py` | **版本** | `SEMIFORGE_AGENT_MINOR_VERSION` 1.5 → 1.6 |
+
+### Git Commits
+
+```
 (待提交)
 ```

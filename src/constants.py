@@ -22,7 +22,7 @@ MCP params, and more.
 """SemiForge constants"""
 """SemiForge version"""
 SEMIFORGE_AGENT_MAJOR_VERSION: int = 1
-SEMIFORGE_AGENT_MINOR_VERSION: int = 5
+SEMIFORGE_AGENT_MINOR_VERSION: int = 6
 SEMIFORGE_AGENT_UPDATE_VERSION: int = 0
 """Basic configs"""
 # basic files
