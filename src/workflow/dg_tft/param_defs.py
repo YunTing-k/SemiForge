@@ -946,7 +946,7 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "section": "symbolic",
         "desc": (
             "Training steps for device-specific IV symbolic calibration. "
-            "The symbolic network is fine-tuned on the current device's measured IV data. "
+            "The symbolic network matches the numeric teacher current and slopes. "
             "Increase if device-level IV fidelity is poor after symbolic export."
         ),
     },
@@ -961,6 +961,47 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
             "Fine-tunes symbolic formulas directly against measured IV curves. "
             "Increase if the exported model shows systematic IV prediction errors."
         ),
+    },
+    # Independent stopping policies for the two IV symbolic stages.
+    "device_iv_finetune_eval_period": {
+        "type": "int", "lo": 1, "hi": 1000, "default": 100,
+        "section": "symbolic",
+        "desc": "IV symbolic teacher current and slope calibration: Optimizer steps between fixed validation checks. Patience counts checks, not steps.",
+    },
+    "device_iv_finetune_patience": {
+        "type": "int", "lo": 0, "hi": 100, "default": 6,
+        "section": "symbolic",
+        "desc": "IV symbolic teacher current and slope calibration: Consecutive validation checks without significant improvement before stopping; 0 disables early stopping.",
+    },
+    "device_iv_finetune_min_steps": {
+        "type": "int", "lo": 0, "hi": 20000, "default": 500,
+        "section": "symbolic",
+        "desc": "IV symbolic teacher current and slope calibration: Minimum optimizer steps before early stopping can trigger; maximum step budget still applies.",
+    },
+    "device_iv_finetune_min_delta": {
+        "type": "float", "lo": 0.0, "hi": 1.0, "default": 0.0001,
+        "section": "symbolic",
+        "desc": "IV symbolic teacher current and slope calibration: Absolute validation-score improvement required to reset patience; the true best model is always retained.",
+    },
+    "device_iv_measured_eval_period": {
+        "type": "int", "lo": 1, "hi": 1000, "default": 50,
+        "section": "symbolic",
+        "desc": "IV symbolic measured-curve refinement: Optimizer steps between fixed validation checks. Patience counts checks, not steps.",
+    },
+    "device_iv_measured_patience": {
+        "type": "int", "lo": 0, "hi": 100, "default": 6,
+        "section": "symbolic",
+        "desc": "IV symbolic measured-curve refinement: Consecutive validation checks without significant improvement before stopping; 0 disables early stopping.",
+    },
+    "device_iv_measured_min_steps": {
+        "type": "int", "lo": 0, "hi": 20000, "default": 300,
+        "section": "symbolic",
+        "desc": "IV symbolic measured-curve refinement: Minimum optimizer steps before early stopping can trigger; maximum step budget still applies.",
+    },
+    "device_iv_measured_min_delta": {
+        "type": "float", "lo": 0.0, "hi": 1.0, "default": 0.0001,
+        "section": "symbolic",
+        "desc": "IV symbolic measured-curve refinement: Absolute validation-score improvement required to reset patience; the true best model is always retained.",
     },
     "device_cv_finetune_steps": {
         "type": "int",

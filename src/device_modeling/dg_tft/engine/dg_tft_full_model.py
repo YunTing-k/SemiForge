@@ -1536,33 +1536,31 @@ def fit_top1_symbolic_edge_exhaustive(
     the globally best candidate, and only then fine-tune its affine arguments.
     """
 
-    best = None
-    # Top-1 means one primitive per spline edge, not one fixed argument.
-    # Enumerating f(a*x+b) before polishing is much closer to how compact
-    # models use analytic functions and greatly improves top-1 precision.
+    # Score the same affine grid in parallel. Candidate order is unchanged,
+    # so argmin retains the first candidate when several have equal error.
     b_grid = [0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, -0.25, -0.50, -0.75, -1.0, -1.5, -2.0, -3.0]
     c_grid = [-2.0, -1.0, -0.50, 0.0, 0.50, 1.0, 2.0]
+    rows, metadata = [], []
     with torch.no_grad():
         y = target.reshape(-1)
-        y_mean = torch.mean(y)
+        y_mean = y.mean()
         y_center = y - y_mean
         for idx, name in enumerate(names):
-            affine_grid = [(1.0, 0.0)] if name == "const" else [(b, c) for b in b_grid for c in c_grid]
-            for b0, c0 in affine_grid:
-                phi = symbolic_func(name, x * b0 + c0).reshape(-1)
-                phi_mean = torch.mean(phi)
-                phi_center = phi - phi_mean
-                var = torch.mean(phi_center * phi_center)
-                if float(var.detach().cpu()) < 1.0e-18:
-                    a = phi.new_tensor(0.0)
-                else:
-                    a = torch.mean(phi_center * y_center) / var
-                bias = y_mean - a * phi_mean
-                pred = a * phi + bias
-                mse = float(torch.mean((pred - y) ** 2).detach().cpu())
-                if best is None or mse < best[0]:
-                    best = (mse, idx, float(a.detach().cpu()), b0, c0, float(bias.detach().cpu()))
-    assert best is not None
+            grid = [(1.0, 0.0)] if name == "const" else [(b, c) for b in b_grid for c in c_grid]
+            bc = x.new_tensor(grid)
+            rows.append(symbolic_func(name, x.reshape(1, -1) * bc[:, :1] + bc[:, 1:]))
+            metadata.extend((idx, b, c) for b, c in grid)
+        phi = torch.cat(rows)
+        phi_mean = phi.mean(dim=1)
+        phi_center = phi - phi_mean[:, None]
+        var = phi_center.square().mean(dim=1)
+        amplitude = torch.where(var < 1.0e-18, torch.zeros_like(var),
+                                (phi_center * y_center).mean(dim=1) / var.clamp_min(1.0e-18))
+        bias = y_mean - amplitude * phi_mean
+        mse = (amplitude[:, None] * phi + bias[:, None] - y).square().mean(dim=1)
+        selected = int(mse.argmin().cpu())
+        idx, b0, c0 = metadata[selected]
+        best = (float(mse[selected].cpu()), idx, float(amplitude[selected].cpu()), b0, c0, float(bias[selected].cpu()))
     _, keep_idx, a0, b0, c0, bias0 = best
     edge = CompositeSymbolicEdge(names, device, dtype)
     with torch.no_grad():
@@ -3536,6 +3534,10 @@ import torch.nn.functional as F
 
 from fit_physical_kernel import CVTrapParams, Params, load_cv_data, load_iv_data, sample_cv, sample_iv
 from tensor_utils import C_FLOOR, DEFAULT_BASELINE_JSON, ID_FLOOR, Normalizer, cv_point_dataframe, resolve_device, set_seed
+from symbolic_optimization import EarlyStop, PackedSymbolicNet, SymbolicBackwardRunner, evaluate_groups, symbolic_student
+from iv_curve_optimization import (
+    IVCurveLayout, ResidualBaselineCache, curve_constraint_losses, residual_only_gradients,
+)
 
 
 def _v92_symbolic_func(name: str, x: torch.Tensor) -> torch.Tensor:
@@ -3901,78 +3903,58 @@ def _symbolic_training_ramp(progress: float, args) -> float:
     return float(t * t * (3.0 - 2.0 * t))
 
 
+def _kan_edge_probe_batches(kan: CompactKAN, n: int):
+    """Probe each input once per layer, with a shared zero-input reference."""
+    x = torch.linspace(-2.5, 2.5, n, device=kan.center.device, dtype=kan.center.dtype)
+    for layer in kan.net.act_fun:
+        size = int(layer.in_dim)
+        if not size or not int(layer.out_dim):
+            continue
+        inputs = torch.eye(size, device=x.device, dtype=x.dtype)[:, None, :] * x[None, :, None]
+        y = layer(inputs.reshape(-1, size))
+        y0 = layer(torch.zeros(1, size, device=x.device, dtype=x.dtype))
+        if isinstance(y, tuple):
+            y = y[0]
+        if isinstance(y0, tuple):
+            y0 = y0[0]
+        yield (y - y0).reshape(size, n, layer.out_dim).permute(0, 2, 1).reshape(-1, n)
+
+
 def _kan_top1_symbolic_compatibility_loss(kan: CompactKAN, args) -> torch.Tensor:
-    """Pull spline edges toward one safe analytic primitive during training.
-
-    This is deliberately a soft prior.  The spline KAN remains free to fit the
-    device, but edges that can explain the data equally well with a top-1
-    primitive are preferred before the deployment-time symbolic replacement.
-    """
-
-    if not PYKAN_AVAILABLE or kan is None or not hasattr(kan, "net") or not hasattr(kan.net, "act_fun"):
-        return torch.as_tensor(0.0, device=kan.center.device, dtype=kan.center.dtype)
+    """Soft top-1 shape prior, batched without per-edge GPU scalar reads."""
+    if not PYKAN_AVAILABLE or not hasattr(kan, "net") or not hasattr(kan.net, "act_fun"):
+        return kan.center.new_zeros(())
     n = max(25, int(getattr(args, "symbolic_training_grid_points", 49)))
     x = torch.linspace(-2.5, 2.5, n, device=kan.center.device, dtype=kan.center.dtype)
     bank = _top1_symbolic_library_bank(x)
-    pieces = []
-    weights = []
-    for layer in kan.net.act_fun:
-        in_dim = int(getattr(layer, "in_dim", 0))
-        out_dim = int(getattr(layer, "out_dim", 0))
-        for i in range(in_dim):
-            inp = torch.zeros(n, in_dim, device=x.device, dtype=x.dtype)
-            inp[:, i] = x
-            y = layer(inp)
-            y0 = layer(torch.zeros_like(inp))
-            if isinstance(y, tuple):
-                y = y[0]
-            if isinstance(y0, tuple):
-                y0 = y0[0]
-            for j in range(out_dim):
-                edge = y[:, j] - y0[:, j]
-                std = torch.std(edge)
-                if float(std.detach().cpu()) < 1.0e-6:
-                    continue
-                edge = (edge - torch.mean(edge)) / torch.clamp(std, min=edge.new_tensor(1.0e-6))
-                dist = torch.mean((bank - edge.reshape(1, -1)) ** 2, dim=1)
-                # Weak edges should not dominate the compatibility score.  A
-                # detached energy weight keeps this a shape prior rather than
-                # an accidental amplitude penalty.
-                weight = torch.clamp(std.detach(), min=std.new_tensor(1.0e-4), max=std.new_tensor(10.0))
-                pieces.append(weight * torch.min(dist))
-                weights.append(weight)
+    pieces, weights = [], []
+    for edges in _kan_edge_probe_batches(kan, n):
+        # Bound temporary distance tensors for larger user-selected networks.
+        for edge in edges.split(64):
+            std = edge.std(dim=1)
+            active = std.detach() >= 1.0e-6
+            normalized = (edge - edge.mean(dim=1, keepdim=True)) / std.clamp_min(1.0e-6)[:, None]
+            distance = (bank[None, :, :] - normalized[:, None, :]).square().mean(dim=2)
+            # amin shares gradients across ties, just like the original scalar
+            # torch.min(distance); min(dim=...) would choose only one winner.
+            weight = std.detach().clamp(1.0e-4, 10.0) * active
+            pieces.append((weight * distance.amin(dim=1)).sum())
+            weights.append(weight.sum())
     if not pieces:
-        return torch.as_tensor(0.0, device=kan.center.device, dtype=kan.center.dtype)
-    return torch.stack(pieces).sum() / torch.clamp(torch.stack(weights).sum(), min=kan.center.new_tensor(1.0e-8))
+        return kan.center.new_zeros(())
+    return torch.stack(pieces).sum() / torch.stack(weights).sum().clamp_min(1.0e-8)
 
 
 def _kan_edge_group_sparsity_loss(kan: CompactKAN, args) -> torch.Tensor:
-    """Group sparsity on spline-edge variation for compact top-1 deployment."""
-
-    if not PYKAN_AVAILABLE or kan is None or not hasattr(kan, "net") or not hasattr(kan.net, "act_fun"):
-        return torch.as_tensor(0.0, device=kan.center.device, dtype=kan.center.dtype)
+    """Group sparsity on spline-edge variation with the same per-edge weights."""
+    if not PYKAN_AVAILABLE or not hasattr(kan, "net") or not hasattr(kan.net, "act_fun"):
+        return kan.center.new_zeros(())
     n = max(25, int(getattr(args, "symbolic_training_grid_points", 49)))
-    x = torch.linspace(-2.5, 2.5, n, device=kan.center.device, dtype=kan.center.dtype)
     energies = []
-    for layer in kan.net.act_fun:
-        in_dim = int(getattr(layer, "in_dim", 0))
-        out_dim = int(getattr(layer, "out_dim", 0))
-        for i in range(in_dim):
-            inp = torch.zeros(n, in_dim, device=x.device, dtype=x.dtype)
-            inp[:, i] = x
-            y = layer(inp)
-            y0 = layer(torch.zeros_like(inp))
-            if isinstance(y, tuple):
-                y = y[0]
-            if isinstance(y0, tuple):
-                y0 = y0[0]
-            for j in range(out_dim):
-                edge = y[:, j] - y0[:, j]
-                edge = edge - torch.mean(edge)
-                energies.append(torch.sqrt(torch.mean(edge * edge) + edge.new_tensor(1.0e-10)))
-    if not energies:
-        return torch.as_tensor(0.0, device=kan.center.device, dtype=kan.center.dtype)
-    return torch.stack(energies).mean()
+    for edges in _kan_edge_probe_batches(kan, n):
+        centered = edges - edges.mean(dim=1, keepdim=True)
+        energies.append(torch.sqrt(centered.square().mean(dim=1) + 1.0e-10))
+    return torch.cat(energies).mean() if energies else kan.center.new_zeros(())
 
 
 def _hierarchical_symbolic_losses(diag, args) -> tuple[torch.Tensor, torch.Tensor]:
@@ -7080,8 +7062,25 @@ def initialize_cv_reciprocal_charge_from_raw(
     return report
 
 
+def _cached_residual_current(diag, data):
+    """Evaluate only the trainable correction on a stage-owned cached batch.
+
+    Reproduce ids_residual's sign, floor and clamp exactly; the raw log residual
+    remains separate from the clipped output for its regularization losses.
+    Ordinary data dictionaries retain the full model path.
+    """
+    if getattr(data, "residual_baseline_owner", None) is not diag:
+        return None
+    base, physical = data.residual_baselines
+    residual = diag.logid_residual(data, 1.0)
+    log0 = torch.log10(base.abs().clamp_min(ID_FLOOR))
+    pred = torch.sign(base) * torch.pow(10.0, torch.clamp(log0 + residual, -18.0, -2.0))
+    return pred, residual, base, physical
+
+
 def iv_residual_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> tuple[torch.Tensor, dict]:
-    pred = diag.ids_residual(data, 1.0)
+    cached = _cached_residual_current(diag, data)
+    pred = cached[0] if cached is not None else diag.ids_residual(data, 1.0)
     logp = torch.log10(torch.clamp(torch.abs(pred), min=ID_FLOOR))
     logt = torch.log10(torch.clamp(torch.abs(data["id"]), min=ID_FLOOR))
     err = logp - logt
@@ -7094,7 +7093,7 @@ def iv_residual_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], ar
         rel = (pred[on] - data["id"][on]) / denom
         lin_vec = torch.nn.functional.smooth_l1_loss(rel, torch.zeros_like(rel), beta=args.iv_linear_huber_beta, reduction="none")
         lin_loss = torch.sum(lin_vec * w[on]) / torch.clamp(torch.sum(w[on]), min=1e-12)
-    residual = diag.logid_residual(data, 1.0)
+    residual = cached[1] if cached is not None else diag.logid_residual(data, 1.0)
     small = torch.mean(residual ** 2)
     # A transport residual should correct systematic conductive-region error,
     # not move the instrument-floor/off-state solution supplied by the
@@ -7428,121 +7427,32 @@ def cv_ordered_shape_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor
     return torch.stack(pieces).mean()
 
 
-def iv_ordered_shape_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
-    """Physics-informed IV residual shape regularizer.
-
-    The residual is allowed to improve gm and the on-current, but it should not
-    create high-frequency curvature.  Penalizing the second difference of the
-    *residual* preserves the compact kernel's natural EKV-like S-shape while
-    still allowing broad bias-dependent corrections.
-    """
-
+def _iv_curve_constraint_losses(diag, data, args, *, derivative=True, shape=True):
+    """Share model predictions across batched derivative and shape constraints."""
     if "curve_code" not in data or len(data["vbg"]) < 8:
-        return torch.as_tensor(0.0, device=data["vbg"].device, dtype=data["vbg"].dtype)
-    pred = diag.ids_residual(data, 1.0)
-    # Keep the base PKAN graph alive here.  IDVD saturation ripple is often
-    # introduced by the parameter PKAN itself, before the external residual is
-    # applied.  Detaching base_ids made the dedicated rb_curv penalty a
-    # diagnostic-only number with no training effect.
-    base = diag.base_ids(data)
-    physical = diag.physical_ids(data).detach()
-    logp = torch.log10(torch.clamp(torch.abs(pred), min=ID_FLOOR))
-    logb = torch.log10(torch.clamp(torch.abs(base), min=ID_FLOOR))
-    logphys = torch.log10(torch.clamp(torch.abs(physical), min=ID_FLOOR))
-    logt = torch.log10(torch.clamp(torch.abs(data["id"]), min=ID_FLOOR))
-    residual = logp - logb
-    pieces = []
-    for code in torch.unique(data["curve_code"]):
-        mask = data["curve_code"] == code
-        n = int(mask.sum().detach().cpu())
-        if n < 8:
-            continue
-        fam = int(data["family"][mask][0].detach().cpu()) if "family" in data else 0
-        x_all = data["vds"][mask] if fam == 2 else (data["vtg"][mask] if fam == 1 else data["vbg"][mask])
-        idx = torch.argsort(x_all)
-        x = x_all[idx]
-        y = logp[mask][idx]
-        yt_raw = logt[mask][idx]
-        yt = _reflect_smooth_1d(yt_raw, args.iv_deriv_target_smooth_passes) if args.iv_deriv_target_smooth_passes > 0 else yt_raw
-        r = residual[mask][idx]
-        rb = (logb - logphys)[mask][idx]
-        dx = torch.clamp(x[1:] - x[:-1], min=x.new_tensor(1.0e-3))
-        slope = (y[1:] - y[:-1]) / dx
-        slope_t = (yt[1:] - yt[:-1]) / dx
-        r_slope = (r[1:] - r[:-1]) / dx
-        r_curv = r[2:] - 2.0 * r[1:-1] + r[:-2]
-        rb_curv = rb[2:] - 2.0 * rb[1:-1] + rb[:-2]
-        y_curv = y[2:] - 2.0 * y[1:-1] + y[:-2]
+        zero = data["vbg"].new_zeros(())
+        return zero, zero
+    layout = getattr(data, "layout", None)
+    if layout is None or layout.smooth_passes != args.iv_deriv_target_smooth_passes:
+        layout = IVCurveLayout(data, args.iv_deriv_target_smooth_passes, ID_FLOOR)
+    cached = _cached_residual_current(diag, data)
+    pred = cached[0] if cached is not None else diag.ids_residual(data, 1.0)
+    # Shape constraints retain the base graph; the derivative constraint alone
+    # detaches its reference base. Neither graph is cached between steps.
+    base = cached[2] if cached is not None else diag.base_ids(data)
+    logp = torch.log10(pred.abs().clamp_min(ID_FLOOR))
+    logb = torch.log10(base.abs().clamp_min(ID_FLOOR))
+    logphys = None
+    if shape:
+        with torch.no_grad():
+            physical = cached[3] if cached is not None else diag.physical_ids(data)
+            logphys = torch.log10(physical.abs().clamp_min(ID_FLOOR))
+    return curve_constraint_losses(layout, logp, logb, logphys, args, derivative=derivative, shape=shape)
 
-        active_pair = 0.5 * (yt[1:] + yt[:-1]) > args.iv_shape_active_log_floor
-        neg = torch.as_tensor(0.0, device=y.device, dtype=y.dtype)
-        if bool(active_pair.any().detach().cpu()) and fam != 2:
-            neg = torch.mean(torch.relu(-slope[active_pair] - args.iv_shape_negative_tol) ** 2)
-        slope_match = torch.as_tensor(0.0, device=y.device, dtype=y.dtype)
-        if bool(active_pair.any().detach().cpu()):
-            tgt = torch.clamp(
-                slope_t[active_pair],
-                min=-args.iv_slope_target_max if fam == 2 else 0.0,
-                max=args.iv_slope_target_max,
-            )
-            serr = slope[active_pair] - tgt
-            slope_match = torch.mean(torch.nn.functional.smooth_l1_loss(serr, torch.zeros_like(serr), beta=0.22, reduction="none"))
 
-        r_curv_loss = torch.mean(torch.nn.functional.smooth_l1_loss(r_curv, torch.zeros_like(r_curv), beta=0.030, reduction="none"))
-        r_slope_loss = torch.mean(torch.relu(torch.abs(r_slope) - args.iv_residual_slope_tol) ** 2)
-
-        on_shape = torch.as_tensor(0.0, device=y.device, dtype=y.dtype)
-        if fam == 1:
-            on_pair = (x[1:] >= args.idvtg_on_x_min) & (x[1:] <= args.idvtg_on_x_max) & (0.5 * (yt[1:] + yt[:-1]) > -9.2)
-            if bool(on_pair.any().detach().cpu()):
-                slope_err = slope[on_pair] - torch.clamp(slope_t[on_pair], min=0.0, max=args.idvtg_on_slope_target_max)
-                on_shape = on_shape + args.idvtg_on_slope_match_weight * torch.mean(
-                    torch.nn.functional.smooth_l1_loss(slope_err, torch.zeros_like(slope_err), beta=0.18, reduction="none")
-                )
-            on_mid = (x[1:-1] >= args.idvtg_on_x_min) & (x[1:-1] <= args.idvtg_on_x_max) & (yt[1:-1] > -9.2)
-            if bool(on_mid.any().detach().cpu()):
-                on_shape = on_shape + args.idvtg_on_curv_weight * torch.mean(
-                    torch.relu(torch.abs(y_curv[on_mid]) - args.idvtg_on_curv_tol) ** 2
-                )
-        elif fam == 2:
-            # IDVD may have a small measured roll-off in saturation, so do not
-            # force gds positive.  It should, however, remain smooth after the
-            # low-VDS knee.  This suppresses residual PKAN ripples without
-            # flattening the physical output-conductance trend.
-            sat_pair = x[1:] >= args.idvd_smooth_vds_min
-            sat_mid = x[1:-1] >= args.idvd_smooth_vds_min
-            if bool(sat_pair.any().detach().cpu()) and int(sat_pair.sum().detach().cpu()) >= 3:
-                sat_slope = slope[sat_pair]
-                on_shape = on_shape + args.idvd_slope_tv_weight * torch.mean(
-                    F.smooth_l1_loss(
-                        sat_slope[1:] - sat_slope[:-1],
-                        torch.zeros_like(sat_slope[1:]),
-                        beta=args.idvd_slope_tv_tol,
-                        reduction="none",
-                    )
-                )
-            if bool(sat_mid.any().detach().cpu()):
-                on_shape = on_shape + args.idvd_curv_weight * torch.mean(
-                    torch.relu(torch.abs(r_curv[sat_mid]) - args.idvd_curv_tol) ** 2
-                )
-                # The pretrained parameter-PKAN can itself introduce a shallow
-                # saturation ripple before the external residual is applied.
-                # Constrain only that added curvature, not the physical CLM
-                # trend, so a smooth nonzero output conductance remains legal.
-                on_shape = on_shape + args.idvd_base_pkan_curv_weight * torch.mean(
-                    torch.relu(torch.abs(rb_curv[sat_mid]) - args.idvd_base_pkan_curv_tol) ** 2
-                )
-
-        pieces.append(
-            args.iv_shape_negative_weight * neg
-            + args.iv_slope_match_weight * slope_match
-            + args.iv_residual_curv_weight * r_curv_loss
-            + args.iv_residual_slope_weight * r_slope_loss
-            + on_shape
-        )
-    if not pieces:
-        return torch.as_tensor(0.0, device=data["vbg"].device, dtype=data["vbg"].dtype)
-    return torch.stack(pieces).mean()
+def iv_ordered_shape_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
+    """Physics-informed IV shape constraint, with equal weight per full sweep."""
+    return _iv_curve_constraint_losses(diag, data, args, derivative=False)[1]
 
 
 def idvd_base_pkan_smoothness_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
@@ -7579,75 +7489,8 @@ def idvd_base_pkan_smoothness_loss(diag: ResidualDiagnostic, data: dict[str, tor
 
 
 def iv_derivative_consistency_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
-    """Main training loss on gm/gds-like derivatives.
-
-    Literature-style physics-guided NN compact modeling usually evaluates not
-    only I-V but also transconductance/output conductance.  This discrete
-    derivative loss does that directly on full measured sweeps.
-    """
-
-    if "curve_code" not in data or len(data["vbg"]) < 8:
-        return torch.as_tensor(0.0, device=data["vbg"].device, dtype=data["vbg"].dtype)
-    pred = diag.ids_residual(data, 1.0)
-    base = diag.base_ids(data).detach()
-    logp = torch.log10(torch.clamp(torch.abs(pred), min=ID_FLOOR))
-    logb = torch.log10(torch.clamp(torch.abs(base), min=ID_FLOOR))
-    logt = torch.log10(torch.clamp(torch.abs(data["id"]), min=ID_FLOOR))
-    pieces = []
-    for code in torch.unique(data["curve_code"]):
-        mask = data["curve_code"] == code
-        if int(mask.sum().detach().cpu()) < 8:
-            continue
-        fam = int(data["family"][mask][0].detach().cpu()) if "family" in data else 0
-        x_all = data["vds"][mask] if fam == 2 else (data["vtg"][mask] if fam == 1 else data["vbg"][mask])
-        idx = torch.argsort(x_all)
-        x = x_all[idx]
-        yp = logp[mask][idx]
-        yb = logb[mask][idx]
-        yt_raw = logt[mask][idx]
-        yt = _reflect_smooth_1d(yt_raw, args.iv_deriv_target_smooth_passes) if args.iv_deriv_target_smooth_passes > 0 else yt_raw
-        dx = torch.clamp(x[1:] - x[:-1], min=x.new_tensor(1.0e-3))
-        sp = (yp[1:] - yp[:-1]) / dx
-        st = (yt[1:] - yt[:-1]) / dx
-        rb = yp - yb
-        rb_slope = (rb[1:] - rb[:-1]) / dx
-        rb_curv = rb[2:] - 2.0 * rb[1:-1] + rb[:-2]
-        yp_curv = yp[2:] - 2.0 * yp[1:-1] + yp[:-2]
-        yt_curv = yt[2:] - 2.0 * yt[1:-1] + yt[:-2]
-
-        active = 0.5 * (yt[1:] + yt[:-1]) > args.iv_deriv_log_floor
-        if bool(active.any().detach().cpu()):
-            st_clip = torch.clamp(st[active], min=0.0 if fam != 2 else -args.iv_deriv_slope_clip, max=args.iv_deriv_slope_clip)
-            slope_loss = torch.mean(
-                torch.nn.functional.smooth_l1_loss(sp[active] - st_clip, torch.zeros_like(st_clip), beta=0.20, reduction="none")
-            )
-            mono_loss = (
-                torch.as_tensor(0.0, device=yp.device, dtype=yp.dtype)
-                if fam == 2
-                else torch.mean(torch.relu(-sp[active] - args.iv_shape_negative_tol) ** 2)
-            )
-        else:
-            slope_loss = torch.as_tensor(0.0, device=yp.device, dtype=yp.dtype)
-            mono_loss = torch.as_tensor(0.0, device=yp.device, dtype=yp.dtype)
-
-        curv_target = torch.clamp(yt_curv, -args.iv_deriv_curv_clip, args.iv_deriv_curv_clip)
-        curv_loss = torch.mean(
-            torch.nn.functional.smooth_l1_loss(yp_curv - curv_target, torch.zeros_like(curv_target), beta=0.050, reduction="none")
-        )
-        residual_curv = torch.mean(
-            torch.nn.functional.smooth_l1_loss(rb_curv, torch.zeros_like(rb_curv), beta=0.025, reduction="none")
-        )
-        residual_slope = torch.mean(torch.relu(torch.abs(rb_slope) - args.iv_residual_slope_tol) ** 2)
-        pieces.append(
-            args.iv_deriv_slope_weight * slope_loss
-            + args.iv_deriv_mono_weight * mono_loss
-            + args.iv_deriv_curv_weight * curv_loss
-            + args.iv_residual_curv_weight * residual_curv
-            + args.iv_residual_slope_weight * residual_slope
-        )
-    if not pieces:
-        return torch.as_tensor(0.0, device=data["vbg"].device, dtype=data["vbg"].dtype)
-    return torch.stack(pieces).mean()
+    """Full-sweep gm/gds-like derivative constraint with a detached base target."""
+    return _iv_curve_constraint_losses(diag, data, args, shape=False)[0]
 
 
 def cv_residual_smoothness_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
@@ -8108,22 +7951,20 @@ def cv_base_kernel_shape_loss(diag: ResidualDiagnostic, data: dict[str, torch.Te
 def iv_extrap_anchor_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
     if len(data["vbg"]) == 0:
         return torch.as_tensor(0.0, device=next(diag.parameters()).device)
-    r = diag.logid_residual(data, 1.0)
-    center = torch.mean(r * r)
-    # Local curvature of residual in the two gate directions. This constrains
-    # extrapolation without pretending to know the target current.
+    # The five pointwise residual evaluations have identical model state.
+    # Concatenate their inputs instead of cloning every column and launching
+    # five separate KAN graphs. Preserve optional temperature/gate fields.
     h = data["vbg"].new_tensor(0.08)
-    plus_b = {k: v.clone() for k, v in data.items()}
-    minus_b = {k: v.clone() for k, v in data.items()}
-    plus_t = {k: v.clone() for k, v in data.items()}
-    minus_t = {k: v.clone() for k, v in data.items()}
-    plus_b["vbg"] = plus_b["vbg"] + h
-    minus_b["vbg"] = minus_b["vbg"] - h
-    plus_t["vtg"] = plus_t["vtg"] + h
-    minus_t["vtg"] = minus_t["vtg"] - h
-    rb = diag.logid_residual(plus_b, 1.0) - 2.0 * r + diag.logid_residual(minus_b, 1.0)
-    rt = diag.logid_residual(plus_t, 1.0) - 2.0 * r + diag.logid_residual(minus_t, 1.0)
-    return center + args.extrap_iv_curv_weight * (torch.mean(rb * rb) + torch.mean(rt * rt))
+    groups = [data, {**data, "vbg": data["vbg"] + h},
+              {**data, "vbg": data["vbg"] - h},
+              {**data, "vtg": data["vtg"] + h},
+              {**data, "vtg": data["vtg"] - h}]
+    merged = {key: torch.cat([group[key] for group in groups]) for key in data}
+    r, bp, bm, tp, tm = diag.logid_residual(merged, 1.0).split(len(data["vbg"]))
+    rb = bp - 2.0 * r + bm
+    rt = tp - 2.0 * r + tm
+    return torch.mean(r * r) + args.extrap_iv_curv_weight * (torch.mean(rb * rb) + torch.mean(rt * rt))
+
 
 
 def cv_extrap_anchor_loss(diag: ResidualDiagnostic, data: dict[str, torch.Tensor], args) -> torch.Tensor:
@@ -9208,136 +9049,137 @@ def train_current_device_iv_residual(
     accepted_best_epoch = 0
     accepted_best_metrics = None
     accepted_best_state = None
+    # This local plan contains only fixed measurements. Rebuild it for every
+    # training call so another device, split or smoothing policy cannot leak in.
+    curve_layout = IVCurveLayout(train_data, stage_args.iv_deriv_target_smooth_passes, ID_FLOOR)
     history = []
-    for epoch in range(1, int(args.iv_residual_stage_epochs) + 1):
+    with residual_only_gradients(diag, params):
         diag.train()
-        ib = batch(train_data, min(int(args.batch_iv), len(train_data["vbg"])))
-        curve_data = curve_batch(
-            train_data,
-            min(int(stage_args.deriv_iv_curves), curve_count(train_data)),
-        )
-        anchor_data = batch(
-            iv_anchor,
-            min(int(args.batch_iv), len(iv_anchor["vbg"])),
-        )
-        optimizer.zero_grad(set_to_none=True)
-        value_loss, _ = iv_residual_loss(diag, ib, stage_args)
-        derivative_loss = iv_derivative_consistency_loss(diag, curve_data, stage_args)
-        shape_loss = (
-            iv_ordered_shape_loss(diag, curve_data, stage_args)
-            if (
+        baseline_cache = ResidualBaselineCache(diag, train_data, curve_layout)
+        for epoch in range(1, int(args.iv_residual_stage_epochs) + 1):
+            diag.train()
+            ib = baseline_cache.point_batch(int(args.batch_iv))
+            curve_data = baseline_cache.curve_batch(int(stage_args.deriv_iv_curves))
+            anchor_data = batch(
+                iv_anchor,
+                min(int(args.batch_iv), len(iv_anchor["vbg"])),
+            )
+            optimizer.zero_grad(set_to_none=True)
+            value_loss, _ = iv_residual_loss(diag, ib, stage_args)
+            do_shape = (
                 epoch == 1
                 or epoch % max(int(stage_args.shape_eval_period), 1) == 0
                 or epoch > int(args.iv_residual_stage_epochs) - int(args.shape_final_epochs)
             )
-            else value_loss.new_tensor(0.0)
-        )
-        anchor_loss = iv_extrap_anchor_loss(diag, anchor_data, stage_args)
-        symbolic_ramp = _symbolic_training_ramp(
-            epoch / max(int(args.iv_residual_stage_epochs), 1),
-            args,
-        )
-        symbolic_loss = (
-            _kan_top1_symbolic_compatibility_loss(diag.iv_resid, args)
-            if symbolic_ramp > 0.0
-            else value_loss.new_tensor(0.0)
-        )
-        symbolic_sparse = (
-            _kan_edge_group_sparsity_loss(diag.iv_resid, args)
-            if symbolic_ramp > 0.0
-            else value_loss.new_tensor(0.0)
-        )
-        loss = (
-            value_loss
-            + float(args.iv_derivative_weight) * derivative_loss
-            + float(args.iv_shape_weight) * shape_loss
-            + float(args.extrap_anchor_weight) * anchor_loss
-            + float(args.symbolic_training_weight) * symbolic_ramp * symbolic_loss
-            + float(args.symbolic_training_sparsity_weight)
-            * symbolic_ramp
-            * symbolic_sparse
-        )
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, float(args.grad_clip))
-        optimizer.step()
-        scheduler.step()
-        diag.iv_resid.assert_valid_grids(
-            f"after independent IV residual epoch {epoch}"
-        )
-        if (
-            epoch == 1
-            or epoch % int(args.iv_residual_stage_eval_every) == 0
-            or epoch == int(args.iv_residual_stage_epochs)
-        ):
-            metrics = _iv_residual_accuracy(diag, val_data, 1.0)
-            score = _base_iv_selection_score(metrics)
-            region_slack = float(args.iv_residual_max_region_degradation)
-            protected = [
-                "iv_nonzero_rms",
-                "iv_off_rms",
-                "iv_subthreshold_rms",
-                "iv_transition_rms",
-                "iv_on_rms",
-                "iv_high_rms",
-                "iv_curve_rms_p95",
-            ]
-            candidate_safe = all(
-                float(metrics[key]) <= float(base_val[key]) + region_slack
-                for key in protected
+            derivative_loss, shape_loss = _iv_curve_constraint_losses(
+                diag, curve_data, stage_args, shape=do_shape,
+            )
+            anchor_loss = iv_extrap_anchor_loss(diag, anchor_data, stage_args)
+            symbolic_ramp = _symbolic_training_ramp(
+                epoch / max(int(args.iv_residual_stage_epochs), 1),
+                args,
+            )
+            symbolic_loss = (
+                _kan_top1_symbolic_compatibility_loss(diag.iv_resid, args)
+                if symbolic_ramp > 0.0
+                else value_loss.new_tensor(0.0)
+            )
+            symbolic_sparse = (
+                _kan_edge_group_sparsity_loss(diag.iv_resid, args)
+                if symbolic_ramp > 0.0
+                else value_loss.new_tensor(0.0)
+            )
+            loss = (
+                value_loss
+                + float(args.iv_derivative_weight) * derivative_loss
+                + float(args.iv_shape_weight) * shape_loss
+                + float(args.extrap_anchor_weight) * anchor_loss
+                + float(args.symbolic_training_weight) * symbolic_ramp * symbolic_loss
+                + float(args.symbolic_training_sparsity_weight)
+                * symbolic_ramp
+                * symbolic_sparse
+            )
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, float(args.grad_clip))
+            optimizer.step()
+            scheduler.step()
+            diag.iv_resid.assert_valid_grids(
+                f"after independent IV residual epoch {epoch}"
             )
             if (
-                "iv_slope_rmse_dec_per_v" in base_val
-                and "iv_slope_rmse_dec_per_v" in metrics
+                epoch == 1
+                or epoch % int(args.iv_residual_stage_eval_every) == 0
+                or epoch == int(args.iv_residual_stage_epochs)
             ):
-                candidate_safe = bool(
-                    candidate_safe
-                    and float(metrics["iv_slope_rmse_dec_per_v"])
-                    <= float(base_val["iv_slope_rmse_dec_per_v"]) + 0.35
+                metrics = _iv_residual_accuracy(diag, val_data, 1.0)
+                score = _base_iv_selection_score(metrics)
+                region_slack = float(args.iv_residual_max_region_degradation)
+                protected = [
+                    "iv_nonzero_rms",
+                    "iv_off_rms",
+                    "iv_subthreshold_rms",
+                    "iv_transition_rms",
+                    "iv_on_rms",
+                    "iv_high_rms",
+                    "iv_curve_rms_p95",
+                ]
+                candidate_safe = all(
+                    float(metrics[key]) <= float(base_val[key]) + region_slack
+                    for key in protected
                 )
-            candidate_gain = base_score - score
-            candidate_accepted = bool(
-                candidate_safe
-                and candidate_gain >= float(args.iv_residual_min_heldout_gain)
-            )
-            history.append(
-                {
-                    "epoch": epoch,
-                    "score": score,
-                    "heldout_balanced_score_gain": candidate_gain,
-                    "region_safe": candidate_safe,
-                    "accepted": candidate_accepted,
-                    **metrics,
-                }
-            )
-            if score < best_score - float(args.base_iv_min_delta):
-                best_score = score
-                best_epoch = epoch
-                best_metrics = metrics
-                best_state = {
-                    key: value.detach().cpu().clone()
-                    for key, value in diag.iv_resid.state_dict().items()
-                }
-            if (
-                candidate_accepted
-                and score < accepted_best_score - float(args.base_iv_min_delta)
-            ):
-                accepted_best_score = score
-                accepted_best_epoch = epoch
-                accepted_best_metrics = metrics
-                accepted_best_state = {
-                    key: value.detach().cpu().clone()
-                    for key, value in diag.iv_resid.state_dict().items()
-                }
-            print(
-                "[IV residual stage] "
-                f"epoch={epoch}/{args.iv_residual_stage_epochs} "
-                f"heldout_score={score:.6g} base={base_score:.6g} "
-                f"nz={metrics['iv_nonzero_rms']:.5g} "
-                f"sub={metrics['iv_subthreshold_rms']:.5g} "
-                f"trans={metrics['iv_transition_rms']:.5g} "
-                f"on={metrics['iv_on_rms']:.5g} high={metrics['iv_high_rms']:.5g}",
-                flush=True,
-            )
+                if (
+                    "iv_slope_rmse_dec_per_v" in base_val
+                    and "iv_slope_rmse_dec_per_v" in metrics
+                ):
+                    candidate_safe = bool(
+                        candidate_safe
+                        and float(metrics["iv_slope_rmse_dec_per_v"])
+                        <= float(base_val["iv_slope_rmse_dec_per_v"]) + 0.35
+                    )
+                candidate_gain = base_score - score
+                candidate_accepted = bool(
+                    candidate_safe
+                    and candidate_gain >= float(args.iv_residual_min_heldout_gain)
+                )
+                history.append(
+                    {
+                        "epoch": epoch,
+                        "score": score,
+                        "heldout_balanced_score_gain": candidate_gain,
+                        "region_safe": candidate_safe,
+                        "accepted": candidate_accepted,
+                        **metrics,
+                    }
+                )
+                if score < best_score - float(args.base_iv_min_delta):
+                    best_score = score
+                    best_epoch = epoch
+                    best_metrics = metrics
+                    best_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value in diag.iv_resid.state_dict().items()
+                    }
+                if (
+                    candidate_accepted
+                    and score < accepted_best_score - float(args.base_iv_min_delta)
+                ):
+                    accepted_best_score = score
+                    accepted_best_epoch = epoch
+                    accepted_best_metrics = metrics
+                    accepted_best_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value in diag.iv_resid.state_dict().items()
+                    }
+                print(
+                    "[IV residual stage] "
+                    f"epoch={epoch}/{args.iv_residual_stage_epochs} "
+                    f"heldout_score={score:.6g} base={base_score:.6g} "
+                    f"nz={metrics['iv_nonzero_rms']:.5g} "
+                    f"sub={metrics['iv_subthreshold_rms']:.5g} "
+                    f"trans={metrics['iv_transition_rms']:.5g} "
+                    f"on={metrics['iv_on_rms']:.5g} high={metrics['iv_high_rms']:.5g}",
+                    flush=True,
+                )
     unconstrained_best_epoch = best_epoch
     unconstrained_best_score = best_score
     if accepted_best_state is not None:
@@ -12907,48 +12749,26 @@ def _device_level_finetune_iv_symbolic(
     dtype,
     args,
 ) -> None:
-    """Calibrate both top-1 IV students on deployed current and slopes.
+    """Calibrate terminal current and slopes with a fixed symbolic topology.
 
-    Internal correction channels have very different current sensitivities.
-    Matching all raw channels equally can waste capacity on weak channels while
-    leaving a visible IDVTG error.  The deployed current also contains the
-    external log-ID residual PKAN, so calibrating only the base-IV student
-    leaves an avoidable mismatch in Verilog-A.  This final student-only
-    calibration keeps the selected top-1 primitive on every edge and jointly
-    minimizes the complete deployed model's observable ID and derivatives.
+    Batched execution preserves the five-point finite-difference objective.
+    With early stopping enabled, an independent deterministic bias manifold
+    selects the best student, including the unmodified step-zero candidate.
+    Patience zero keeps the original fixed-budget/last-iterate policy.
     """
-
     steps = max(0, int(getattr(args, "symbolic_device_iv_finetune_steps", 0)))
-    if steps <= 0:
+    if not steps:
         return
-    deployment_scale = float(
-        getattr(args, "symbolic_deployment_iv_scale", 1.0)
-    )
+    scale = float(getattr(args, "symbolic_deployment_iv_scale", 1.0))
+    patience = int(getattr(args, "symbolic_device_iv_finetune_patience", 6))
+    min_steps = int(getattr(args, "symbolic_device_iv_finetune_min_steps", 500))
+    min_delta = float(getattr(args, "symbolic_device_iv_finetune_min_delta", 1.0e-4))
+    period = int(getattr(args, "symbolic_device_iv_finetune_eval_period", 100))
+    if period <= 0:
+        raise ValueError("Symbolic evaluation period must be positive")
+    stop = EarlyStop(patience, min_steps, min_delta)
     data = _symbolic_iv_bias_samples(device, dtype, args)
     h = float(getattr(args, "symbolic_device_iv_deriv_h", 0.025))
-
-    def shifted(key: str, delta: float) -> dict[str, torch.Tensor]:
-        out = dict(data)
-        out[key] = data[key] + data[key].new_tensor(delta)
-        return out
-
-    old_base_net = diag.base.kan.net
-    old_residual_net = diag.iv_resid.net
-    with torch.no_grad():
-        teacher = diag.ids_residual(data, deployment_scale).detach()
-        teacher_tp = diag.ids_residual(shifted("vtg", h), deployment_scale).detach()
-        teacher_tm = diag.ids_residual(shifted("vtg", -h), deployment_scale).detach()
-        teacher_dp = diag.ids_residual(shifted("vds", h), deployment_scale).detach()
-        teacher_dm = diag.ids_residual(shifted("vds", -h), deployment_scale).detach()
-    diag.base.kan.net = EdgewiseSymbolicKANNet(base_symbolic_kan)
-    diag.iv_resid.net = EdgewiseSymbolicKANNet(residual_symbolic_kan)
-    symbolic_params = list(base_symbolic_kan.parameters())
-    if deployment_scale > 0.0:
-        symbolic_params += list(residual_symbolic_kan.parameters())
-    opt = torch.optim.Adam(symbolic_params, lr=float(getattr(args, "symbolic_device_iv_finetune_lr", 0.0015)))
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(steps, 1), eta_min=2.0e-5)
-    n = len(data["vbg"])
-    batch_n = min(n, max(128, int(getattr(args, "symbolic_device_iv_finetune_batch", 512))))
     deriv_weight = float(getattr(args, "symbolic_device_iv_deriv_weight", 0.20))
     linear_weight = float(getattr(args, "symbolic_device_iv_linear_weight", 0.18))
     linear_floor = float(getattr(args, "symbolic_device_iv_linear_floor_A", 1.0e-12))
@@ -12956,59 +12776,91 @@ def _device_level_finetune_iv_symbolic(
     transition_boost = float(getattr(args, "symbolic_device_iv_transition_boost", 2.5))
     on_boost = float(getattr(args, "symbolic_device_iv_on_boost", 5.0))
 
-    def logabs(x: torch.Tensor) -> torch.Tensor:
-        return torch.log10(torch.clamp(torch.abs(x), min=x.new_tensor(ID_FLOOR)))
+    def groups(batch):
+        return [batch, {**batch, "vtg": batch["vtg"] + h},
+                {**batch, "vtg": batch["vtg"] - h},
+                {**batch, "vds": batch["vds"] + h},
+                {**batch, "vds": batch["vds"] - h}]
 
-    def weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        return torch.sum(value * weight) / torch.clamp(torch.sum(weight), min=1.0e-12)
+    def logabs(value):
+        return torch.log10(torch.clamp(torch.abs(value), min=ID_FLOOR))
 
-    teacher_log = logabs(teacher)
-    teacher_gm = (logabs(teacher_tp) - logabs(teacher_tm)) / (2.0 * h)
-    teacher_gds = (logabs(teacher_dp) - logabs(teacher_dm)) / (2.0 * h)
-    try:
-        for _ in range(steps):
-            # Preserve extrapolation coverage while showing the student the
-            # canonical transfer/output slices frequently enough to control
-            # the worst deployment error around turn-on.  A nonzero random
-            # manifold remains in every batch; the weighted slices only act
-            # as deployment anchors for the constrained top-1 student.
+    def teacher_targets(batch):
+        with torch.no_grad():
+            current, tp, tm, dp, dm = [diag.ids_residual(group, scale) for group in groups(batch)]
+            return {"current": current.detach(), "log": logabs(current).detach(),
+                    "gm": ((logabs(tp) - logabs(tm)) / (2 * h)).detach(),
+                    "gds": ((logabs(dp) - logabs(dm)) / (2 * h)).detach()}
+
+    def objective(batch, target):
+        pred, tp, tm, dp, dm = evaluate_groups(diag, groups(batch), scale)
+        point_weight = batch["_symbolic_weight"]
+        fit_weight = point_weight * torch.where(
+            torch.abs(target["current"]) > 1.0e-10, on_boost,
+            torch.where(torch.abs(target["current"]) > 1.0e-11, transition_boost, 1.0))
+
+        def mean(value, weight):
+            return (value * weight).sum() / weight.sum().clamp_min(1.0e-12)
+
+        relative = (pred - target["current"]) / target["current"].abs().clamp_min(linear_floor)
+        loss = mean((logabs(pred) - target["log"]) ** 2, point_weight)
+        loss = loss + linear_weight * mean(F.smooth_l1_loss(relative, torch.zeros_like(relative), beta=linear_beta, reduction="none"), fit_weight)
+        loss = loss + deriv_weight * mean(((logabs(tp) - logabs(tm)) / (2 * h) - target["gm"]) ** 2, fit_weight)
+        return loss + 0.35 * deriv_weight * mean(((logabs(dp) - logabs(dm)) / (2 * h) - target["gds"]) ** 2, fit_weight)
+
+    targets = teacher_targets(data)
+    validation = validation_targets = None
+    if patience:
+        validation_args = SimpleNamespace(**{**vars(args), "seed": int(getattr(args, "seed", 20260524)) + 8191})
+        validation = _symbolic_iv_bias_samples(device, dtype, validation_args)
+        validation_targets = teacher_targets(validation)
+    batch_n = min(len(data["vbg"]), max(128, int(getattr(args, "symbolic_device_iv_finetune_batch", 512))))
+    history = []
+    stopped = False
+    with symbolic_student(diag, base_symbolic_kan, residual_symbolic_kan, symbolic_func, scale) as (base, residual, params):
+        modules = (base, residual)
+        opt = torch.optim.Adam(params, lr=float(getattr(args, "symbolic_device_iv_finetune_lr", 0.0015)))
+        # Keep the scheduler tied to the original maximum budget when stopping.
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=2.0e-5)
+        if patience:
+            with torch.no_grad():
+                score = float(objective(validation, validation_targets).detach().cpu())
+            stop.observe(0, score, modules)
+            history.append({"step": 0, "score": score})
+        # Only deterministic forward/backward is captured. Keep the real batch
+        # draw, clipping, Adam step, cosine schedule and selection here.
+        runner = SymbolicBackwardRunner(objective, params, enabled=steps >= 32)
+        for step in range(1, steps + 1):
             idx = torch.multinomial(data["_symbolic_weight"], batch_n, replacement=True)
-            sub = {k: v[idx] for k, v in data.items()}
+            batch = {key: value[idx] for key, value in data.items()}
+            target = {key: value[idx] for key, value in targets.items()}
             opt.zero_grad(set_to_none=True)
-            pred = diag.ids_residual(sub, deployment_scale)
-            pred_tp = diag.ids_residual({**sub, "vtg": sub["vtg"] + h}, deployment_scale)
-            pred_tm = diag.ids_residual({**sub, "vtg": sub["vtg"] - h}, deployment_scale)
-            pred_dp = diag.ids_residual({**sub, "vds": sub["vds"] + h}, deployment_scale)
-            pred_dm = diag.ids_residual({**sub, "vds": sub["vds"] - h}, deployment_scale)
-            pred_log = logabs(pred)
-            pred_gm = (logabs(pred_tp) - logabs(pred_tm)) / (2.0 * h)
-            pred_gds = (logabs(pred_dp) - logabs(pred_dm)) / (2.0 * h)
-            point_weight = sub["_symbolic_weight"]
-            abs_teacher = torch.abs(teacher[idx])
-            fit_weight = point_weight * torch.where(
-                abs_teacher > 1.0e-10,
-                point_weight.new_tensor(on_boost),
-                torch.where(
-                    abs_teacher > 1.0e-11,
-                    point_weight.new_tensor(transition_boost),
-                    point_weight.new_tensor(1.0),
-                ),
-            )
-            loss = weighted_mean((pred_log - teacher_log[idx]) ** 2, point_weight)
-            rel = (pred - teacher[idx]) / torch.clamp(torch.abs(teacher[idx]), min=linear_floor)
-            loss = loss + linear_weight * weighted_mean(
-                F.smooth_l1_loss(rel, torch.zeros_like(rel), beta=linear_beta, reduction="none"),
-                fit_weight,
-            )
-            loss = loss + deriv_weight * weighted_mean((pred_gm - teacher_gm[idx]) ** 2, fit_weight)
-            loss = loss + 0.35 * deriv_weight * weighted_mean((pred_gds - teacher_gds[idx]) ** 2, fit_weight)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(symbolic_params, 5.0)
+            loss = runner.backward(batch, target)
+            torch.nn.utils.clip_grad_norm_(params, 5.0)
             opt.step()
             sched.step()
-    finally:
-        diag.base.kan.net = old_base_net
-        diag.iv_resid.net = old_residual_net
+            if patience and (step % period == 0 or step == steps):
+                with torch.no_grad():
+                    score = float(objective(validation, validation_targets).detach().cpu())
+                history.append({"step": step, "score": score})
+                stopped = stop.observe(step, score, modules)
+                print(f"Symbolic IV calibration {step}/{steps}: score={score:.6g}, best_step={stop.best_step}", flush=True)
+                if stopped:
+                    break
+        if patience:
+            stop.restore(modules)
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        (args.out_dir / "v97_symbolic_iv_finetune_selection.json").write_text(json.dumps({
+            "execution": "batched", "step_budget": steps, "optimizer_steps": step,
+            "training_execution": "cuda_graph" if runner.replays else "eager",
+            "graph_replays": runner.replays, "graph_fallback_reason": runner.fallback_reason,
+            "early_stopped": stopped, "patience": patience, "min_steps": min_steps,
+            "min_delta": min_delta, "eval_period": period,
+            "selected_step": stop.best_step if patience else step,
+            "selected_score": stop.best_score if patience else None,
+            "policy": "independent_bias_manifold" if patience else "fixed_budget_last_iterate",
+            "history": history,
+        }, indent=2), encoding="utf-8")
 
 
 def _device_level_fit_iv_symbolic_to_measurements(
@@ -13085,20 +12937,6 @@ def _device_level_fit_iv_symbolic_to_measurements(
             torch.clamp(torch.abs(anchor_teacher), min=anchor_teacher.new_tensor(ID_FLOOR))
         )
 
-    old_base_net = diag.base.kan.net
-    old_residual_net = diag.iv_resid.net
-    diag.base.kan.net = EdgewiseSymbolicKANNet(base_symbolic_kan)
-    diag.iv_resid.net = EdgewiseSymbolicKANNet(residual_symbolic_kan)
-    params = list(base_symbolic_kan.parameters())
-    if deployment_scale > 0.0:
-        params += list(residual_symbolic_kan.parameters())
-    opt = torch.optim.Adam(
-        params,
-        lr=float(getattr(args, "symbolic_device_iv_measured_lr", 5.0e-4)),
-    )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=max(steps, 1), eta_min=1.0e-5
-    )
     batch_n = min(
         len(target),
         max(128, int(getattr(args, "symbolic_device_iv_finetune_batch", 512))),
@@ -13114,23 +12952,25 @@ def _device_level_fit_iv_symbolic_to_measurements(
         ),
     )
     teacher_guard = float(getattr(args, "symbolic_device_iv_teacher_guard_weight", 0.12))
-    eval_period = max(
-        20, int(getattr(args, "symbolic_device_iv_measured_eval_period", 50))
-    )
-    best_score = float("inf")
-    best_step = 0
-    best_base_state = None
-    best_residual_state = None
+    eval_period = int(getattr(args, "symbolic_device_iv_measured_eval_period", 50))
+    if eval_period <= 0:
+        raise ValueError("Symbolic evaluation period must be positive")
+    patience = int(getattr(args, "symbolic_device_iv_measured_patience", 6))
+    min_steps = int(getattr(args, "symbolic_device_iv_measured_min_steps", 300))
+    min_delta = float(getattr(args, "symbolic_device_iv_measured_min_delta", 1.0e-4))
+    stop = EarlyStop(patience, min_steps, min_delta)
+    stopped = False
     history: list[dict[str, float | int]] = []
+
+    val = {
+        key: value[validation_mask]
+        if isinstance(value, torch.Tensor) and len(value) == len(target)
+        else value
+        for key, value in measured.items()
+    }
 
     def selection_metrics() -> dict[str, float]:
         with torch.no_grad():
-            val = {
-                key: value[validation_mask]
-                if isinstance(value, torch.Tensor) and len(value) == len(target)
-                else value
-                for key, value in measured.items()
-            }
             val_pred = diag.ids_residual(val, deployment_scale)
             val_pred_log = torch.log10(
                 torch.clamp(torch.abs(val_pred), min=val_pred.new_tensor(ID_FLOOR))
@@ -13193,7 +13033,19 @@ def _device_level_fit_iv_symbolic_to_measurements(
             ),
         }
 
-    try:
+    with symbolic_student(diag, base_symbolic_kan, residual_symbolic_kan, symbolic_func, deployment_scale) as (base, residual, params):
+        modules = (base, residual)
+        opt = torch.optim.Adam(
+            params,
+            lr=float(getattr(args, "symbolic_device_iv_measured_lr", 5.0e-4)),
+        )
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(steps, 1), eta_min=1.0e-5
+        )
+        if patience:
+            initial = selection_metrics()
+            stop.observe(0, initial["score"], modules)
+            history.append({"step": 0, **initial})
         for step in range(1, steps + 1):
             idx = torch.multinomial(
                 train_sample_weight, batch_n, replacement=True
@@ -13203,7 +13055,12 @@ def _device_level_fit_iv_symbolic_to_measurements(
                 for key, value in measured.items()
             }
             opt.zero_grad(set_to_none=True)
-            pred = diag.ids_residual(sub, deployment_scale)
+            if teacher_guard > 0.0 and anchor_n:
+                aidx = torch.multinomial(anchor_sample_weight, anchor_n, replacement=True)
+                asub = {key: value[aidx] for key, value in anchor.items()}
+                pred, apred = evaluate_groups(diag, [sub, asub], deployment_scale)
+            else:
+                pred = diag.ids_residual(sub, deployment_scale)
             pred_log = torch.log10(
                 torch.clamp(torch.abs(pred), min=pred.new_tensor(ID_FLOOR))
             )
@@ -13229,11 +13086,6 @@ def _device_level_fit_iv_symbolic_to_measurements(
                     rel, torch.zeros_like(rel), beta=0.15
                 )
             if teacher_guard > 0.0 and anchor_n:
-                aidx = torch.multinomial(
-                    anchor_sample_weight, anchor_n, replacement=True
-                )
-                asub = {key: value[aidx] for key, value in anchor.items()}
-                apred = diag.ids_residual(asub, deployment_scale)
                 apred_log = torch.log10(
                     torch.clamp(torch.abs(apred), min=apred.new_tensor(ID_FLOOR))
                 )
@@ -13260,20 +13112,11 @@ def _device_level_fit_iv_symbolic_to_measurements(
             if step == 1 or step % eval_period == 0 or step == steps:
                 metrics = selection_metrics()
                 history.append({"step": int(step), **metrics})
-                if metrics["score"] < best_score:
-                    best_score = metrics["score"]
-                    best_step = int(step)
-                    best_base_state = {
-                        key: value.detach().cpu().clone()
-                        for key, value in base_symbolic_kan.state_dict().items()
-                    }
-                    best_residual_state = {
-                        key: value.detach().cpu().clone()
-                        for key, value in residual_symbolic_kan.state_dict().items()
-                    }
-        if best_base_state is not None and best_residual_state is not None:
-            base_symbolic_kan.load_state_dict(best_base_state, strict=True)
-            residual_symbolic_kan.load_state_dict(best_residual_state, strict=True)
+                stopped = stop.observe(step, metrics["score"], modules)
+                print(f"Symbolic IV measured {step}/{steps}: score={metrics['score']:.6g}, best_step={stop.best_step}", flush=True)
+                if stopped:
+                    break
+        stop.restore(modules)
         final_metrics = selection_metrics()
         args.out_dir.mkdir(parents=True, exist_ok=True)
         (args.out_dir / "v96_symbolic_iv_measured_selection.json").write_text(
@@ -13282,9 +13125,16 @@ def _device_level_fit_iv_symbolic_to_measurements(
                     "policy": "deterministic_leave_every_fifth_curve_condition_out",
                     "training_points": int((~validation_mask).sum().detach().cpu()),
                     "heldout_points": int(validation_mask.sum().detach().cpu()),
-                    "optimizer_steps": int(steps),
-                    "selected_step": int(best_step),
-                    "selected_score": float(best_score),
+                    "optimizer_steps": int(step),
+                    "step_budget": steps,
+                    "execution": "batched",
+                    "early_stopped": stopped,
+                    "patience": patience,
+                    "min_steps": min_steps,
+                    "min_delta": min_delta,
+                    "eval_period": eval_period,
+                    "selected_step": stop.best_step,
+                    "selected_score": stop.best_score,
                     "selected_metrics": final_metrics,
                     "history": history,
                 },
@@ -13292,9 +13142,6 @@ def _device_level_fit_iv_symbolic_to_measurements(
             ),
             encoding="utf-8",
         )
-    finally:
-        diag.base.kan.net = old_base_net
-        diag.iv_resid.net = old_residual_net
 
 
 def _fit_iv_symbolic_deployment_calibration(
@@ -14410,6 +14257,7 @@ def _joint_finetune_symbolic_network(
         gen = torch.Generator(device="cpu")
         gen.manual_seed(int(getattr(args, "seed", 20260524)) + 2903 + n_dim)
         z = (5.0 * torch.rand((n, n_dim), generator=gen, dtype=torch.float64) - 2.5).to(device=device, dtype=dtype)
+    n = len(z)
     with torch.no_grad():
         target_raw = kan.net(z)
         if isinstance(target_raw, tuple):
@@ -14430,7 +14278,9 @@ def _joint_finetune_symbolic_network(
         teacher_p = torch.tanh(teacher_p_raw) * out_range
         teacher_m = torch.tanh(teacher_m_raw) * out_range
         target_deriv = (teacher_p - teacher_m) / (2.0 * deriv_h)
-    opt = torch.optim.Adam(symbolic_kan.parameters(), lr=float(getattr(args, "symbolic_network_finetune_lr", 0.003)))
+    # Temporary packed coefficients are copied back to the original schema.
+    packed = PackedSymbolicNet(symbolic_kan, symbolic_func)
+    opt = torch.optim.Adam(packed.parameters(), lr=float(getattr(args, "symbolic_network_finetune_lr", 0.003)))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(steps, 1), eta_min=2.0e-5)
     batch_n = min(n, max(128, int(getattr(args, "symbolic_network_finetune_batch", 512))))
     active = torch.abs(kan.out_range) > kan.out_range.new_tensor(1.0e-12)
@@ -14441,18 +14291,20 @@ def _joint_finetune_symbolic_network(
     for _ in range(steps):
         idx = torch.randint(0, n, (batch_n,), device=device)
         opt.zero_grad(set_to_none=True)
-        pred = torch.tanh(_forward_symbolic_layers(symbolic_kan, z[idx])) * kan.out_range.reshape(1, -1)
-        pred_p = torch.tanh(_forward_symbolic_layers(symbolic_kan, z[idx] + deriv_h * direction[idx])) * kan.out_range.reshape(1, -1)
-        pred_m = torch.tanh(_forward_symbolic_layers(symbolic_kan, z[idx] - deriv_h * direction[idx])) * kan.out_range.reshape(1, -1)
+        # Merge value and finite-difference inputs into one pointwise forward.
+        raw = packed(torch.cat([z[idx], z[idx] + deriv_h * direction[idx], z[idx] - deriv_h * direction[idx]]))
+        pred, pred_p, pred_m = (torch.tanh(raw) * kan.out_range.reshape(1, -1)).split(batch_n)
         pred_deriv = (pred_p - pred_m) / (2.0 * deriv_h)
         loss = torch.mean(((pred[:, active] - target[idx][:, active]) / output_scale[:, active]) ** 2)
         loss = loss + float(getattr(args, "symbolic_network_deriv_weight", 0.18)) * torch.mean(
             ((pred_deriv[:, active] - target_deriv[idx][:, active]) / output_scale[:, active]) ** 2
         )
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(symbolic_kan.parameters(), 5.0)
+        torch.nn.utils.clip_grad_norm_(packed.parameters(), 5.0)
         opt.step()
         sched.step()
+    packed.copy_to(symbolic_kan)
+
 
 
 def _symbolic_cv_observable_equivalence_report(
@@ -18091,6 +17943,13 @@ def parse_args():
     ap.add_argument("--symbolic-device-iv-measured-steps", type=int, default=1600)
     ap.add_argument("--symbolic-device-iv-measured-lr", type=float, default=2.5e-4)
     ap.add_argument("--symbolic-device-iv-measured-eval-period", type=int, default=50)
+    ap.add_argument("--symbolic-device-iv-finetune-eval-period", type=int, default=100)
+    ap.add_argument("--symbolic-device-iv-finetune-patience", type=int, default=6)
+    ap.add_argument("--symbolic-device-iv-finetune-min-steps", type=int, default=500)
+    ap.add_argument("--symbolic-device-iv-finetune-min-delta", type=float, default=1.0e-4)
+    ap.add_argument("--symbolic-device-iv-measured-patience", type=int, default=6)
+    ap.add_argument("--symbolic-device-iv-measured-min-steps", type=int, default=300)
+    ap.add_argument("--symbolic-device-iv-measured-min-delta", type=float, default=1.0e-4)
     ap.add_argument("--resume-symbolic-iv-state", type=Path, default=None)
     ap.add_argument(
         "--reuse-resumed-symbolic-calibration",
