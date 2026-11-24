@@ -250,10 +250,10 @@ def load_iv_data(data_dir: Path) -> pd.DataFrame:
     for path in sorted(data_dir.glob("ID*_train.xlsx")):
         if path.name.upper().startswith("CV"):
             continue
-        xl = pd.ExcelFile(path)
-        if "long" not in xl.sheet_names:
-            continue
-        df = pd.read_excel(path, sheet_name="long")
+        with pd.ExcelFile(path) as xl:
+            if "long" not in xl.sheet_names:
+                continue
+            df = pd.read_excel(xl, sheet_name="long")
         required = {"VD_V", "VBG_V", "VTG_V", "ID_A"}
         missing = required.difference(df.columns)
         if missing:
@@ -323,10 +323,18 @@ def load_cv_data(data_dir: Path) -> list[CVSeries]:
     path = data_dir / "CV_train.xlsx"
     if not path.exists():
         return []
+    from validate_dataset import check_cv_file
+
+    validation = check_cv_file(path)
+    if not validation["ok"]:
+        raise ValueError(f"Invalid CV workbook {path}: {validation['issues']}")
     series: list[CVSeries] = []
-    xl = pd.ExcelFile(path)
-    for sheet_name in xl.sheet_names:
+    with pd.ExcelFile(path) as xl:
+        sheet_names = xl.sheet_names
+    for sheet_name in sheet_names:
         sheet = str(sheet_name).strip().lower()
+        if sheet not in {"cgg", "cbg", "ctg", "vds"}:
+            continue
         raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
         if raw.shape[0] < 3:
             continue
@@ -978,6 +986,12 @@ def fit_model(
     ]
     for stage in stages:
         name, param_names, iv_df, cv_series, cv_weight, reg_weight, base_nfev = stage
+        if not cv_fit:
+            if name == "4_cv_capacitance":
+                continue
+            # Fringe capacitances are not identifiable from DC current data.
+            param_names = [key for key in param_names if not key.startswith("Cfr_")]
+            cv_weight = 0.0
         nfev = max(12, int(round(base_nfev * max_nfev_scale)))
         p, info = run_stage(
             name,
@@ -1098,10 +1112,12 @@ def compute_metrics(
             if np.any((abs_meas >= 1e-12) & (abs_meas < 1e-9))
             else np.nan
         ),
-        "cv_rms_log10_error_dec": float(np.sqrt(np.mean(np.asarray(cv_abs_terms) ** 2))) if cv_abs_terms else np.nan,
+        "task_mode": "iv_cv" if cv_series else "iv_only",
+        "cv_status": "fitted" if cv_series else "not_applicable",
+        "cv_rms_log10_error_dec": float(np.sqrt(np.mean(np.asarray(cv_abs_terms) ** 2))) if cv_abs_terms else None,
         "cv_core_qs_rms_log10_error_dec": float(np.sqrt(np.mean(np.asarray(cv_core_terms) ** 2)))
         if cv_core_terms
-        else np.nan,
+        else None,
         "fit_nonmonotonic_steps": int(nonmonotonic_steps),
         "fit_checked_steps": int(checked_steps),
     }
@@ -1311,8 +1327,10 @@ def write_outputs(
         f"IV RMS log10(|ID|) error = {summary['iv_rms_log10_error_dec']:.4g} dec",
         f"IV subthreshold RMS log10(|ID|) error = {summary['iv_subthreshold_rms_log10_error_dec']:.4g} dec",
         f"IV on-state RMS log10(|ID|) error = {summary['iv_on_rms_log10_error_dec']:.4g} dec",
-        f"CV shared-trap RMS log10(C) error = {summary['cv_rms_log10_error_dec']:.4g} dec",
-        f"CV core-QS RMS log10(C) error = {summary['cv_core_qs_rms_log10_error_dec']:.4g} dec",
+        (f"CV shared-trap RMS log10(C) error = {summary['cv_rms_log10_error_dec']:.4g} dec"
+         if cv_series else "CV: not applicable; charge/capacitance defaults are uncalibrated."),
+        (f"CV core-QS RMS log10(C) error = {summary['cv_core_qs_rms_log10_error_dec']:.4g} dec"
+         if cv_series else "AC/transient accuracy is not validated."),
         "",
         "Final parameters:",
     ]

@@ -198,6 +198,24 @@ def _prepare_stage_results_for_report(
     return stages_list
 
 
+def _model_scope(run_data: dict[str, Any]) -> dict[str, Any]:
+    """Report the dataset contract without equating absent CV with zero error."""
+    from .schema import DatasetProfile
+
+    profile = run_data.get("extra", {}).get("dataset_profile")
+    if not isinstance(profile, dict):
+        return {"task_mode": "unknown"}
+    cv = profile.get("raw_validation", {}).get("cv", {})
+    present = profile.get("cv_present", cv.get("exists", profile.get("cv_ok", False)))
+    mode = DatasetProfile(cv_present=present, cv_ok=profile.get("cv_ok", False)).task_mode
+    return {
+        "task_mode": mode,
+        "cv_status": "not_applicable" if mode == "iv_only" else "see_stage_results",
+        "limitation": ("No measured CV: charge/capacitance defaults are uncalibrated; AC/transient accuracy is unvalidated."
+                       if mode == "iv_only" else ""),
+    }
+
+
 def _build_json_summary(
     run_data: dict[str, Any],
     manifest: dict[str, Any],
@@ -211,6 +229,7 @@ def _build_json_summary(
 
     summary: dict[str, Any] = {
         "run_id": run_data.get("run_id"),
+        "model_scope": _model_scope(run_data),
         "status": status,
         "created_at": run_data.get("created_at"),
         "updated_at": run_data.get("updated_at"),
@@ -281,6 +300,10 @@ def _build_md_summary(
                 lines.append(f"  - [WARN] {iss}")
     lines.append(f"- **Hysteresis enabled**: {run_data.get('hysteresis_enabled', False)}")
     lines.append(f"- **Temperature enabled**: {run_data.get('temperature_enabled', False)}")
+    scope = _model_scope(run_data)
+    lines.append(f"- **Static modeling scope**: {scope['task_mode']}")
+    if scope.get("limitation"):
+        lines.append(f"- **CV: NOT APPLICABLE**. {scope['limitation']}")
     lines.append("")
 
     # ── Stage results ──

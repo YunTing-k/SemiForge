@@ -243,6 +243,8 @@ def iv_weight_v2(df: pd.DataFrame) -> np.ndarray:
 
 
 def cv_weight_v2(df: pd.DataFrame) -> np.ndarray:
+    if df.empty:
+        return np.empty(0, dtype=float)
     sheet_w = df["sheet"].map({"cgg": 1.90, "cbg": 1.35, "ctg": 1.15, "vds": 0.35}).fillna(1.0)
     cap = np.maximum(df["cap_F"].to_numpy(float), C_FLOOR)
     med = np.median(np.log10(cap))
@@ -3982,6 +3984,8 @@ def _hierarchical_symbolic_losses(diag, args) -> tuple[torch.Tensor, torch.Tenso
         (diag.base.kan, float(getattr(args, "symbolic_training_base_weight", 0.40))),
         (diag.base.cv_kan, float(getattr(args, "symbolic_training_base_cv_weight", 0.16))),
     ]
+    if not getattr(diag, "cv_enabled", True):
+        blocks = [(kan, weight) for kan, weight in blocks if kan is not diag.cv_q_resid and kan is not diag.base.cv_kan]
     if getattr(diag, "temperature_kan_enabled", False):
         blocks.append(
             (
@@ -6388,7 +6392,7 @@ def rebuild_base_from_physical_fit(
     trap_values = payload.get(
         "cv_shared_trap_params",
         payload.get("baseline_trap_params", {}),
-    )
+    ) or {}
     p_defaults = asdict(Params())
     p_defaults.update({k: v for k, v in param_values.items() if k in p_defaults})
     trap_defaults = asdict(CVTrapParams())
@@ -8590,7 +8594,7 @@ def temperature_trend_diagnostics(
     iv_pred, cv_pred = predict_outputs(
         diag,
         pd.DataFrame(iv_rows),
-        pd.DataFrame(cv_rows),
+        pd.DataFrame(cv_rows) if getattr(diag, "cv_enabled", True) else cv_point_dataframe([], diag.base.trap),
         device,
         dtype,
         args,
@@ -8669,20 +8673,21 @@ def temperature_trend_diagnostics(
         fig.savefig(out_dir / "v92_temperature_IDVBG_transfer.png", dpi=220)
         plt.close(fig)
 
-        fig, axes = plt.subplots(1, 3, figsize=(13.2, 4.1), sharey=False)
-        for ax, sheet in zip(axes, ["cgg", "cbg", "ctg"]):
-            sdf = cv_pred[cv_pred["sheet"].astype(str).str.lower() == sheet]
-            for temp, g in sdf.groupby("temp_K", sort=True):
-                gg = g.sort_values("x")
-                ax.plot(gg["x"], gg["cap_residual_F"], lw=1.15, label=f"{float(temp):.0f} K")
-            ax.set_title(sheet.upper())
-            ax.set_xlabel("sweep voltage (V)")
-            ax.grid(True, alpha=0.22)
-        axes[0].set_ylabel("C (F)")
-        axes[-1].legend(frameon=False, fontsize=8)
-        fig.tight_layout()
-        fig.savefig(out_dir / "v92_temperature_CV_shift.png", dpi=220)
-        plt.close(fig)
+        if getattr(diag, "cv_enabled", True):
+            fig, axes = plt.subplots(1, 3, figsize=(13.2, 4.1), sharey=False)
+            for ax, sheet in zip(axes, ["cgg", "cbg", "ctg"]):
+                sdf = cv_pred[cv_pred["sheet"].astype(str).str.lower() == sheet]
+                for temp, g in sdf.groupby("temp_K", sort=True):
+                    gg = g.sort_values("x")
+                    ax.plot(gg["x"], gg["cap_residual_F"], lw=1.15, label=f"{float(temp):.0f} K")
+                ax.set_title(sheet.upper())
+                ax.set_xlabel("sweep voltage (V)")
+                ax.grid(True, alpha=0.22)
+            axes[0].set_ylabel("C (F)")
+            axes[-1].legend(frameon=False, fontsize=8)
+            fig.tight_layout()
+            fig.savefig(out_dir / "v92_temperature_CV_shift.png", dpi=220)
+            plt.close(fig)
 
         tpars = diag.temperature_params()
         temp_grid = np.linspace(240.0, 380.0, 141)
@@ -9783,12 +9788,46 @@ def train_current_device_base_iv_pkan(
     return report
 
 
+# Physical deltas used by ids(), nfac_eff(), and the threshold helpers.
+# Cit remains shared IV physics; charge-only deltas cannot be inferred from IV.
+_IV_PHYSICAL_DELTAS = frozenset({
+    "dVth_t0_V", "dVth_b0_V", "dlog_mu0_dec", "dlambda0", "dlog_Ioff0_dec",
+    "dlog_Cit_t0_dec", "dlog_Cit_b0_dec", "dnfac0", "dlog_theta2_dec", "dlog_Raccess_dec",
+})
+
+
+def configure_iv_only_model(diag: ResidualDiagnostic) -> None:
+    """Disable unidentifiable charge corrections without changing state layout."""
+    diag.cv_parameter_scale = 0.0
+    diag.cv_residual_enabled = False
+    diag.cv_dynamic_enabled = False
+    diag.cv_platform_enabled = False
+    diag.cv_shared_residual_factor = 0.0
+    diag.cv_asym_residual_factor = 0.0
+    diag.cv_tb_residual_factor = 0.0
+    diag.selected_cv_residual_mode = "not_applicable"
+    with torch.no_grad():
+        diag.cv_q_resid.out_range.zero_()
+        diag.active_cv_charge_pkan_outputs = []
+        for idx, name in enumerate(TEMP_KAN_NAMES):
+            if name in {"dcit_tc_per_K", "dEa_tau_eV"}:
+                diag.temperature_kan.out_range[idx] = 0.0
+        for idx, name in enumerate(diag.base.phys_delta.names):
+            if name not in _IV_PHYSICAL_DELTAS:
+                # Zero range also masks gradients inside the packed raw vector.
+                diag.base.phys_delta.ranges[idx] = 0.0
+                diag.base.phys_delta.raw[idx] = 0.0
+    for name, prm in diag.named_parameters():
+        if name.startswith(("cv_", "trap_", "base.cv_", "base.cgg_")) or name in {"temp_cit_tc_raw", "temp_tau_ea_raw"}:
+            prm.requires_grad_(False)
+
+
 def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_anchor, args):
     if bool(getattr(args, "freeze_iv_residual_after_stage", True)):
         diag.iv_resid.optimizer_parameters(enabled=False)
         fast_residual_params = []
         print(
-            "Protected accepted IV residual checkpoint during CV/charge training.",
+            "Protected accepted IV residual checkpoint during remaining static training.",
             flush=True,
         )
     else:
@@ -9806,7 +9845,7 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
     # cv_q_resid now provides terminal-voltage CV parameter-PKAN corrections
     # even when the optional charge residual itself is disabled by safe scan.
     # Therefore it must be trainable independent of cv_residual_enabled.
-    fast_residual_params += diag.cv_q_resid.optimizer_parameters(enabled=True)
+    fast_residual_params += diag.cv_q_resid.optimizer_parameters(enabled=bool(getattr(diag, "cv_enabled", True)))
     cv_res_level = int(getattr(args, "cv_residual_level", 0)) if getattr(args, "enable_cv_residual", False) else 0
     if cv_res_level >= 1 and abs(float(getattr(args, "cv_shared_residual_factor", 0.0))) > 0.0:
         fast_residual_params.append(diag.cv_shared_resid_amp_raw)
@@ -9886,6 +9925,19 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
         if getattr(args, "enable_temperature_kan", False)
         else []
     )
+    cv_enabled = bool(getattr(diag, "cv_enabled", True))
+    if not cv_enabled:
+        # Retain shared IV physics and IV temperature coefficients only.
+        cv_only = physical_cv_params + [
+            prm for name, prm in diag.named_parameters()
+            if name.startswith(("cv_", "trap_", "base.cv_", "base.cgg_"))
+        ] + [diag.temp_cit_tc_raw, diag.temp_tau_ea_raw]
+        cv_ids = {id(prm) for prm in cv_only}
+        for prm in cv_only:
+            prm.requires_grad_(False)
+        fast_residual_params = [prm for prm in fast_residual_params if id(prm) not in cv_ids]
+        physical_cv_params = []
+        temperature_params_train = [prm for prm in temperature_params_train if id(prm) not in cv_ids]
     residual_params = fast_residual_params + physical_cv_params + temperature_params_train
     base_kan_params = []
     base_phys_params = []
@@ -9912,6 +9964,8 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
         )
         base_phys_params = list(diag.base.phys_delta.parameters())
         base_other_params = [diag.base.cv_pair_cpar_raw, diag.base.cgg_common_raw, diag.base.cv_gate_coupling_raw]
+        if not cv_enabled:
+            base_other_params = []
         for prm in base_phys_params + base_other_params:
             prm.requires_grad_(True)
     params = residual_params + temperature_kan_params + base_kan_params + base_phys_params + base_other_params
@@ -9962,6 +10016,8 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
                 else "charge-residual-KAN"
             )
         )
+        if not cv_enabled:
+            phase = "iv-temperature"
         if phase != last_phase:
             if last_phase is not None:
                 # A globally best checkpoint is biased toward the early
@@ -10147,7 +10203,7 @@ def train_residuals(diag: ResidualDiagnostic, iv_train, cv_train, iv_anchor, cv_
         shared_tie = (
             shared_ivcv_parameter_tying_loss(diag, iv_curve, args)
             + (shared_ivcv_parameter_tying_loss(diag, cv_curve, args) if len(cv_curve["vbg"]) else torch.as_tensor(0.0, device=li.device, dtype=li.dtype))
-        )
+        ) if cv_enabled else torch.as_tensor(0.0, device=li.device, dtype=li.dtype)
         cv_pkan_smooth = (
             diag.cv_parameter_pkan_smoothness_penalty(cv_curve)
             if len(cv_curve["vbg"]) and diag.cv_parameter_train_scale > 0.0
@@ -10909,6 +10965,9 @@ def predict_outputs(
     iv["log10_error_base_dec"] = np.log10(np.maximum(np.abs(id_base), ID_FLOOR)) - np.log10(np.maximum(np.abs(iv["ID_A"]), ID_FLOOR))
     iv["log10_error_residual_dec"] = np.log10(np.maximum(np.abs(id_res), ID_FLOOR)) - np.log10(np.maximum(np.abs(iv["ID_A"]), ID_FLOOR))
     cv = cv_df.copy()
+    for column in ["cap_physical_F", "cap_base_pkan_F", "cap_residual_F", "log10_error_physical_dec", "log10_error_base_dec", "log10_error_residual_dec"]:
+        if not len(cv):
+            cv[column] = pd.Series(dtype=float)
     if len(cv):
         cv["cap_physical_F"] = cap_phys
         cv["cap_base_raw_F"] = cap_base
@@ -12030,7 +12089,7 @@ def choose_safe_residual_scales(
     best_cv_ext_shape = pd.DataFrame()
     base_train_strict_cv_neg = strict_cv_negative_count(base_cv_out, "cap_residual_F", args)
     base_ext_strict_cv_neg = strict_cv_negative_count(base_ext_cv_out.rename(columns={"cap_residual_F": "cap_pkan_F"}), "cap_pkan_F", args)
-    for cv_scale in cv_candidates:
+    for cv_scale in cv_candidates if len(cv_eval_df) else []:
         iv_out, cv_out = predict_outputs(diag, iv_eval_df, cv_eval_df, device, dtype, args, 0.0, float(cv_scale))
         ext_iv_out, ext_cv_out = predict_outputs(diag, ext_iv_df, ext_cv_df, device, dtype, args, 0.0, float(cv_scale))
         shape = extrapolation_shape_diagnostics(*_diagnostic_frames(iv_out, cv_out))
@@ -14568,7 +14627,7 @@ def export_edgewise_symbolic_residual_kans(
     args,
     iv_eval_df: pd.DataFrame | None = None,
 ) -> dict:
-    info = {"enabled": False}
+    info = {"enabled": False, "task_mode": "iv_cv" if getattr(diag, "cv_enabled", True) else "iv_only"}
     try:
         z_iv, z_cv, z_temp = _reachable_symbolic_feature_samples(diag, device, dtype, args)
         iv_sym = init_safe_edgewise_symbolic_from_kan(
@@ -14584,18 +14643,21 @@ def export_edgewise_symbolic_residual_kans(
             int(getattr(args, "symbolic_edge_sample_points", 121)),
             float(getattr(args, "symbolic_iv_adaptive_top2_mse", 0.0)),
         )
-        cv_sym = init_safe_edgewise_symbolic_from_kan(
-            diag.cv_q_resid,
-            device,
-            dtype,
-            args.symbolic_edge_topk,
-            args.symbolic_edge_steps,
-            args.symbolic_edge_finetune_steps,
-            args.symbolic_edge_prune_threshold,
-            z_cv,
-            [bool(abs(float(x)) > 1.0e-12) for x in diag.cv_q_resid.out_range.detach().cpu()],
-            int(getattr(args, "symbolic_edge_sample_points", 121)),
-        )
+        if getattr(diag, "cv_enabled", True):
+            cv_sym = init_safe_edgewise_symbolic_from_kan(
+                diag.cv_q_resid,
+                device,
+                dtype,
+                args.symbolic_edge_topk,
+                args.symbolic_edge_steps,
+                args.symbolic_edge_finetune_steps,
+                args.symbolic_edge_prune_threshold,
+                z_cv,
+                [bool(abs(float(x)) > 1.0e-12) for x in diag.cv_q_resid.out_range.detach().cpu()],
+                int(getattr(args, "symbolic_edge_sample_points", 121)),
+            )
+        else:
+            cv_sym = nn.ModuleList()
         # Also export the *base* IV KAN.  This is required for a deliverable
         # Verilog-A model that is mathematically the same as Python base.ids():
         # base.ids() uses base.kan to generate dpsi, dVth, dmu, dtheta, dlambda,
@@ -14664,13 +14726,15 @@ def export_edgewise_symbolic_residual_kans(
             _joint_finetune_symbolic_network(
                 diag.iv_resid, iv_sym, device, dtype, args, z_iv
             )
-        _joint_finetune_symbolic_network(diag.cv_q_resid, cv_sym, device, dtype, args, z_cv)
+        if getattr(diag, "cv_enabled", True):
+            _joint_finetune_symbolic_network(diag.cv_q_resid, cv_sym, device, dtype, args, z_cv)
         if not resumed_iv_student:
             _joint_finetune_symbolic_network(
                 diag.base.kan, base_iv_sym, device, dtype, args, z_iv
             )
         _joint_finetune_symbolic_network(diag.temperature_kan, temp_sym, device, dtype, args, z_temp)
-        _device_level_finetune_cv_symbolic(diag, cv_sym, device, dtype, args)
+        if getattr(diag, "cv_enabled", True):
+            _device_level_finetune_cv_symbolic(diag, cv_sym, device, dtype, args)
         if not resumed_iv_student:
             _device_level_finetune_iv_symbolic(
                 diag, base_iv_sym, iv_sym, device, dtype, args
@@ -14777,13 +14841,15 @@ def export_edgewise_symbolic_residual_kans(
         input_var_names=[f"tmp_x{i}" for i in range(temp_sym[0].in_dim if len(temp_sym) else len(TEMP_FEATURE_NAMES))],
         output_active_mask=[bool(abs(float(x)) > 1.0e-12) for x in diag.temperature_kan.out_range.detach().cpu()],
     )
+    if not getattr(diag, "cv_enabled", True):
+        cv_lines = ["CV: not applicable. No symbolic fit; zero corrections and uncalibrated charge defaults."]
     (out_dir / "v92_edgewise_symbolic_iv_residual.txt").write_text("\n".join(iv_lines), encoding="utf-8")
     (out_dir / "v92_edgewise_symbolic_cv_charge_residual.txt").write_text("\n".join(cv_lines), encoding="utf-8")
     (out_dir / "v92_edgewise_symbolic_base_iv_kan.txt").write_text("\n".join(base_iv_lines), encoding="utf-8")
     (out_dir / "v92_temperature_edgewise_symbolic_temperature_kan.txt").write_text("\n".join(temp_lines), encoding="utf-8")
     network_equivalence = {
         "iv_residual": _symbolic_network_equivalence_report(diag.iv_resid, iv_sym, device, dtype, args, z_iv),
-        "cv_parameter_and_residual": _symbolic_network_equivalence_report(diag.cv_q_resid, cv_sym, device, dtype, args, z_cv),
+        "cv_parameter_and_residual": (_symbolic_network_equivalence_report(diag.cv_q_resid, cv_sym, device, dtype, args, z_cv) if getattr(diag, "cv_enabled", True) else {"status": "not_applicable"}),
         "base_iv_pkan": _symbolic_network_equivalence_report(diag.base.kan, base_iv_sym, device, dtype, args, z_iv),
         "temperature_pkan": _symbolic_network_equivalence_report(diag.temperature_kan, temp_sym, device, dtype, args, z_temp),
         "iv_terminal_observable": _symbolic_iv_observable_equivalence_report(
@@ -14792,7 +14858,7 @@ def export_edgewise_symbolic_residual_kans(
         "iv_measured_full_curve": _symbolic_iv_measured_curve_report(
             diag, base_iv_sym, iv_sym, iv_eval_df, device, dtype, args
         ),
-        "cv_terminal_observable": _symbolic_cv_observable_equivalence_report(diag, cv_sym, device, dtype, args),
+        "cv_terminal_observable": (_symbolic_cv_observable_equivalence_report(diag, cv_sym, device, dtype, args) if getattr(diag, "cv_enabled", True) else {"status": "not_applicable"}),
     }
     # The final base-IV symbolic student is deliberately polished on observable
     # ID/gm/gds, not on each latent correction channel independently.  Latent
@@ -14801,11 +14867,11 @@ def export_edgewise_symbolic_residual_kans(
     # terminal capacitance: correlated physical controls may trade small latent
     # errors while preserving the charge-domain observable.
     network_equivalence["latent_base_iv_mapping_pass"] = bool(network_equivalence["base_iv_pkan"]["pass"])
-    network_equivalence["latent_cv_mapping_pass"] = bool(network_equivalence["cv_parameter_and_residual"]["pass"])
+    network_equivalence["latent_cv_mapping_pass"] = network_equivalence["cv_parameter_and_residual"].get("pass")
     network_equivalence["pass"] = bool(
         network_equivalence["iv_terminal_observable"]["pass"]
         and network_equivalence["iv_measured_full_curve"]["pass"]
-        and network_equivalence["cv_terminal_observable"]["pass"]
+        and (not getattr(diag, "cv_enabled", True) or network_equivalence["cv_terminal_observable"]["pass"])
         and network_equivalence["temperature_pkan"]["pass"]
     )
     # HSPICE exports the symbolic students, so deployment equivalence must use
@@ -14827,7 +14893,7 @@ def export_edgewise_symbolic_residual_kans(
     object.__setattr__(
         diag,
         "_deployment_cv_symbolic_net",
-        EdgewiseSymbolicKANNet(cv_sym),
+        EdgewiseSymbolicKANNet(cv_sym) if len(cv_sym) else None,
     )
     iv_top2_edges = _symbolic_top2_edge_count(iv_sym, base_iv_sym)
     info.update(
@@ -15247,9 +15313,14 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
     hspice_cv_grid = metrics.get("hspice_cv_grid_equivalence", {}) if isinstance(metrics.get("hspice_cv_grid_equivalence", {}), dict) else {}
     if getattr(args, "require_hspice_cv_grid_equivalence", True):
         checks["hspice_cv_grid_equivalence_pass"] = bool(hspice_cv_grid.get("pass", False))
+    skipped_checks = []
+    if metrics.get("task_mode") == "iv_only":
+        skipped_checks = [key for key in checks if "cv" in key or key.startswith("charge_") or key == "hspice_standalone_smoke_pass"]
+        checks = {key: value for key, value in checks.items() if key not in skipped_checks}
     return {
         "pass": all(checks.values()),
         "checks": checks,
+        "not_applicable_checks": skipped_checks,
         "fit_bad": fit_bad,
         "extrap_bad": ext_bad,
         "extrap_worse": ext_worse,
@@ -15297,6 +15368,8 @@ def _deployment_equivalence_summary(metrics: dict) -> dict:
         ) == 0 if cv_acc.get("enabled") else False,
         "cv_no_clamp_hits": float(charge.get("raw_cap_clamp_hit_ratio", 1.0)) <= 1.0e-3 if charge.get("enabled") else False,
     }
+    if metrics.get("task_mode") == "iv_only":
+        terminal_checks = {key: value for key, value in terminal_checks.items() if "cv" not in key and not key.startswith("charge_") and key != "hspice_smoke_pass"}
     return {
         "terminal_observable_pass": all(terminal_checks.values()),
         "terminal_checks": terminal_checks,
@@ -16074,6 +16147,8 @@ module {model_name}(tg, bg, d, s);
 endmodule
 '''
     path = out_dir / f"{model_name}.va"
+    if not getattr(diag, "cv_enabled", True):
+        va = "// IV-only fit: charge/capacitance defaults are uncalibrated; AC/transient accuracy is unvalidated.\n" + va
     path.write_text(va, encoding="utf-8")
     if protected_iv_va is not None:
         protected_text = protected_iv_va.read_text(encoding="utf-8")
@@ -16318,6 +16393,8 @@ def run_hspice_standalone_smoke(
     in the same Verilog-A compile deck.
     """
 
+    if not getattr(diag, "cv_enabled", True):
+        return {"enabled": False, "status": "not_applicable", "reason": "AC smoke requires calibrated CV"}
     if getattr(args, "skip_hspice_smoke", False):
         return {"enabled": False, "reason": "skipped_by_cli", "pass": False}
     exe = _resolve_hspice_executable(getattr(args, "hspice_exe", None))
@@ -16593,6 +16670,8 @@ def run_hspice_standalone_cv_grid_equivalence(
     This lightweight multi-deck sweep validates the deployed ddt(Q) path itself.
     """
 
+    if not getattr(diag, "cv_enabled", True):
+        return {"enabled": False, "status": "not_applicable", "reason": "No measured CV data"}
     if getattr(args, "skip_hspice_cv_grid_equivalence", False):
         return {"enabled": False, "reason": "skipped_by_cli", "pass": False}
     exe = _resolve_hspice_executable(getattr(args, "hspice_exe", None))
@@ -16856,12 +16935,15 @@ def write_release_package(
             )
     # CV equivalence is independent of the IV-only deployment calibration.
     # Run its 21 AC decks once, after the final IV expression is selected.
-    hspice_cv_grid = cached_report("v92_cv_hspice_cv_grid_equivalence.json")
-    if hspice_cv_grid is None:
-        hspice_cv_grid = run_hspice_standalone_cv_grid_equivalence(
-            out_dir, standalone_va, diag, first_param.device,
-            first_param.dtype, safe_cv_scale, args,
-        )
+    if getattr(diag, "cv_enabled", True):
+        hspice_cv_grid = cached_report("v92_cv_hspice_cv_grid_equivalence.json")
+        if hspice_cv_grid is None:
+            hspice_cv_grid = run_hspice_standalone_cv_grid_equivalence(
+                out_dir, standalone_va, diag, first_param.device,
+                first_param.dtype, safe_cv_scale, args,
+            )
+    else:
+        hspice_cv_grid = {"enabled": False, "status": "not_applicable", "reason": "No measured CV data"}
     metrics["symbolic_edge_equivalence"] = edge_symbolic_info.get("network_equivalence", {})
     if hspice_cal is not None:
         metrics["iv_symbolic_hspice_grid_calibration"] = hspice_cal
@@ -16955,6 +17037,12 @@ def write_release_package(
             "Verilog-A path should use the charge-first parameter-PKAN kernel for CV. If CV residual is accepted by safety scaling, export it as a low-rank charge expression before differentiation, not as a measured-capacitance correction; no unbounded exp(+x).",
         ],
     }
+    manifest["task_mode"] = metrics.get("task_mode", "iv_cv")
+    manifest["cv_status"] = metrics.get("cv_status", "fitted")
+    if not getattr(diag, "cv_enabled", True):
+        limitation = metrics["limitation"]
+        manifest["method_notes"] = ["IV-only fit with independently configured temperature modeling.", limitation]
+        manifest["files"] = {key: value for key, value in manifest["files"].items() if "cv" not in key and "charge_passivity" not in key}
     (out_dir / "v93_release_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     lines = [
         "# v96 Fresh-Training Top-1 Release Acceptance Report",
@@ -16967,10 +17055,10 @@ def write_release_package(
         f"- IV on-state RMS (|ID| >= 1e-9 A): {metrics.get('base_iv_on_rms'):.6g} -> {metrics.get('residual_iv_on_rms'):.6g}",
         f"- IV high-current RMS (|ID| >= 1e-7 A): {metrics.get('base_iv_high_rms'):.6g} -> {metrics.get('residual_iv_high_rms'):.6g}",
         f"- IDVTG 1-4 V RMS: {metrics.get('base_idvtg_1_4_rms'):.6g} -> {metrics.get('residual_idvtg_1_4_rms'):.6g}",
-        f"- CV RMS: {metrics.get('base_cv_rms'):.6g} -> {metrics.get('residual_cv_rms'):.6g}",
-        f"- Cgg RMS: {metrics.get('base_cv_cgg_rms'):.6g} -> {metrics.get('residual_cv_cgg_rms'):.6g}",
-        f"- Cbg RMS: {metrics.get('base_cv_cbg_rms'):.6g} -> {metrics.get('residual_cv_cbg_rms'):.6g}",
-        f"- Ctg RMS: {metrics.get('base_cv_ctg_rms'):.6g} -> {metrics.get('residual_cv_ctg_rms'):.6g}",
+        f"- CV RMS: {metrics.get('base_cv_rms', float('nan')):.6g} -> {metrics.get('residual_cv_rms', float('nan')):.6g}",
+        f"- Cgg RMS: {metrics.get('base_cv_cgg_rms', float('nan')):.6g} -> {metrics.get('residual_cv_cgg_rms', float('nan')):.6g}",
+        f"- Cbg RMS: {metrics.get('base_cv_cbg_rms', float('nan')):.6g} -> {metrics.get('residual_cv_cbg_rms', float('nan')):.6g}",
+        f"- Ctg RMS: {metrics.get('base_cv_ctg_rms', float('nan')):.6g} -> {metrics.get('residual_cv_ctg_rms', float('nan')):.6g}",
         f"- Safe IV residual scale: {metrics.get('safe_iv_residual_scale', metrics.get('safe_residual_scale'))}",
         f"- Safe CV residual scale: {metrics.get('safe_cv_residual_scale', metrics.get('safe_residual_scale'))}",
         f"- Safe CV parameter-PKAN scale: {metrics.get('safe_cv_parameter_scale', float(diag.cv_parameter_scale))}",
@@ -16978,6 +17066,9 @@ def write_release_package(
         "## Acceptance Checks",
         "",
     ]
+    if not getattr(diag, "cv_enabled", True):
+        lines = [line for line in lines if not line.startswith(("- CV", "- Cgg", "- Cbg", "- Ctg", "- Safe CV"))]
+        lines.insert(4, "CV: NOT APPLICABLE. " + metrics["limitation"])
     lines += [f"- {'PASS' if ok else 'FAIL'} `{name}`" for name, ok in status["checks"].items()]
     disabled_iv = sorted(getattr(diag.base, "_v92_disabled_iv_pkan", []))
     disabled_cv = sorted(getattr(diag.base, "_v92_disabled_cv_pkan", []))
@@ -18254,6 +18345,18 @@ def main():
     )
     print(f"IV stage alignment: {iv_alignment_report}")
     cv_all_series = load_cv_data(active_data_dir)
+    args.cv_enabled = bool(cv_all_series)
+    args.task_mode = "iv_cv" if args.cv_enabled else "iv_only"
+    model_scope = {
+        "task_mode": args.task_mode,
+        "cv_status": "fitted" if args.cv_enabled else "not_applicable",
+        "limitation": "" if args.cv_enabled else (
+            "No measured CV data: charge/capacitance defaults are uncalibrated; "
+            "AC and transient accuracy are not validated."
+        ),
+    }
+    (args.out_dir / "model_scope.json").write_text(json.dumps(model_scope, indent=2), encoding="utf-8")
+    print(f"Static task mode: {args.task_mode}")
     cv_series = select_cv_training_subset(cv_all_series, args.cv_train_subset)
     cv_full_df = cv_point_dataframe(cv_all_series, trap).reset_index(drop=True)
     temp_values = []
@@ -18282,48 +18385,54 @@ def main():
             f"{args.temperature_kan_min_span_K:.2f} K."
         )
         args.enable_temperature_kan = False
-    cv_full_df, cv_orientation = orient_cv_gate_labels(cv_full_df, p, args)
-    cv_full_df, centered_shape_report = attach_centered_cv_shape_template(cv_full_df)
-    (args.out_dir / "v92_cv_gate_orientation.json").write_text(json.dumps(cv_orientation, indent=2), encoding="utf-8")
-    (args.out_dir / "v92_cv_centered_shape_confidence.json").write_text(
-        json.dumps(centered_shape_report, indent=2),
-        encoding="utf-8",
-    )
-    preprocessing_columns = [
-        c
-        for c in [
-            "sheet", "label", "x_raw", "x_centered", "cap_F",
-            "measured_vhalf_V", "measured_transition_centroid_V",
-            "measured_low_F", "measured_high_F", "measured_span_F",
-            "complete_fraction", "max_abs_step_frac_span", "source_layout",
-            "_centered_template_norm", "_centered_shape_confidence",
-            "VBG_V", "VTG_V", "VDS_V", "freq_hz",
+    if args.cv_enabled:
+        cv_full_df, cv_orientation = orient_cv_gate_labels(cv_full_df, p, args)
+        cv_full_df, centered_shape_report = attach_centered_cv_shape_template(cv_full_df)
+        (args.out_dir / "v92_cv_gate_orientation.json").write_text(json.dumps(cv_orientation, indent=2), encoding="utf-8")
+        (args.out_dir / "v92_cv_centered_shape_confidence.json").write_text(
+            json.dumps(centered_shape_report, indent=2),
+            encoding="utf-8",
+        )
+        preprocessing_columns = [
+            c
+            for c in [
+                "sheet", "label", "x_raw", "x_centered", "cap_F",
+                "measured_vhalf_V", "measured_transition_centroid_V",
+                "measured_low_F", "measured_high_F", "measured_span_F",
+                "complete_fraction", "max_abs_step_frac_span", "source_layout",
+                "_centered_template_norm", "_centered_shape_confidence",
+                "VBG_V", "VTG_V", "VDS_V", "freq_hz",
+            ]
+            if c in cv_full_df.columns
         ]
-        if c in cv_full_df.columns
-    ]
-    cv_full_df[preprocessing_columns].to_csv(
-        args.out_dir / "v92_cv_raw_and_centered_preprocessing.csv",
-        index=False,
-    )
-    plot_cv_raw_centered_preprocessing(
-        cv_full_df,
-        args.out_dir / "v92_cv_raw_vs_centered_preprocessing.png",
-    )
-    print("CV gate-label orientation:")
-    for k, v in cv_orientation.items():
-        print(f"  {k}: {v}")
-    extracted_parasitics = extract_cv_terminal_parasitics(cv_full_df, args)
-    apply_extracted_cv_parasitics(base, extracted_parasitics, args)
-    (args.out_dir / "v92_extracted_cv_parasitics.json").write_text(json.dumps(extracted_parasitics, indent=2), encoding="utf-8")
-    print("Extracted/fixed CV parasitics:")
-    for k, v in extracted_parasitics.items():
-        print(f"  {k}: {v:.6e}")
-    audit = cv_quality_audit(cv_full_df, args)
-    cv_train_df_all = cv_point_dataframe(sample_cv(cv_series, args.max_cv_points), trap).reset_index(drop=True)
-    cv_train_df_all, _ = orient_cv_gate_labels(cv_train_df_all, p, args)
-    cv_train_df_all, _ = attach_centered_cv_shape_template(cv_train_df_all)
-    cv_train_df = apply_cv_quality_policy(cv_train_df_all, audit, args).reset_index(drop=True)
-    cv_train_df = apply_static_cv_frequency_policy(cv_train_df, args).reset_index(drop=True)
+        cv_full_df[preprocessing_columns].to_csv(
+            args.out_dir / "v92_cv_raw_and_centered_preprocessing.csv",
+            index=False,
+        )
+        plot_cv_raw_centered_preprocessing(
+            cv_full_df,
+            args.out_dir / "v92_cv_raw_vs_centered_preprocessing.png",
+        )
+        print("CV gate-label orientation:")
+        for k, v in cv_orientation.items():
+            print(f"  {k}: {v}")
+        extracted_parasitics = extract_cv_terminal_parasitics(cv_full_df, args)
+        apply_extracted_cv_parasitics(base, extracted_parasitics, args)
+        (args.out_dir / "v92_extracted_cv_parasitics.json").write_text(json.dumps(extracted_parasitics, indent=2), encoding="utf-8")
+        print("Extracted/fixed CV parasitics:")
+        for k, v in extracted_parasitics.items():
+            print(f"  {k}: {v:.6e}")
+        audit = cv_quality_audit(cv_full_df, args)
+        cv_train_df_all = cv_point_dataframe(sample_cv(cv_series, args.max_cv_points), trap).reset_index(drop=True)
+        cv_train_df_all, _ = orient_cv_gate_labels(cv_train_df_all, p, args)
+        cv_train_df_all, _ = attach_centered_cv_shape_template(cv_train_df_all)
+        cv_train_df = apply_cv_quality_policy(cv_train_df_all, audit, args).reset_index(drop=True)
+        cv_train_df = apply_static_cv_frequency_policy(cv_train_df, args).reset_index(drop=True)
+    else:
+        extracted_parasitics = {}
+        audit = pd.DataFrame()
+        cv_train_df_all = cv_full_df.copy()
+        cv_train_df = cv_full_df.copy()
     iv_train_df = sample_iv(iv_all, args.max_iv_points, args.seed).reset_index(drop=True)
     print(f"Training residuals on IV={len(iv_train_df)} CV raw={len(cv_train_df_all)} CV used={len(cv_train_df)}")
     print(f"CV quality actions: {audit['action'].value_counts().to_dict() if len(audit) else {}}")
@@ -18347,7 +18456,7 @@ def main():
     )
     print(f"Current-device KAN normalizer: {normalizer_report}")
     iv_anchor_df = extrapolation_iv_dataframe()
-    cv_anchor_df = extrapolation_cv_dataframe(trap)
+    cv_anchor_df = extrapolation_cv_dataframe(trap) if args.cv_enabled else cv_full_df.copy()
     iv_anchor = make_iv_tensors_v2(iv_anchor_df, device, dtype)
     cv_anchor = make_cv_tensors_v2(cv_anchor_df, device, dtype)
     iv_resid = make_residual_kan(meta, device, dtype, 1, {"dlog_id_residual": 0.35}, ["dlog_id_residual"])
@@ -18372,12 +18481,13 @@ def main():
     if args.reset_base_from_physical_fit and args.resume_diag_state is None:
         zero_compact_kan_output_head(diag.cv_q_resid)
         print("Initialized current-device CV parameter/residual KAN at exact zero correction.")
-    diag.cv_platform_enabled = bool(args.enable_cv_platform_stabilizer)
+    diag.cv_enabled = args.cv_enabled
+    diag.cv_platform_enabled = bool(args.cv_enabled and args.enable_cv_platform_stabilizer)
     diag.use_commercial_cv_template_kernel = bool(args.use_commercial_cv_template_kernel)
     if args.enable_cv_residual and int(args.cv_residual_level) == 0:
         args.cv_residual_level = 1
     diag.cv_residual_level = int(args.cv_residual_level)
-    diag.cv_residual_enabled = bool(args.enable_cv_residual and diag.cv_residual_level > 0)
+    diag.cv_residual_enabled = bool(args.cv_enabled and args.enable_cv_residual and diag.cv_residual_level > 0)
     diag.cv_residual_amp_frac = float(args.cv_residual_amp_frac)
     diag.cv_shared_residual_factor = float(args.cv_shared_residual_factor)
     diag.cv_asym_residual_factor = float(args.cv_asym_residual_factor)
@@ -18385,7 +18495,7 @@ def main():
     diag.cv_residual_signed = bool(args.cv_residual_signed)
     diag.cv_asym_residual_signed = bool(args.cv_asym_residual_signed)
     diag.cv_tb_residual_signed = bool(args.cv_tb_residual_signed)
-    diag.cv_dynamic_enabled = bool(args.enable_cv_dynamic_trap_nqs)
+    diag.cv_dynamic_enabled = bool(args.cv_enabled and args.enable_cv_dynamic_trap_nqs)
     diag.iv_residual_temp_decay_K = float(args.iv_residual_temp_decay_K)
     diag.iv_residual_high_vds_taper_start = float(args.iv_residual_high_vds_taper_start)
     diag.iv_residual_high_vds_taper_width = float(args.iv_residual_high_vds_taper_width)
@@ -18402,16 +18512,21 @@ def main():
     diag.set_cv_dos_quadrature(args.cv_dos_quad_nodes)
     diag.cv_dos_broaden_vds = bool(args.cv_dos_broaden_vds)
     diag.disable_trap_def_branch = bool(args.disable_trap_def_branch)
-    if args.resume_diag_state is None:
+    if args.cv_enabled and args.resume_diag_state is None:
         initialize_commercial_cv_broadening(diag, cv_train, args)
         initialize_cv_reciprocal_charge_from_raw(diag, cv_train_df, args.out_dir)
         initialize_cv_sheet_calibration(diag, cv_train, args)
-    else:
+    elif args.resume_diag_state is not None:
         # These initializers are optimization warm starts. A strict resumed
         # checkpoint replaces every corresponding tensor immediately, so
         # rerunning their expensive raw-data prefit wastes time and can
         # overwrite diagnostic files with values that were never deployed.
         print("Resume mode: skipped CV warm-start prefit; checkpoint state is authoritative.")
+    else:
+        print("IV-only mode: skipped CV warm-start prefit.")
+
+    if not args.cv_enabled:
+        configure_iv_only_model(diag)
 
     base_iv_training_report = None
     iv_residual_training_report = None
@@ -18463,6 +18578,9 @@ def main():
 
     if args.resume_diag_state is not None:
         ckpt = torch.load(args.resume_diag_state, map_location=device)
+        saved_mode = ckpt.get("training_args", {}).get("task_mode", ckpt.get("metrics", {}).get("task_mode", "iv_cv"))
+        if saved_mode != args.task_mode:
+            raise ValueError(f"Checkpoint task mode {saved_mode!r} does not match data mode {args.task_mode!r}")
         diag_state = ckpt.get("diag_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
         migrated_missing = load_diagnostic_state_atomic(
             diag,
@@ -18533,6 +18651,9 @@ def main():
         print(f"Pruned external CV charge-PKAN outputs: {sorted(disabled_cv_charge_pkan)}")
     print(f"Active external CV charge-PKAN outputs: {getattr(diag, 'active_cv_charge_pkan_outputs', [])}")
 
+    if not args.cv_enabled:
+        configure_iv_only_model(diag)
+
     if args.deployment_validation_only:
         metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
         if not metrics_path.exists():
@@ -18587,6 +18708,7 @@ def main():
         )
         report = {
             "mode": "deployment_validation_only",
+            **model_scope,
             "standalone_va": standalone_va,
             "cv_dynamic_trap_nqs_exported": bool(
                 standalone_va.get("cv_dynamic_trap_nqs_exported", False)
@@ -18598,6 +18720,7 @@ def main():
         report["pass"] = bool(
             (
                 hspice_smoke.get("pass", False)
+                or not args.cv_enabled
                 or getattr(args, "skip_hspice_smoke", False)
             )
             and (
@@ -18606,6 +18729,7 @@ def main():
             )
             and (
                 hspice_cv_grid.get("pass", False)
+                or not args.cv_enabled
                 or getattr(args, "skip_hspice_cv_grid_equivalence", False)
             )
         )
@@ -18664,6 +18788,7 @@ def main():
             safe_cv_scale,
         )
         metrics = summarize(iv_out, cv_out)
+        metrics.update(model_scope)
         metrics["kan_grid_audit"] = {
             "base_iv": diag.base.kan.grid_audit(),
             "base_cv": diag.base.cv_kan.grid_audit(),
@@ -18730,6 +18855,7 @@ def main():
     if getattr(args, "smoke_check", False):
         smoke_report = {
             "status": "ok",
+            **model_scope,
             "model_dir": str(args.model_dir),
             "data_dir": str(active_data_dir),
             "iv_points_total": int(len(iv_all)),
@@ -18758,21 +18884,21 @@ def main():
 
     if args.finalize_only:
         print("Finalize-only mode: skipping training and running safety selection, plots, metrics, audits, and exports.")
-        if args.polish_cv_neural_on_finalize:
+        if args.cv_enabled and args.polish_cv_neural_on_finalize:
             print("Finalize-only CV parameter-KAN polish enabled.")
             polish_cv_neural_corrections(diag, cv_train, args)
-        if args.polish_cv_residual_on_finalize:
+        if args.cv_enabled and args.polish_cv_residual_on_finalize:
             print("Finalize-only CV residual-KAN polish enabled after parameter-KAN.")
             polish_cv_charge_residual(diag, cv_train, args)
-        if args.polish_cv_level2_on_finalize:
+        if args.cv_enabled and args.polish_cv_level2_on_finalize:
             print("Finalize-only CV Level-2 polish enabled: fitting reciprocal intergate charge-PKAN controls only.")
             polish_cv_level2_intergate(diag, cv_train, args)
-        if args.polish_cv_held_gate_on_finalize:
+        if args.cv_enabled and args.polish_cv_held_gate_on_finalize:
             print("Finalize-only held-gate polish enabled: fitting only eta_bt/eta_tb transition-center coupling.")
             polish_cv_held_gate_coupling(diag, cv_train, args)
     else:
         train_residuals(diag, iv_train, cv_train, iv_anchor, cv_anchor, args)
-        if args.skip_post_train_cv_polish:
+        if not args.cv_enabled or args.skip_post_train_cv_polish:
             print("Post-training CV polish stages skipped by request.")
         else:
             polish_cv_neural_corrections(diag, cv_train, args)
@@ -18791,6 +18917,7 @@ def main():
                 1.0,
             )
             quick_metrics = summarize(quick_iv, quick_cv)
+            quick_metrics.update(model_scope)
             (args.out_dir / "training_only_metrics.json").write_text(
                 json.dumps(quick_metrics, indent=2),
                 encoding="utf-8",
@@ -18827,7 +18954,7 @@ def main():
     )
     cv_eval_df = cv_train_df_all.copy()
     ext_iv = extrapolation_iv_dataframe()
-    ext_cv = extrapolation_cv_dataframe(trap)
+    ext_cv = extrapolation_cv_dataframe(trap) if args.cv_enabled else cv_full_df.copy()
     accepted_metrics_path = args.out_dir / "v92_safe_residual_metrics.json"
     if args.reuse_safe_selection:
         if not accepted_metrics_path.exists():
@@ -18836,6 +18963,8 @@ def main():
                 f"{accepted_metrics_path.name} in --out-dir."
             )
         accepted = json.loads(accepted_metrics_path.read_text(encoding="utf-8"))
+        if accepted.get("task_mode", "iv_cv") != args.task_mode:
+            raise ValueError("Cannot reuse safety selection from a different static task mode")
         safe_cv_parameter_scale = float(accepted["safe_cv_parameter_scale"])
         safe_cv_scale = float(accepted["safe_cv_residual_scale"])
         safe_iv_scale = float(accepted["safe_iv_residual_scale"])
@@ -18886,41 +19015,45 @@ def main():
             flush=True,
         )
     else:
-        print("[finalize 0/5] held-out ablation of CV parameter-KAN output heads", flush=True)
-        cv_parameter_head_ablation = prune_harmful_cv_parameter_heads(
-            diag,
-            iv_eval_df,
-            cv_eval_df,
-            device,
-            dtype,
-            args,
-        )
-        cv_parameter_head_ablation.to_csv(
-            args.out_dir / "v92_cv_parameter_head_ablation.csv",
-            index=False,
-            encoding="utf-8-sig",
-        )
-        print("[finalize 1/5] selecting safe CV parameter/residual scales", flush=True)
-        safe_cv_parameter_scale, cv_parameter_scale_scan = choose_safe_cv_parameter_scale(
-            diag, iv_eval_df, cv_eval_df, ext_iv, ext_cv, device, dtype, args
-        )
-        print(
-            "Diagnostic parameter-only CV scale selected: "
-            f"{safe_cv_parameter_scale:.3f}; final deployment is decided by the joint scan.",
-            flush=True,
-        )
-        cv_parameter_scale_scan.to_csv(args.out_dir / "v92_safe_cv_parameter_scale_scan.csv", index=False, encoding="utf-8-sig")
-        joint_cv_scale = None
-        if args.joint_cv_safe_scale_search:
-            safe_cv_parameter_scale, joint_cv_scale, joint_cv_scale_scan = choose_safe_joint_cv_scales(
+        if args.cv_enabled:
+            print("[finalize 0/5] held-out ablation of CV parameter-KAN output heads", flush=True)
+            cv_parameter_head_ablation = prune_harmful_cv_parameter_heads(
+                diag,
+                iv_eval_df,
+                cv_eval_df,
+                device,
+                dtype,
+                args,
+            )
+            cv_parameter_head_ablation.to_csv(
+                args.out_dir / "v92_cv_parameter_head_ablation.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
+            print("[finalize 1/5] selecting safe CV parameter/residual scales", flush=True)
+            safe_cv_parameter_scale, cv_parameter_scale_scan = choose_safe_cv_parameter_scale(
                 diag, iv_eval_df, cv_eval_df, ext_iv, ext_cv, device, dtype, args
             )
             print(
-                "Joint safe CV scales selected: "
-                f"parameter-PKAN={safe_cv_parameter_scale:.3f}, charge-residual={joint_cv_scale:.3f}, "
-                f"mode={getattr(diag, 'selected_cv_residual_mode', 'off')}"
+                "Diagnostic parameter-only CV scale selected: "
+                f"{safe_cv_parameter_scale:.3f}; final deployment is decided by the joint scan.",
+                flush=True,
             )
-            joint_cv_scale_scan.to_csv(args.out_dir / "v92_cv_joint_safe_cv_scale_scan.csv", index=False, encoding="utf-8-sig")
+            cv_parameter_scale_scan.to_csv(args.out_dir / "v92_safe_cv_parameter_scale_scan.csv", index=False, encoding="utf-8-sig")
+            joint_cv_scale = None
+            if args.joint_cv_safe_scale_search:
+                safe_cv_parameter_scale, joint_cv_scale, joint_cv_scale_scan = choose_safe_joint_cv_scales(
+                    diag, iv_eval_df, cv_eval_df, ext_iv, ext_cv, device, dtype, args
+                )
+                print(
+                    "Joint safe CV scales selected: "
+                    f"parameter-PKAN={safe_cv_parameter_scale:.3f}, charge-residual={joint_cv_scale:.3f}, "
+                    f"mode={getattr(diag, 'selected_cv_residual_mode', 'off')}"
+                )
+                joint_cv_scale_scan.to_csv(args.out_dir / "v92_cv_joint_safe_cv_scale_scan.csv", index=False, encoding="utf-8-sig")
+        else:
+            safe_cv_parameter_scale = 0.0
+            cv_parameter_head_ablation = pd.DataFrame()
         safe_iv_scale, safe_cv_scale, safe_scan, safe_shape = choose_safe_residual_scales(
             diag,
             iv_residual_safety_df,
@@ -18943,12 +19076,16 @@ def main():
     print("[finalize 2/5] evaluating fitted and extrapolated IV/CV", flush=True)
     iv_out, cv_out = predict_outputs(diag, iv_eval_df, cv_eval_df, device, dtype, args, safe_iv_scale, safe_cv_scale)
     metrics = summarize(iv_out, cv_out)
+    metrics.update(model_scope)
     metrics["kan_grid_audit"] = {
         "base_iv": diag.base.kan.grid_audit(),
         "base_cv": diag.base.cv_kan.grid_audit(),
         "iv_residual": diag.iv_resid.grid_audit(),
         "cv_parameter_residual": diag.cv_q_resid.grid_audit(),
     }
+    if not args.cv_enabled:
+        metrics["kan_grid_audit"].pop("base_cv")
+        metrics["kan_grid_audit"].pop("cv_parameter_residual")
     for block, block_audit in metrics["kan_grid_audit"].items():
         if not bool(block_audit.get("pass", False)):
             raise RuntimeError(
@@ -18959,8 +19096,9 @@ def main():
         metrics["base_iv_training"] = base_iv_training_report
     if iv_residual_training_report is not None:
         metrics["iv_residual_training"] = iv_residual_training_report
-    vhalf_summary, _vhalf_rows = cv_vhalf_trend_diagnostics(cv_out, args.out_dir)
-    metrics["cv_vhalf_trend_diagnostics"] = vhalf_summary
+    if args.cv_enabled:
+        vhalf_summary, _vhalf_rows = cv_vhalf_trend_diagnostics(cv_out, args.out_dir)
+        metrics["cv_vhalf_trend_diagnostics"] = vhalf_summary
     temp_summary, _temp_rows = temperature_trend_diagnostics(diag, device, dtype, args, safe_iv_scale, safe_cv_scale, args.out_dir)
     metrics["temperature_trend_diagnostics"] = temp_summary
     metrics["safe_residual_scale"] = safe_iv_scale
@@ -19044,26 +19182,34 @@ def main():
         and abs(float(diag.cv_q_resid.out_range[idx].detach().cpu())) <= 1.0e-12
     )
     metrics["active_cv_charge_pkan_outputs"] = sorted(getattr(diag, "active_cv_charge_pkan_outputs", []))
-    pkan_audit = run_pkan_identifiability_audit(diag, iv_eval_df, cv_eval_df, device, dtype, args, safe_cv_scale)
-    pkan_audit.to_csv(args.out_dir / "v92_pkan_identifiability_audit.csv", index=False, encoding="utf-8-sig")
-    if len(pkan_audit):
-        keep_iv = pkan_audit[(pkan_audit["group"] == "iv_pkan") & (pkan_audit["recommended_keep_final"])]["name"].tolist()
-        keep_cv_charge = pkan_audit[(pkan_audit["group"] == "cv_charge_pkan") & (pkan_audit["recommended_keep_final"])]["name"].tolist()
-        metrics["recommended_iv_pkan_keep"] = keep_iv
-        metrics["legacy_imported_base_cv_pkan_deployed"] = False
-        metrics["recommended_cv_charge_pkan_keep"] = keep_cv_charge
-    passivity_report = charge_conservation_passivity_diagnostics(diag, cv_eval_df, device, dtype, args, safe_cv_scale)
-    metrics["charge_passivity_diagnostics"] = passivity_report
-    (args.out_dir / "v92_charge_passivity_diagnostics.json").write_text(json.dumps(passivity_report, indent=2), encoding="utf-8")
-    cv_acceptance_summary, cv_acceptance_rows = cv_acceptance_diagnostics(diag, cv_eval_df, device, dtype, args, safe_cv_scale)
-    metrics["cv_acceptance_diagnostics"] = cv_acceptance_summary
-    cv_acceptance_rows.to_csv(args.out_dir / "v92_cv_acceptance_diagnostics.csv", index=False, encoding="utf-8-sig")
-    (args.out_dir / "v92_cv_acceptance_diagnostics.json").write_text(json.dumps(cv_acceptance_summary, indent=2), encoding="utf-8")
+    if args.cv_enabled:
+        pkan_audit = run_pkan_identifiability_audit(diag, iv_eval_df, cv_eval_df, device, dtype, args, safe_cv_scale)
+        pkan_audit.to_csv(args.out_dir / "v92_pkan_identifiability_audit.csv", index=False, encoding="utf-8-sig")
+        if len(pkan_audit):
+            keep_iv = pkan_audit[(pkan_audit["group"] == "iv_pkan") & (pkan_audit["recommended_keep_final"])]["name"].tolist()
+            keep_cv_charge = pkan_audit[(pkan_audit["group"] == "cv_charge_pkan") & (pkan_audit["recommended_keep_final"])]["name"].tolist()
+            metrics["recommended_iv_pkan_keep"] = keep_iv
+            metrics["legacy_imported_base_cv_pkan_deployed"] = False
+            metrics["recommended_cv_charge_pkan_keep"] = keep_cv_charge
+        passivity_report = charge_conservation_passivity_diagnostics(diag, cv_eval_df, device, dtype, args, safe_cv_scale)
+        metrics["charge_passivity_diagnostics"] = passivity_report
+        (args.out_dir / "v92_charge_passivity_diagnostics.json").write_text(json.dumps(passivity_report, indent=2), encoding="utf-8")
+        cv_acceptance_summary, cv_acceptance_rows = cv_acceptance_diagnostics(diag, cv_eval_df, device, dtype, args, safe_cv_scale)
+        metrics["cv_acceptance_diagnostics"] = cv_acceptance_summary
+        cv_acceptance_rows.to_csv(args.out_dir / "v92_cv_acceptance_diagnostics.csv", index=False, encoding="utf-8-sig")
+        (args.out_dir / "v92_cv_acceptance_diagnostics.json").write_text(json.dumps(cv_acceptance_summary, indent=2), encoding="utf-8")
+    else:
+        pkan_audit = run_pkan_identifiability_audit(diag, iv_eval_df, cv_eval_df, device, dtype, args, 0.0)
+        pkan_audit.to_csv(args.out_dir / "v92_pkan_identifiability_audit.csv", index=False)
+        passivity_report = {"enabled": False, "status": "not_applicable", "reason": model_scope["limitation"]}
+        metrics["charge_passivity_diagnostics"] = passivity_report
+        metrics["cv_acceptance_diagnostics"] = dict(passivity_report)
     iv_out.to_csv(args.out_dir / "v92_iv_base_vs_safe_residual.csv", index=False, encoding="utf-8-sig")
-    cv_out.to_csv(args.out_dir / "v92_cv_base_vs_safe_residual.csv", index=False, encoding="utf-8-sig")
-    cv_decomp = export_cv_kernel_decomposition(diag, cv_eval_df, device, dtype, args)
-    cv_decomp.to_csv(args.out_dir / "v92_cv_kernel_decomposition.csv", index=False, encoding="utf-8-sig")
-    audit.to_csv(args.out_dir / "v92_cv_quality_audit.csv", index=False, encoding="utf-8-sig")
+    if args.cv_enabled:
+        cv_out.to_csv(args.out_dir / "v92_cv_base_vs_safe_residual.csv", index=False, encoding="utf-8-sig")
+        cv_decomp = export_cv_kernel_decomposition(diag, cv_eval_df, device, dtype, args)
+        cv_decomp.to_csv(args.out_dir / "v92_cv_kernel_decomposition.csv", index=False, encoding="utf-8-sig")
+        audit.to_csv(args.out_dir / "v92_cv_quality_audit.csv", index=False, encoding="utf-8-sig")
     metrics_text = json.dumps(metrics, indent=2)
     (args.out_dir / "v92_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
     (args.out_dir / "v93_safe_residual_metrics.json").write_text(metrics_text, encoding="utf-8")
@@ -19103,6 +19249,8 @@ def main():
                 edge_symbolic_info = {"enabled": True}
         else:
             edge_symbolic_info = {"enabled": True}
+        if edge_symbolic_info.get("task_mode", "iv_cv") != args.task_mode:
+            raise ValueError("Cannot reuse symbolic formulas from a different static task mode")
         edge_symbolic_info["reused_existing_files"] = True
         print("Reused existing edge-wise top-1 symbolic formula files from output directory.")
     elif not args.skip_edgewise_symbolic:
@@ -19195,20 +19343,14 @@ def main():
 
     # Extrapolation diagnostic for residual KAN.
     ext_iv_out, ext_cv_out = predict_outputs(diag, ext_iv, ext_cv, device, dtype, args, safe_iv_scale, safe_cv_scale)
-    ext_iv_diag = ext_iv_out.rename(columns={"ID_base_pkan_A": "ID_phys_A", "ID_residual_A": "ID_pkan_A"})
-    ext_iv_diag["log10_pkan_minus_phys_dec"] = np.log10(np.maximum(np.abs(ext_iv_diag["ID_pkan_A"]), ID_FLOOR)) - np.log10(
-        np.maximum(np.abs(ext_iv_diag["ID_phys_A"]), ID_FLOOR)
-    )
-    ext_cv_diag = ext_cv_out.rename(columns={"cap_base_pkan_F": "cap_phys_F", "cap_residual_F": "cap_pkan_F"})
-    ext_cv_diag["log10_pkan_minus_phys_dec"] = np.log10(np.maximum(ext_cv_diag["cap_pkan_F"], C_FLOOR)) - np.log10(
-        np.maximum(ext_cv_diag["cap_phys_F"], C_FLOOR)
-    )
+    ext_iv_diag, ext_cv_diag = _diagnostic_frames(ext_iv_out, ext_cv_out)
     shape = extrapolation_shape_diagnostics(ext_iv_diag, ext_cv_diag)
     ext_iv_diag.to_csv(args.out_dir / "v92_extrapolation_iv_base_vs_safe_residual.csv", index=False, encoding="utf-8-sig")
     ext_cv_diag.to_csv(args.out_dir / "v92_extrapolation_cv_base_vs_safe_residual.csv", index=False, encoding="utf-8-sig")
     shape.to_csv(args.out_dir / "v92_extrapolation_shape_diagnostics.csv", index=False, encoding="utf-8-sig")
     plot_extrapolation_iv(ext_iv_diag, args.out_dir / "v92_extrapolation_IV_base_vs_safe_residual.png")
-    plot_extrapolation_cv(ext_cv_diag, args.out_dir / "v92_extrapolation_CV_base_vs_safe_residual.png")
+    if args.cv_enabled:
+        plot_extrapolation_cv(ext_cv_diag, args.out_dir / "v92_extrapolation_CV_base_vs_safe_residual.png")
     if args.skip_release_package:
         print("Skipping Verilog-A release package assembly by request.")
     else:

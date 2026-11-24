@@ -512,3 +512,16 @@ differentiation produces extreme values — try `cv_residual_level=0` or `cv_wei
 temporarily to isolate the NaN source. Reduce `learning_rate` to 0.0005 or increase
 `grad_clip` to 2.0. If NaN persists, check the dataset for invalid values (negative
 capacitances, zero-bias division).
+
+
+## IV-only datasets
+
+`CV_train.xlsx` is optional. With valid IV and no CV workbook, the static task
+mode is `iv_only`; an existing malformed CV workbook remains a data error.
+Do not create placeholder capacitance data or request missing CV as a prerequisite.
+Temperature modeling follows the IV temperature coverage independently of CV.
+In IV-only mode, CV-only fitting, polishing, scans and symbolic fitting are skipped;
+CV-only parameters are not exposed by `adjust_params`. Evaluate IV metrics only.
+Missing expected IV metrics still fail quality checks. CV is **not applicable**,
+not zero error or a passed fit. Retained charge/capacitance defaults in Verilog-A
+are uncalibrated, and AC/transient accuracy must not be claimed as validated.

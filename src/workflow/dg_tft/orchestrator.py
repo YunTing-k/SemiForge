@@ -1412,6 +1412,8 @@ def _spawn_modeling_agent_inner(
     from src.workflow.dg_tft.knowledge.loader import build_agent_prompt
     from src.workflow.dg_tft.param_defs import (
         get_stage_param_schema,
+        get_stage_param_table,
+        get_static_task_mode,
         get_stage_sections,
         get_soft_guard_prompt,
     )
@@ -1420,7 +1422,8 @@ def _spawn_modeling_agent_inner(
     upstream = _UPSTREAM_STAGE.get(sd.name, "verifier")
     agent_label = _AGENT_LABELS.get(sd.name, "Agent")
 
-    adjust_schema = get_stage_param_schema(sd.name)
+    task_mode = get_static_task_mode(config_path)
+    adjust_schema = get_stage_param_schema(sd.name, task_mode=task_mode)
     schemas, handlers = get_tools(sd.name, adjust_params_override=adjust_schema)
     stop_schemas = [SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_ACCEPT_QUALITY]
 
@@ -1442,6 +1445,9 @@ def _spawn_modeling_agent_inner(
             f"Attempt number: {attempt_n}",
             f"INI config path: {config_path}",
             f"Output directory: {output_dir}",
+            f"Static modeling scope: {task_mode}. Temperature support is independent of CV availability.",
+            ("CV is not applicable: do not request CV tuning, fabricate CV data, or treat missing CV metrics as a failure. Charge/AC/transient accuracy is unvalidated."
+             if task_mode == "iv_only" else "Evaluate both measured IV and CV quality."),
             f"Upstream stage for fallback: {upstream}",
             "",
             "Your job: analyze the stage results and decide the best course of action.",
@@ -1518,7 +1524,7 @@ def _spawn_modeling_agent_inner(
         return "\n".join(prompt_lines)
 
     # ── Build adjust_params handler (validates inline at tool-call level) ──
-    param_table = _get_stage_param_table(sd.name)
+    param_table = get_stage_param_table(sd.name, task_mode=task_mode)
     sections = get_stage_sections(sd.name)
 
     def _adjust_params_handler(arguments: dict, _ctx) -> dict:

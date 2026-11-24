@@ -1247,16 +1247,45 @@ def params_to_tool_schema(
     }
 
 
-def get_stage_param_schema(stage_name: str) -> dict[str, Any] | None:
+def get_stage_param_table(stage_name: str, *, task_mode: str = "iv_cv") -> dict[str, ParamDef] | None:
+    """Use the same applicability filter for the tool schema and hard guard."""
+    entry = _STAGE_PARAM_MAP.get(stage_name)
+    if entry is None:
+        return None
+    table = entry[1]
+    if task_mode != "iv_only":
+        return table
+    # CV-specific options consistently use a separate ``cv`` name component.
+    return {name: definition for name, definition in table.items() if "cv" not in name.split("_")}
+
+
+def get_static_task_mode(config_path: str) -> str:
+    """Read input-derived scope, with backwards compatibility for older INIs."""
+    import configparser
+    import os
+    from pathlib import Path
+
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path, encoding="utf-8")
+    data_dir = cfg.get("paths", "data_dir", fallback="")
+    if data_dir:
+        data_path = Path(os.path.expandvars(os.path.expanduser(data_dir)))
+        if not data_path.is_absolute():
+            data_path = Path(config_path).parent / data_path
+        if data_path.is_dir():
+            return "iv_cv" if (data_path / "CV_train.xlsx").exists() else "iv_only"
+    return cfg.get("runtime", "static_task_mode", fallback="iv_cv")
+
+
+def get_stage_param_schema(stage_name: str, *, task_mode: str = "iv_cv") -> dict[str, Any] | None:
     """Get the auto-generated tool schema for a given stage.
 
     Returns None if the stage has no adjustable parameters (e.g. ``check-data``,
     ``final-report``).
     """
-    entry = _STAGE_PARAM_MAP.get(stage_name)
-    if entry is None:
+    param_table = get_stage_param_table(stage_name, task_mode=task_mode)
+    if param_table is None:
         return None
-    _ini_sections, param_table = entry
     return params_to_tool_schema(
         param_table,
         tool_name="adjust_params",

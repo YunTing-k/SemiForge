@@ -26,11 +26,12 @@ def check_iv_file(path: Path) -> dict:
         item["issues"].append("missing file")
         return item
     try:
-        xl = pd.ExcelFile(path)
+        with pd.ExcelFile(path) as xl:
+            sheet_names = xl.sheet_names
     except Exception as exc:
         item["issues"].append(f"cannot open workbook: {exc}")
         return item
-    if "long" not in xl.sheet_names:
+    if "long" not in sheet_names:
         item["issues"].append("missing sheet named 'long'")
         return item
     df = pd.read_excel(path, sheet_name="long", nrows=20)
@@ -65,19 +66,20 @@ def check_iv_family(data_dir: Path, family: str, patterns: tuple[str, ...]) -> d
 def check_cv_file(path: Path) -> dict:
     item: dict = {"file": path.name, "exists": path.exists(), "ok": False, "issues": [], "sheets": {}}
     if not path.exists():
-        item["issues"].append("missing file; CV fitting will be skipped")
+        item["status"] = "not_applicable"
         return item
     try:
-        xl = pd.ExcelFile(path)
+        with pd.ExcelFile(path) as xl:
+            sheet_names = xl.sheet_names
     except Exception as exc:
         item["issues"].append(f"cannot open workbook: {exc}")
         return item
-    lower_to_real = {s.lower(): s for s in xl.sheet_names}
+    lower_to_real = {s.strip().lower(): s for s in sheet_names}
     for sheet in CV_SHEETS:
         if sheet not in lower_to_real:
             item["sheets"][sheet] = {"exists": False, "issues": ["missing sheet"]}
             continue
-        raw = pd.read_excel(path, sheet_name=lower_to_real[sheet], header=None, nrows=8)
+        raw = pd.read_excel(path, sheet_name=lower_to_real[sheet], header=None)
         usable_pairs = 0
         detected_layout = "unknown"
         if raw.shape[0] >= 3 and raw.shape[1] >= 2:
@@ -86,14 +88,14 @@ def check_cv_file(path: Path) -> dict:
                 x = pd.to_numeric(raw.iloc[2:, 0], errors="coerce")
                 for col in range(1, raw.shape[1]):
                     c = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
-                    if (x.notna() & c.notna()).any():
+                    if (x.notna() & c.notna() & (c > 0)).any():
                         usable_pairs += 1
             else:
                 detected_layout = "paired_columns"
                 for col in range(0, raw.shape[1] - 1, 2):
                     x = pd.to_numeric(raw.iloc[2:, col], errors="coerce")
                     c = pd.to_numeric(raw.iloc[2:, col + 1], errors="coerce")
-                    if (x.notna() & c.notna()).any():
+                    if (x.notna() & c.notna() & (c > 0)).any():
                         usable_pairs += 1
         issues = [] if usable_pairs else ["no usable x/C paired columns found"]
         item["sheets"][sheet] = {
@@ -103,6 +105,8 @@ def check_cv_file(path: Path) -> dict:
             "issues": issues,
         }
     item["ok"] = not item["issues"] and any(v.get("usable_curve_pairs_preview", 0) for v in item["sheets"].values())
+    if not item["ok"]:
+        item["issues"].append("CV workbook exists but contains no usable capacitance curves")
     return item
 
 
@@ -167,7 +171,11 @@ def main() -> None:
         "cv": check_cv_file(args.data_dir / "CV_train.xlsx"),
         "it": check_it_dir(args.it_dir),
     }
-    report["ok_static"] = all(x["ok"] for x in report["iv"]) and bool(report["cv"]["ok"])
+    # Absence is an IV-only task; a supplied but invalid CV file is a data error.
+    report["task_mode"] = "iv_cv" if report["cv"]["exists"] else "iv_only"
+    report["ok_static"] = all(x["ok"] for x in report["iv"]) and (
+        not report["cv"]["exists"] or bool(report["cv"]["ok"])
+    )
     report["ok_with_it"] = bool(report["ok_static"]) and bool(report["it"]["ok"])
     text = json.dumps(report, indent=2, ensure_ascii=False)
     print(text)

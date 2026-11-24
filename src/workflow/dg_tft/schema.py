@@ -75,6 +75,7 @@ class StageResult:
 class DatasetProfile:
     static_ok: bool = False
     cv_ok: bool = False
+    cv_present: bool | None = None
     iv_families: list[str] = field(default_factory=list)
     has_temperature_iv: bool = False
     temperature_span_K: float | None = None
@@ -84,6 +85,11 @@ class DatasetProfile:
     suggested_hysteresis_dir: str | None = None
     total_files: int = 0
     raw_validation: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def task_mode(self) -> str:
+        # Invalid supplied CV is still a joint task that needs data repair.
+        return "iv_cv" if self.cv_present or self.cv_ok else "iv_only"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

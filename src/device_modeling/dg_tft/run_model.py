@@ -245,6 +245,10 @@ def validate_data(cfg, config_path, p) -> None:
         ],
     )
 
+    report = json.loads((p["output"] / "dataset_validation.json").read_text(encoding="utf-8"))
+    if not report.get("ok_static", False):
+        raise ValueError("Static dataset validation failed; inspect dataset_validation.json")
+
 
 def fit_physical(cfg, p) -> None:
     section = cfg["physical_fit"]

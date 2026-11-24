@@ -77,6 +77,9 @@ def parse_metrics(output_dir: str, stage_name: str) -> dict[str, float]:
     spec = source["keys"]
     result: dict[str, float] = {}
     for key_path in _parse_key_list(spec):
+        if data.get("task_mode") == "iv_only" and key_path == "residual_cv_rms":
+            # Inapplicable is distinct from a missing expected measurement.
+            continue
         value = _deep_get(data, key_path)
         if value is not None:
             result[key_path] = float(value)

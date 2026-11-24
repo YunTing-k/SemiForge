@@ -180,7 +180,12 @@ def cv_point_dataframe(series: list[CVSeries], trap: CVTrapParams) -> pd.DataFra
                     "temp_K": float(temp_k) if temp_k is not None else np.nan,
                 }
             )
-    return pd.DataFrame(rows)
+    # Keep the tensor interface well-defined when no CV workbook was supplied.
+    columns = [
+        "sheet", "label", "x", "x_raw", "x_centered", "VBG_V", "VTG_V",
+        "VDS_V", "freq_hz", "gate_t", "gate_b", "mode", "cap_F", "temp_K",
+    ]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=columns)
 
 
 def make_cv_tensors(df: pd.DataFrame, device: torch.device, dtype: torch.dtype) -> dict[str, torch.Tensor]:

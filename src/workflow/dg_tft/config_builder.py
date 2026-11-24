@@ -140,6 +140,7 @@ def _build_resolution(
         "hysteresis_enabled": "yes" if hysteresis_enabled else "no",
         "static_ok": profile.static_ok,
         "cv_ok": profile.cv_ok,
+        "task_mode": profile.task_mode,
         "has_temperature_iv": profile.has_temperature_iv,
         "has_hysteresis": profile.has_hysteresis,
         "iv_families": profile.iv_families,
@@ -203,6 +204,22 @@ def _write_ini(
             indent = line[:len(line) - len(line.lstrip())]
             lines[i] = f"{indent}run_hspice = {resolution['run_hspice']}\n"
 
+    # This is input-derived metadata, not an Agent-adjustable hyperparameter.
+    # A generated INI can itself be reused as a template.
+    in_runtime = False
+    filtered_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_runtime = stripped.lower() == "[runtime]"
+        if in_runtime and "=" in stripped and stripped.split("=", 1)[0].strip() == "static_task_mode":
+            continue
+        filtered_lines.append(line)
+    lines = filtered_lines
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "[runtime]":
+            lines.insert(i + 1, f"static_task_mode = {profile.task_mode}\n")
+            break
     out_path.write_text("".join(lines), encoding="utf-8")
 
 

@@ -54,7 +54,9 @@ IV files:
   - Sheet name: `long` (case-sensitive — files without this sheet are silently ignored by the engine)
   - Required columns: `VD_V`, `VBG_V`, `VTG_V`, `ID_A` (all four mandatory; missing → engine crash)
 
-CV file:
+CV file (optional):
+  - If the source has no measured CV, omit this file; never fabricate CV or create an empty placeholder.
+  - Preserve temperature columns in IV data regardless of CV availability.
   - Filename: exactly `CV_train.xlsx` (hardcoded in engine, not a wildcard)
   - Internal layout: Row 0 = description text, Row 1 = column headers, Row 2+ = numeric data
     The engine reads with `header=None` and uses `iloc[1]` for headers, `iloc[2:]` for data.
@@ -178,7 +180,9 @@ IV files:
   - Each must have a sheet named `long` (exact case) with columns: {iv_columns}
   - Engine uses filename PREFIX to assign IV family — wrong prefix = engine misclassifies the data
 
-CV file:
+CV file (optional):
+  - If the source has no measured CV, omit this file; never fabricate CV or create an empty placeholder.
+  - Preserve temperature columns in IV data regardless of CV availability.
   - Filename: exactly `CV_train.xlsx` (hardcoded, not a wildcard)
   - Internal layout: Row 0 = description text, Row 1 = column headers, Row 2+ = numeric data
     Engine reads with `header=None` using `iloc[1]` for headers, `iloc[2:]` for data.
@@ -198,7 +202,7 @@ I-t files:
 2. For each `*_train.xlsx` file (NOT CV_train.xlsx):
    - Verify filename matches `IDVBG*_train.xlsx`, `IDVTG*_train.xlsx`, or `IDVD*_train.xlsx`
    - Use `inspect_xlsx` to check sheet `long` exists and contains columns: {iv_columns}
-3. For `CV_train.xlsx`:
+3. If `CV_train.xlsx` is present (absence is valid IV-only input):
    - Verify it exists
    - Use `inspect_xlsx` to read the first 3 rows of each sheet. Check: does Row 0 look like description text (short, non-column-header content)? Does Row 1 look like column headers (containing words like bias, cap, voltage)? Report if Row 0 appears to be headers instead of description — this means the layout is shifted and will silently corrupt engine reads.
    - Report sheet names present
@@ -786,7 +790,8 @@ def _check_output(output_dir: str) -> tuple[bool, list[str]]:
                 issues.append(f"[WARNING] CV_train.xlsx: missing sheets {sorted(missing_sheets)}")
             wb.close()
         except Exception as e:
-            issues.append(f"[WARNING] CV_train.xlsx: cannot read — {e}")
+            issues.append(f"[CRITICAL] CV_train.xlsx: cannot read — {e}")
+            critical = True
 
     # WARNING: I-t directory missing
     it_dir = base / "it"

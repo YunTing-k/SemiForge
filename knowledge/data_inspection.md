@@ -411,3 +411,16 @@ Agent A is spawned as a **dedicated `diagnostic` subagent type**, which auto-res
 - `fallback_to_previous` (stop tool, `stop_mode="schema"`): Submits `{{target, reason, evidence, suggestion}}` to trigger fallback to Verifier
 
 **Not available**: `write_file`, `edit_file` (read-only diagnostics), `web_search`, `web_fetch` (unnecessary for local file inspection), `create_task`/`update_task`/`query_task` (no independent scoreboard needed).
+
+
+## IV-only datasets
+
+`CV_train.xlsx` is optional. With valid IV and no CV workbook, the static task
+mode is `iv_only`; an existing malformed CV workbook remains a data error.
+Do not create placeholder capacitance data or request missing CV as a prerequisite.
+Temperature modeling follows the IV temperature coverage independently of CV.
+In IV-only mode, CV-only fitting, polishing, scans and symbolic fitting are skipped;
+CV-only parameters are not exposed by `adjust_params`. Evaluate IV metrics only.
+Missing expected IV metrics still fail quality checks. CV is **not applicable**,
+not zero error or a passed fit. Retained charge/capacitance defaults in Verilog-A
+are uncalibrated, and AC/transient accuracy must not be claimed as validated.

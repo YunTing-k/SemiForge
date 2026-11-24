@@ -165,6 +165,7 @@ def _build_profile(data_path: Path, raw: dict, it_dir: Path | None) -> DatasetPr
 
     cv_data = raw.get("cv", {})
     profile.cv_ok = cv_data.get("ok", False)
+    profile.cv_present = cv_data.get("exists", profile.cv_ok)
 
     file_count = sum(len(f.get("files", [])) for f in iv_data)
     if cv_data.get("exists"):

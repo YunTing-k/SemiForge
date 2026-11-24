@@ -462,3 +462,16 @@ Agent B can use `read_file` and `glob_file` (standard SubAgent tools) to inspect
 - Error logs in the output directory or stderr capture
 - `dataset_validation.json` — upstream check-data results (in output root, not 01_physical_kernel)
 - `model_config.ini` — current parameter values, data paths, runtime settings
+
+
+## IV-only datasets
+
+`CV_train.xlsx` is optional. With valid IV and no CV workbook, the static task
+mode is `iv_only`; an existing malformed CV workbook remains a data error.
+Do not create placeholder capacitance data or request missing CV as a prerequisite.
+Temperature modeling follows the IV temperature coverage independently of CV.
+In IV-only mode, CV-only fitting, polishing, scans and symbolic fitting are skipped;
+CV-only parameters are not exposed by `adjust_params`. Evaluate IV metrics only.
+Missing expected IV metrics still fail quality checks. CV is **not applicable**,
+not zero error or a passed fit. Retained charge/capacitance defaults in Verilog-A
+are uncalibrated, and AC/transient accuracy must not be claimed as validated.
