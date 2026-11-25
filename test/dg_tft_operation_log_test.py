@@ -25,7 +25,7 @@ class TestAttemptTrigger(unittest.TestCase):
     def test_all_triggers_defined(self):
         expected = {"initial", "quality_fail", "agent_adjust", "fallback_sent",
                      "fallback_received", "upstream_changed", "verifier_fail",
-                     "prep_retry", "agent_accept"}
+                     "prep_retry", "agent_accept", "execution_failed", "interrupted", "feedback_resolved"}
         self.assertEqual(set(AttemptTrigger._value2member_map_), expected)
 
     def test_trigger_is_string_enum(self):
@@ -33,8 +33,8 @@ class TestAttemptTrigger(unittest.TestCase):
         self.assertEqual(t.value, "initial")
         self.assertIsInstance(t.value, str)
 
-    def test_all_9_triggers_present(self):
-        self.assertEqual(len(AttemptTrigger), 9)
+    def test_all_triggers_present(self):
+        self.assertEqual(len(AttemptTrigger), 12)
 
     def test_trigger_from_string(self):
         for val in ("initial", "quality_fail", "agent_adjust", "fallback_sent",

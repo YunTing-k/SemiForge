@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -35,6 +36,9 @@ class AttemptTrigger(str, Enum):
     VERIFIER_FAIL = "verifier_fail"
     PREP_RETRY = "prep_retry"
     AGENT_ACCEPT = "agent_accept"
+    EXECUTION_FAILED = "execution_failed"
+    INTERRUPTED = "interrupted"
+    FEEDBACK_RESOLVED = "feedback_resolved"
 
 
 @dataclass
@@ -52,6 +56,9 @@ class StageAttemptLog:
     ok: bool = True
     error: str = ""
     quality_pass: bool | None = None
+    summary: Any = ""
+    outputs: dict[str, str] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +75,9 @@ class StageAttemptLog:
             "ok": self.ok,
             "error": self.error,
             "quality_pass": self.quality_pass,
+            "summary": self.summary,
+            "outputs": self.outputs,
+            "warnings": self.warnings,
         }
 
     @classmethod
@@ -86,6 +96,9 @@ class StageAttemptLog:
             ok=d.get("ok", True),
             error=d.get("error", ""),
             quality_pass=d.get("quality_pass"),
+            summary=d.get("summary", ""),
+            outputs=d.get("outputs", {}),
+            warnings=d.get("warnings", []),
         )
 
 
@@ -134,6 +147,13 @@ class OperationLog:
         self._data["final_status"] = status
         self._save()
 
+    def append_event(self, kind: str, **details: Any) -> None:
+        """Record state transitions without overwriting historical attempts."""
+        self._data.setdefault("events", []).append({
+            "kind": kind, "timestamp": datetime.now().isoformat(), **details,
+        })
+        self._save()
+
     # ── queries ───────────────────────────────────────────────────
 
     def get_stage_attempts(self, stage: str) -> list[dict[str, Any]]:
@@ -155,5 +175,7 @@ class OperationLog:
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
+        temporary = self._path.with_suffix(".json.tmp")
+        with open(temporary, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=2, ensure_ascii=False)
+        os.replace(temporary, self._path)

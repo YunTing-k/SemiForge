@@ -16,7 +16,10 @@ Revision:
 """
 from __future__ import annotations
 
+import asyncio
 import configparser
+import json
+import shutil
 import logging
 import os
 import re
@@ -26,6 +29,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .control import WorkflowStopped, check_stop_decision
 from .schema import (
     WorkflowStatus,
     StageResult,
@@ -47,6 +51,7 @@ from .quality_guard import (
     snapshot_ini_section,
 )
 from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
+from src.context.agent_context import RequestLLMCancelled
 from src.constants import (
     MAJOR_COLOR2,
     WF_STATUS_ERROR,
@@ -121,6 +126,144 @@ class OrchestratorResult(str, Enum):
 
 
 def run_workflow(
+    ctx: AgentContext, run_id: int, *, entry: str = "full", dataset_dir: str = "",
+    raw_dataset_dir: str = "", hysteresis_dir: str | None = None,
+    device_name: str = "", overrides: dict | None = None, preferences: str = "",
+    config_path: str = "", board=None,
+) -> tuple[bool, str]:
+    """Run the pipeline and persist every terminal path, including cancellation."""
+    try:
+        return _run_workflow_impl(
+            ctx, run_id, entry=entry, dataset_dir=dataset_dir,
+            raw_dataset_dir=raw_dataset_dir, hysteresis_dir=hysteresis_dir,
+            device_name=device_name, overrides=overrides, preferences=preferences,
+            config_path=config_path, board=board,
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError, RequestLLMCancelled) as exc:
+        _record_termination(ctx, run_id, WorkflowStatus.CANCELLED,
+                            {"reason": "Workflow cancelled by caller", "exception": type(exc).__name__}, board)
+        raise
+    except WorkflowStopped as exc:
+        status = WorkflowStatus.NEEDS_INPUT if exc.needs_input else WorkflowStatus.FAILED
+        _record_termination(ctx, run_id, status, exc.to_dict(), board)
+        stage = ctx.workflow_man.get_run(run_id).current_stage
+        return False, f"Run {run_id} {status.value} at {stage}: {exc.reason}"
+    except Exception as exc:
+        _record_termination(ctx, run_id, WorkflowStatus.FAILED,
+                            {"reason": str(exc), "exception": type(exc).__name__}, board)
+        raise
+
+
+def _record_termination(ctx, run_id, status, details, board=None):
+    """Keep the run, operation log and user-facing report consistent on exit."""
+    wm = ctx.workflow_man
+    run = wm.get_run(run_id)
+    if run is None:
+        return
+    reason = details["reason"]
+    wm.set_run_extra(run_id, "termination", details)
+    if status == WorkflowStatus.FAILED:
+        wm.mark_failed(run_id, reason)
+    else:
+        wm.update_stage(run_id, run.current_stage, status)
+    wm.add_warning(run_id, reason)
+    if run.output_root:
+        log = OperationLog(run.output_root)
+        log.load()
+        if not log.data:
+            log.initialize(run_id)
+        if status == WorkflowStatus.CANCELLED:
+            active = run.extra.get("active_operation", {})
+            log.append_attempt(run.current_stage, StageAttemptLog(
+                n=log.get_last_attempt_n(run.current_stage) + 1,
+                trigger=AttemptTrigger.INTERRUPTED, ok=False, error=reason,
+                duration_s=max(0.0, time.time() - active.get("started_at", time.time())),
+            ))
+        log.append_event("termination", stage=run.current_stage, status=status.value, **details)
+        log.set_final_status(status.value.lower())
+        build_and_write_reports(run.to_dict(), run.output_root)
+        # The tool preferentially reads this file. Replace any previous success
+        # interpretation so an interrupted/rejected rerun cannot deliver it.
+        from src.constants import FINAL_INTERPRETATION_FILENAME
+        lines = [f"# Run {run_id}: {status.value}", "", f"Stage: {run.current_stage}", ""]
+        for key in ("reason", "evidence", "required_information"):
+            if details.get(key):
+                lines.extend([f"## {key.replace('_', ' ').title()}", "", details[key], ""])
+        lines.append("This run did not complete successfully. Existing files are diagnostic/intermediate artifacts, not an accepted final model.")
+        (Path(run.output_root) / FINAL_INTERPRETATION_FILENAME).write_text("\n".join(lines), encoding="utf-8")
+    if board is not None:
+        # Do not leave stage tasks in progress after an interrupted run.
+        prefix = f"[DG-TFT, ID: {run_id}]"
+        for tid, task in list(board._tasks.items()):
+            if str(task.subject).startswith(prefix) and str(getattr(task.status, "value", task.status)) in ("in_progress", "pending"):
+                _resolve_task(board, ctx.agent_id, tid, completed=False)
+
+
+def _feedback_payload(context):
+    if not context:
+        return {}
+    payload = dict(context.get("arguments") or context)
+    if "target" not in payload and payload.get("fallback"):
+        payload["target"] = payload["fallback"]
+    return payload
+
+
+def _require_feedback_resolution(resolution):
+    if not isinstance(resolution, dict) or resolution.get("outcome") not in ("corrected", "not_applicable") or not all(
+        isinstance(resolution.get(k), str) and resolution[k].strip() for k in ("reason", "evidence")
+    ):
+        raise WorkflowStopped("Downstream feedback has no explicit, evidenced resolution.", evidence=str(resolution))
+
+
+def _invalidate_for_fallback(ctx, run_id, target, op_log, feedback=None):
+    """Invalidate dependency descendants, retaining historical results and evidence."""
+    all_stages = get_stages()
+    affected = {target}
+    for stage in all_stages:
+        if any(parent in affected for parent in stage.depends_on):
+            affected.add(stage.name)
+    names = [stage.name for stage in all_stages if stage.name in affected]
+    if not names:
+        raise WorkflowStopped(f"Unknown fallback target: {target}")
+    run = ctx.workflow_man.get_run(run_id)
+    keys = {key for stage in all_stages if stage.name in affected for key in stage.key_artifacts}
+    for key, path in run.artifacts.items():
+        if any(stage.expected_output_subdir and stage.expected_output_subdir in Path(path).parts
+               for stage in all_stages if stage.name in affected):
+            keys.add(key)
+    snapshot = ctx.workflow_man.invalidate_stages(run_id, names, keys, feedback)
+    if op_log:
+        op_log.append_event("invalidation", target=target, **snapshot)
+
+
+def _archive_stage_outputs(sd, output_dir, op_log, *, invalidated=False):
+    """Snapshot retries; remove invalidated output from the engine's active path.
+
+    Same-stage tuning retains the existing warm-start behavior. A dependency
+    invalidation must instead force recomputation against the new upstream state.
+    """
+    if not sd.expected_output_subdir:
+        return
+    source = Path(output_dir) / sd.expected_output_subdir
+    if not source.exists():
+        return
+    destination = Path(output_dir) / "attempt_archive" / f"{sd.name}_{op_log.get_last_attempt_n(sd.name) + 1}_{time.time_ns()}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Both paths are rooted in this run. Preserve files, including on Windows;
+    # no recursive deletion or shell-based path manipulation is involved.
+    if not source.resolve().is_relative_to(Path(output_dir).resolve()):
+        raise WorkflowStopped("Stage output resolves outside the run directory", evidence=str(source))
+    if not destination.resolve().is_relative_to(Path(output_dir).resolve()):
+        raise WorkflowStopped("Archive resolves outside the run directory", evidence=str(destination))
+    if invalidated:
+        shutil.move(str(source), str(destination))
+    else:
+        shutil.copytree(source, destination)
+    op_log.append_event("artifacts_archived", stage=sd.name, source=str(source),
+                        destination=str(destination), invalidated=invalidated)
+
+
+def _run_workflow_impl(
     ctx: AgentContext,
     run_id: int,
     *,
@@ -178,6 +321,7 @@ def run_workflow(
         runs_subdir = ctx.agent_configs.get("DG_TFT_RUNS_SUBDIR", DG_TFT_RUNS_SUBDIR)
         output_dir = os.path.abspath(os.path.join(SESSION_PATH, ctx.session_uuid, runs_subdir, f"run_{run_id:04d}"))
     os.makedirs(output_dir, exist_ok=True)
+    wm.set_output_root(run_id, output_dir)
 
     # ── Operation log ──
     op_log = OperationLog(output_dir)
@@ -188,7 +332,7 @@ def run_workflow(
     config_path: str = config_path  # keep param (or "" if not provided)
     profile: DatasetProfile | None = _load_profile(run) if config_path else None
     prep_output_dir: str = dataset_dir
-    fallback_ctx: dict[str, Any] | None = None
+    fallback_ctx: dict[str, Any] | None = run.extra.get("pending_feedback")
     fallback_depth: int = 0
 
     sys_log.info(
@@ -198,6 +342,8 @@ def run_workflow(
 
     run.status = WorkflowStatus.RUNNING
     run.current_stage = ""
+    op_log.set_final_status("running")
+    wm.set_run_extra(run_id, "termination", None)
     run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     _console(ctx, f"DG-TFT workflow run #{run_id} starting [bright_black](entry={entry}, {len(stages)} stages)[/bright_black]")
@@ -212,17 +358,21 @@ def run_workflow(
     task_map = _create_stage_tasks(board, ctx.agent_id, stages, run_id)
 
     # ── While+pointer state machine ──
-    pointer = 0
+    pointer = max(0, _find_stage_pointer(stages, _feedback_payload(fallback_ctx).get("target", ""))) if fallback_ctx else 0
     max_pointer = len(stages)
     total_stages = len(stages)
     failed_stage: str = ""
     failed_error: str = ""
-    retry_counts: dict[str, int] = {}
+    retry_counts: dict[str, int] = {
+        f"{name}_retries": len(op_log.get_stage_attempts(name))
+        for name in (StageName.DATA_PREP, StageName.VERIFIER)
+    }
     prep_max_retries = ctx.agent_configs.get("DG_TFT_PREP_MAX_RETRIES", 3)
 
     while pointer < max_pointer:
         sd = stages[pointer]
         display_idx = pointer + 1
+        wm.set_run_extra(run_id, "pending_feedback", fallback_ctx)
 
         # ── Overall run timeout check ──
         if _elapsed_exceeds(t_start, run_timeout):
@@ -264,6 +414,7 @@ def run_workflow(
         sys_log.info("--- Stage [%s] starting ---", sd.name)
         _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [bright_black]starting...[/bright_black]")
         _start_task(board, ctx.agent_id, task_map.get(sd.name))
+        wm.set_run_extra(run_id, "active_operation", {"stage": sd.name, "started_at": time.time()})
 
         # ── Execute stage ──
         if sd.kind == "agent":
@@ -298,18 +449,14 @@ def run_workflow(
                         if prep_idx >= 0:
                             pointer = prep_idx
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
-                            wm.clear_stage_result(run_id, StageName.DATA_PREP)
+                            _invalidate_for_fallback(ctx, run_id, StageName.DATA_PREP, op_log, fallback_ctx)
                             verifier_n = retry_counts.get("verifier_retries", 1)
                             retry_counts["data-prep_retries"] = verifier_n
                             retry_counts["verifier_retries"] = verifier_n
-                        fallback_ctx = None
-                        fallback_depth = 0
                         run = wm.get_run(run_id)
                         continue
                     else:
                         _console(ctx, f"  [{WF_STATUS_WARN}]{sd.name} attempt {current} failed, retrying...[/{WF_STATUS_WARN}]")
-                        fallback_ctx = None
-                        fallback_depth = 0
                         run = wm.get_run(run_id)
                         continue
                 # Exhausted — fail if required
@@ -341,10 +488,20 @@ def run_workflow(
                 # Update prep output dir after Verifier passes
                 if sd.name == StageName.VERIFIER and attempt_dir:
                     prep_output_dir = attempt_dir
+                    if config_path:
+                        previous = configparser.ConfigParser()
+                        previous.read(config_path, encoding="utf-8")
+                        dynamic = {"runtime.static_task_mode", "hysteresis.enabled", "temperature.mode", "deployment.run_hspice"}
+                        overrides = {f"{sec}.{key}": value for sec in previous.sections()
+                                     for key, value in previous.items(sec)
+                                     if sec != "paths" and f"{sec}.{key}" not in dynamic}
+                        config_path = ""
+                        profile = None
                 _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
                 pointer += 1
-            fallback_ctx = None
-            fallback_depth = 0
+            if sd.name == StageName.VERIFIER and agent_ok:
+                fallback_ctx = None
+                wm.set_run_extra(run_id, "pending_feedback", None)
             run = wm.get_run(run_id)
             continue
 
@@ -437,17 +594,18 @@ def run_workflow(
                     fallback_depth = 0
                     continue
                 if decision == "fallback":
+                    agent_result["from_stage"] = sd.name
                     fb_target = agent_result.get("arguments", {}).get("target", "")
                     new_pointer = _find_stage_pointer(stages, fb_target)
                     if new_pointer >= 0:
                         pointer = new_pointer
                         _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                         if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
-                            wm.clear_stage_result(run_id, fb_target)
+                            _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                             fallback_ctx = agent_result
                             fallback_ctx["direct_agent"] = True
                         else:
-                            wm.clear_stage_result(run_id, fb_target)
+                            _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                             fallback_ctx = agent_result
                         run = wm.get_run(run_id)
                         _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
@@ -455,6 +613,10 @@ def run_workflow(
                 # accept / error → proceed to run script (params unchanged or adjusted)
 
             t_stage_start = time.monotonic()
+            _archive_stage_outputs(sd, output_dir, op_log,
+                                   invalidated=sd.name in run.extra.get("invalidated_stages", []))
+            op_log.append_event("execution_started", stage=sd.name, config_path=config_path,
+                                feedback=fallback_ctx)
             sr = run_stage(
                 ctx, sd.action, config_path,
                 cwd=str(Path(config_path).parent),
@@ -466,6 +628,7 @@ def run_workflow(
 
             # ── Hard failure ──
             if not sr.ok:
+                _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration, is_retry=(attempt_n > 1))
                 wm.update_stage(run_id, sd.name, WorkflowStatus.FAILED, sr)
                 _resolve_task(board, ctx.agent_id, task_map.get(sd.name), completed=False)
 
@@ -501,7 +664,7 @@ def run_workflow(
                                 new_pointer = insert_pos
                                 _console(ctx, f"  [bright_black]({entry} entry: inserted VERIFIER for fallback)[/bright_black]")
                         if new_pointer >= 0:
-                            wm.clear_stage_result(run_id, fb_target)
+                            _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_a_result)
                             pointer = new_pointer
                             _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                             run = wm.get_run(run_id)
@@ -538,12 +701,12 @@ def run_workflow(
                             if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
                                 # Upstream already passed — clear result so retry loop enters,
                                 # then spawn its agent directly to review params
-                                wm.clear_stage_result(run_id, fb_target)
+                                _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                                 fallback_ctx = agent_result
                                 fallback_ctx["direct_agent"] = True
                                 _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target} (direct agent review)[/{WF_STATUS_WARN}]")
                             else:
-                                wm.clear_stage_result(run_id, fb_target)
+                                _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                                 _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                             run = wm.get_run(run_id)
                             fallback_ctx = agent_result
@@ -562,6 +725,34 @@ def run_workflow(
                 sys_log.error("Run %d failed at required stage [%s]: %s", run_id, sd.name, sr.error)
                 break
 
+            # Structural success alone does not resolve a downstream physical/data concern.
+            if sd.name == StageName.CHECK_DATA and fallback_ctx:
+                _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration)
+                review = _spawn_agent_a(ctx, run_id, sd, sr, output_dir, op_log, fallback_ctx=fallback_ctx)
+                if review.get("fallback"):
+                    target = review["fallback"]
+                    index = _find_stage_pointer(stages, target)
+                    if index < 0 and target == StageName.VERIFIER:
+                        stages.insert(0, get_stage_by_name(target))
+                        max_pointer = len(stages)
+                        total_stages = max_pointer
+                        _add_stage_task(board, ctx.agent_id, run_id, task_map, stages[0])
+                        index = 0
+                    if index < 0 or target != StageName.VERIFIER:
+                        raise WorkflowStopped(f"Invalid check-data fallback target: {target}")
+                    review["from_stage"] = sd.name
+                    _invalidate_for_fallback(ctx, run_id, target, op_log, review)
+                    fallback_ctx = review
+                    pointer = index
+                    _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
+                    break
+                _require_feedback_resolution(review.get("resolution"))
+                op_log.append_event("feedback_resolved", stage=sd.name, feedback=fallback_ctx, resolution=review["resolution"])
+                fallback_ctx = None
+                wm.set_run_extra(run_id, "pending_feedback", None)
+                wm.update_stage(run_id, sd.name, WorkflowStatus.RUNNING, sr)
+                break
+
             # ── Success ──
             missing = _verify_artifacts(sd, output_dir)
             if missing:
@@ -571,6 +762,14 @@ def run_workflow(
             # ── Quality check ──
             quality_ok, quality_issues = _assess_stage_quality(ctx, sd.name, output_dir, config_path)
             sr.metrics = parse_metrics(output_dir, sd.name)
+            # Execution success is not quality acceptance. Persist the pending
+            # review so resume cannot skip an interrupted/rejected decision.
+            pending_quality = set(run.extra.get("pending_quality_stages", []))
+            if quality_ok:
+                pending_quality.discard(sd.name)
+            else:
+                pending_quality.add(sd.name)
+            wm.set_run_extra(run_id, "pending_quality_stages", sorted(pending_quality))
 
             _log_stage_attempt(op_log, sd.name, sr, output_dir, stage_duration,
                                quality_pass=quality_ok, quality_issues=quality_issues,
@@ -583,6 +782,8 @@ def run_workflow(
                     wm.attach_artifact(run_id, p, str(full_path))
 
             if quality_ok:
+                fallback_ctx = None
+                wm.set_run_extra(run_id, "pending_feedback", None)
                 sys_log.info("--- Stage [%s] completed successfully ---", sd.name)
                 _console(ctx, f"  [{MAJOR_COLOR2}]{display_idx}/{total_stages}[/{MAJOR_COLOR2}] {sd.name} [{WF_STATUS_SUCCESS}]✓[/{WF_STATUS_SUCCESS}]")
                 break
@@ -596,10 +797,10 @@ def run_workflow(
 
             if retry_remaining <= 0:
                 _console(ctx, f"  [bright_black]Quality retries exhausted for {sd.name}[/bright_black]")
-                break
+                raise WorkflowStopped(f"Quality retries exhausted for {sd.name}", evidence="; ".join(quality_issues))
 
             if not has_agent:
-                break
+                raise WorkflowStopped(f"Unresolved quality failure at {sd.name}", evidence="; ".join(quality_issues))
 
             # ── Agent B/C/D: quality fail → adjust_params / fallback / accept_quality ──
             _console(ctx, f"  [bright_black]Spawning agent for {sd.name} quality improvement...[/bright_black]")
@@ -625,33 +826,27 @@ def run_workflow(
                     pointer = new_pointer
                     _revert_tasks(board, ctx.agent_id, task_map, stages, pointer)
                     if _stage_done(run, fb_target) and _stage_has_modeling_agent(fb_target):
-                        wm.clear_stage_result(run_id, fb_target)
+                        _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                         fallback_ctx = agent_result
                         fallback_ctx["direct_agent"] = True
                         _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target} (direct agent review)[/{WF_STATUS_WARN}]")
                     else:
-                        wm.clear_stage_result(run_id, fb_target)
+                        _invalidate_for_fallback(ctx, run_id, fb_target, op_log, agent_result)
                         _console(ctx, f"  [{WF_STATUS_WARN}]Agent → fallback to {fb_target}[/{WF_STATUS_WARN}]")
                     run = wm.get_run(run_id)
                     fallback_ctx = agent_result
                     break
-            # accept / error → move on
+            # The decision has explicitly accepted the task-relevant quality.
+            fallback_ctx = None
+            wm.set_run_extra(run_id, "pending_feedback", None)
+            break
+
+        if failed_stage:
             break
 
         # If we exited the retry loop due to fallback, skip pointer advance
         if fallback_ctx is not None:
             _console(ctx, f"  [bright_black]Fallback active → re-entering upstream stage[/bright_black]")
-            # If the fallback target stage also hard-failed and the fallback chain
-            # is exhausted (e.g. Agent A refused to fallback), abort — don't loop forever.
-            if failed_stage:
-                _console(ctx, f"  [{WF_STATUS_ERROR}]Fallback chain exhausted at {failed_stage} — pipeline terminating[/{WF_STATUS_ERROR}]")
-                wm.mark_failed(run_id, f"Fallback chain exhausted at {failed_stage}: {failed_error}")
-                op_log.set_final_status("failed")
-                _finalize_run(ctx, run_id, output_dir, t_start, stages,
-                              failed=True, failed_stage=failed_stage, failed_error=failed_error or "",
-                              board=board, task_map=task_map)
-                _spawn_agent_e(ctx, run_id, stages, op_log, output_dir, preferences, failed=True, failed_stage=failed_stage, config_path=config_path)
-                return False, f"Failed at {failed_stage}: fallback chain exhausted"
             run = wm.get_run(run_id)
             continue
 
@@ -713,7 +908,7 @@ def _run_agent_stage(
     os.makedirs(attempt_dir, exist_ok=True)
 
     trigger = AttemptTrigger.INITIAL if attempt_n == 1 else AttemptTrigger.VERIFIER_FAIL
-    if fallback_ctx and fallback_ctx.get("fallback"):
+    if fallback_ctx:
         trigger = AttemptTrigger.FALLBACK_RECEIVED
 
     t_stage_start = time.monotonic()
@@ -721,6 +916,8 @@ def _run_agent_stage(
     if stage_name == StageName.DATA_PREP:
         # Build handoff history from prior attempts
         handoff_history = _build_handoff_history(op_log)
+        if fallback_ctx:
+            handoff_history += "\nUnresolved downstream feedback (must be addressed):\n" + json.dumps(_feedback_payload(fallback_ctx), ensure_ascii=False)
         prep_result = run_preparer_stage(
             ctx, raw_dataset_dir, attempt_dir,
             handoff_history=handoff_history,
@@ -732,6 +929,7 @@ def _run_agent_stage(
         op_log.append_attempt("data-prep", StageAttemptLog(
             n=attempt_n, trigger=trigger,
             handoff=handoff,
+            outputs={"dataset_dir": attempt_dir},
             ok=prep_ok,
             error=error,
             duration_s=time.monotonic() - t_stage_start,
@@ -758,13 +956,19 @@ def _run_agent_stage(
         prep_attempts = op_log.get_stage_attempts("data-prep")
         if prep_attempts:
             prep_handoff = prep_attempts[-1].get("handoff")
+            previous_prep = prep_attempts[-1]
+            previous_dir = previous_prep.get("outputs", {}).get("dataset_dir") or os.path.join(
+                output_dir, PREP_SUBDIR_NAME, f"attempt_{previous_prep['n']}")
+            if Path(previous_dir).exists() and Path(previous_dir).resolve() != Path(attempt_dir).resolve():
+                copy_dataset_to_data_prep(previous_dir, attempt_dir)
 
-        if fallback_ctx and fallback_ctx.get("fallback"):
+        if fallback_ctx:
+            feedback_args = _feedback_payload(fallback_ctx)
             agent_a_handoff = {
                 "fallback_from": "Agent A (check-data)",
-                "reason": fallback_ctx.get("reason", ""),
-                "evidence": fallback_ctx.get("evidence", ""),
-                "suggestion": fallback_ctx.get("suggestion", ""),
+                "reason": feedback_args.get("reason", ""),
+                "evidence": feedback_args.get("evidence", ""),
+                "suggestion": feedback_args.get("suggestion", ""),
             }
             if prep_handoff:
                 prep_handoff = dict(prep_handoff)
@@ -780,10 +984,15 @@ def _run_agent_stage(
         op_log.append_attempt("verifier", StageAttemptLog(
             n=attempt_n, trigger=trigger,
             agent_decision=feedback,
+            outputs={"dataset_dir": attempt_dir},
             ok=verify_ok,
             error="; ".join(issues) if issues else "",
             duration_s=time.monotonic() - t_stage_start,
         ))
+
+        if verify_ok and fallback_ctx:
+            _require_feedback_resolution((feedback or {}).get("feedback_resolution"))
+            op_log.append_event("feedback_resolved", stage=stage_name, feedback=fallback_ctx, resolution=feedback["feedback_resolution"])
 
         if not verify_ok:
             if current_retry < max_retries:
@@ -854,7 +1063,7 @@ def _spawn_agent_a(
 
     prompt_lines = [
         "You are Agent A (check-data diagnostics).",
-        "The check-data stage (dataset structural validation) has failed.",
+        "Investigate the dataset validation result and any downstream concern. A structural pass does not establish physical consistency.",
         f"Error: {stage_result.error}",
     ]
     if stage_result.summary:
@@ -862,7 +1071,9 @@ def _spawn_agent_a(
     prompt_lines.append(f"Output directory: {output_dir}")
     prompt_lines.extend([
         "",
-        "Your job: decide whether this failure can be fixed upstream by the Verifier.",
+        "Your job: investigate the specific failure or downstream feedback, then explicitly resolve it, fall back, or stop_workflow.",
+        "Use resolve_feedback only with evidence that the concern was corrected or not applicable; it cannot override a failed structural check.",
+        "Use stop_workflow for unresolved contradictions, missing measurement facts, or unrecoverable failures. Never guess gate identities or silently discard sources.",
         "If the errors suggest that the prepared dataset is malformed (missing columns,",
         "wrong sheet names, corrupt files, etc.), call `fallback_to_previous` to notify",
         "the Verifier stage to re-check the data and possibly fall back to the Preparer.",
@@ -899,13 +1110,13 @@ def _spawn_agent_a(
             else:
                 prompt_lines.append(str(last_v)[:500])
 
-    if fallback_ctx and fallback_ctx.get("decision") == "fallback_to_previous":
-        fb_args = fallback_ctx.get("arguments", {}) if isinstance(fallback_ctx.get("arguments"), dict) else {}
+    if fallback_ctx:
+        fb_args = _feedback_payload(fallback_ctx)
         prompt_lines.append("")
         prompt_lines.append("**Why you were called (downstream modeling agent fell back):**")
-        prompt_lines.append(f"  Reason from downstream agent: {fb_args.get('reason', '')[:200]}")
-        prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')[:200]}")
-        prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')[:200]}")
+        prompt_lines.append(f"  Reason from downstream agent: {fb_args.get('reason', '')}")
+        prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')}")
+        prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')}")
 
     # ── Expert knowledge ──
     knowledge_block = build_agent_prompt("check-data")
@@ -946,18 +1157,28 @@ def _spawn_agent_a(
         sys_log.warning("Agent A returned non-JSON: %s", str(result)[:200])
         return {"fallback": "", "reason": str(result)[:200], "evidence": "", "suggestion": ""}
 
+    check_stop_decision(decision)
+    resolution = None
+    if decision.get("_tool") == "resolve_feedback":
+        _require_feedback_resolution(decision)
+        if not stage_result.ok:
+            raise WorkflowStopped("Feedback resolution cannot override a failed structural check.", evidence=str(decision))
+        resolution = decision
+
     # Log the decision
     if op_log:
         op_log.append_attempt(sd.name, StageAttemptLog(
             n=op_log.get_last_attempt_n(sd.name) + 1,
-            trigger=AttemptTrigger.FALLBACK_SENT if decision.get("target") else AttemptTrigger.QUALITY_FAIL,
+            trigger=(AttemptTrigger.FEEDBACK_RESOLVED if resolution else
+                     AttemptTrigger.FALLBACK_SENT if decision.get("target") else AttemptTrigger.QUALITY_FAIL),
             agent_decision=decision,
             agent_reasoning=decision.get("reason", ""),
-            ok=False,
+            ok=resolution is not None,
             error=stage_result.error or "",
         ))
 
     return {
+        "resolution": resolution,
         "fallback": decision.get("target", ""),
         "reason": decision.get("reason", ""),
         "evidence": decision.get("evidence", ""),
@@ -1233,6 +1454,8 @@ def _load_profile(run) -> DatasetProfile:
 
 
 def _stage_done(run, stage_name: str) -> bool:
+    if stage_name in run.extra.get("pending_quality_stages", []):
+        return False
     sr = run.stage_results.get(stage_name)
     if sr is None:
         return False
@@ -1278,8 +1501,9 @@ def _log_stage_attempt(
     if op_log is None:
         return
     n = op_log.get_last_attempt_n(stage_name) + 1
-    trigger = AttemptTrigger.INITIAL if n == 1 else AttemptTrigger.QUALITY_FAIL
-    metrics = parse_metrics(output_dir, stage_name)
+    trigger = (AttemptTrigger.EXECUTION_FAILED if not sr.ok else
+               AttemptTrigger.INITIAL if n == 1 else AttemptTrigger.QUALITY_FAIL)
+    metrics = parse_metrics(output_dir, stage_name) if sr.ok else {}
     entry = StageAttemptLog(
         n=n,
         trigger=trigger,
@@ -1288,6 +1512,8 @@ def _log_stage_attempt(
         error=sr.error or "",
         duration_s=duration_s,
         quality_pass=quality_pass,
+        summary=sr.summary, outputs=sr.outputs, warnings=sr.warnings,
+        ini_snapshot=(Path(output_dir) / "model_config.ini").read_text(encoding="utf-8") if (Path(output_dir) / "model_config.ini").exists() else "",
     )
     if quality_issues:
         entry.agent_decision = {"quality_issues": quality_issues}
@@ -1380,6 +1606,8 @@ def _spawn_modeling_agent(
             preferences=preferences, attempt_n=attempt_n,
             fallback_ctx=fallback_ctx,
         )
+    except (WorkflowStopped, RequestLLMCancelled):
+        raise
     except Exception as e:
         sys_log.warning("%s spawn failed: %s", agent_label, e)
         _console(ctx, f"  [bright_black]{agent_label}: could not spawn (context may be incomplete)[/bright_black])")
@@ -1407,6 +1635,7 @@ def _spawn_modeling_agent_inner(
         SUBAGENT_TOOL_ADJUST_PARAMS,
         SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS,
         SUBAGENT_TOOL_ACCEPT_QUALITY,
+        SUBAGENT_TOOL_STOP_WORKFLOW,
     )
     from src.constants import MODELING_AGENT_LABEL
     from src.workflow.dg_tft.knowledge.loader import build_agent_prompt
@@ -1425,7 +1654,7 @@ def _spawn_modeling_agent_inner(
     task_mode = get_static_task_mode(config_path)
     adjust_schema = get_stage_param_schema(sd.name, task_mode=task_mode)
     schemas, handlers = get_tools(sd.name, adjust_params_override=adjust_schema)
-    stop_schemas = [SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_ACCEPT_QUALITY]
+    stop_schemas = [SUBAGENT_TOOL_ADJUST_PARAMS, SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_ACCEPT_QUALITY, SUBAGENT_TOOL_STOP_WORKFLOW]
 
     def _build_prompt() -> str:
         errors = stage_result.error or "none"
@@ -1455,7 +1684,8 @@ def _spawn_modeling_agent_inner(
             "Options (call EXACTLY ONE tool to submit your decision):",
             f"  1. `adjust_params` — if you believe adjusting hyperparameters can improve quality.",
             f"  2. `fallback_to_previous` — if you suspect the problem originates upstream (target: {upstream}).",
-            f"  3. `accept_quality` — if the current quality is acceptable, or continued adjustments won't help.",
+            "  4. `stop_workflow` — if the task cannot be completed faithfully or needs missing measurement facts. Provide evidence and the required information.",
+            f"  3. `accept_quality` — only if the current quality is acceptable for the stated task; inability to improve is not acceptance.",
         ]
 
         # ── Prior attempts from this stage ──
@@ -1490,21 +1720,21 @@ def _spawn_modeling_agent_inner(
                                     f"adjustments={_json.dumps(ua.get('adjustments', {}))}")
 
         # ── Downstream fallback context ──
-        if fallback_ctx and fallback_ctx.get("decision") == "fallback_to_previous":
-            fb_args = fallback_ctx.get("arguments", {}) if isinstance(fallback_ctx.get("arguments"), dict) else {}
+        if fallback_ctx:
+            fb_args = _feedback_payload(fallback_ctx)
             from_stage = fallback_ctx.get("from_stage", "")
             prompt_lines.append("")
             prompt_lines.append(f"**Why you were re-run (fallback from {from_stage or 'downstream'}):**")
-            prompt_lines.append(f"  Reason: {fb_args.get('reason', '')[:200]}")
-            prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')[:200]}")
-            prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')[:200]}")
+            prompt_lines.append(f"  Reason: {fb_args.get('reason', '')}")
+            prompt_lines.append(f"  Evidence: {fb_args.get('evidence', '')}")
+            prompt_lines.append(f"  Suggestion: {fb_args.get('suggestion', '')}")
 
         prompt_lines.extend([
             "",
             "Guidelines:",
             "- You may use `read_file` and `glob_file` to inspect output files and logs.",
             "- Make small, incremental parameter changes — extreme jumps rarely help.",
-            "- If the same quality issue persists across multiple attempts, consider fallback or accept.",
+            "- If the same quality issue persists across multiple attempts, consider fallback or stop_workflow; accept only if quality is independently justified.",
             "- If user preferences deprioritize the failing metric, accept_quality is valid.",
             "- You may change as many parameters as needed — there is no limit on the number of adjustments.",
             "",
@@ -1605,7 +1835,7 @@ def _normalize_tool_name(parsed: dict[str, Any]) -> str:
         return "error"
 
     tool = parsed.get("_tool", "")
-    if tool in ("adjust_params", "fallback_to_previous", "accept_quality"):
+    if tool in ("adjust_params", "fallback_to_previous", "accept_quality", "stop_workflow"):
         return tool
 
     tool_map = {
@@ -1641,7 +1871,7 @@ def _process_agent_decision(
     Returns:
         "retry" — re-run the same stage with adjusted params.
         "fallback" — jump to upstream stage.
-        "accept" — move on (accept quality or error).
+        "accept" — move on with an explicit quality justification.
     """
     from src.workflow.dg_tft.param_defs import get_stage_sections
 
@@ -1649,6 +1879,9 @@ def _process_agent_decision(
     arguments = agent_result.get("arguments", {})
     reasoning = agent_result.get("reasoning", "")
     agent_label = _AGENT_LABELS.get(sd.name, "Agent")
+
+    if decision == "stop_workflow":
+        check_stop_decision({**arguments, "_tool": "stop_workflow"})
 
     if decision == "adjust_params":
         arguments = agent_result.get("arguments", {})
@@ -1664,7 +1897,7 @@ def _process_agent_decision(
 
         if not applied:
             _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} adjust_params: no params were applied (all rejected or no handler)[/{WF_STATUS_WARN}]")
-            return "accept"
+            raise WorkflowStopped("Agent requested adjustment but no parameters were applied.", evidence=str(arguments))
 
         for w in warnings[:3]:
             sys_log.warning("[%s] %s", sd.name, w)
@@ -1689,10 +1922,14 @@ def _process_agent_decision(
                 ok=True,
             ))
 
-        return "retry" if retry_remaining > 0 else "accept"
+        if retry_remaining <= 0:
+            raise WorkflowStopped(f"No execution budget remains for adjusted {sd.name}", evidence=str(applied))
+        return "retry"
 
     if decision == "fallback_to_previous":
         target = arguments.get("target", "") if isinstance(arguments, dict) else ""
+        if target not in StageName.STAGE_ORDER or StageName.STAGE_ORDER.index(target) >= StageName.STAGE_ORDER.index(sd.name):
+            raise WorkflowStopped(f"Invalid upstream fallback target: {target}", evidence=str(arguments))
         _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label} → fallback_to_previous: {target}[/{WF_STATUS_WARN}]")
         if reasoning:
             _console(ctx, f"  [bright_black]Reasoning: {reasoning[:120]}[/bright_black]")
@@ -1710,6 +1947,11 @@ def _process_agent_decision(
         return "fallback"
 
     if decision == "accept_quality":
+        if agent_result.get("_fallback_received"):
+            _require_feedback_resolution(arguments.get("feedback_resolution"))
+            if op_log:
+                op_log.append_event("feedback_resolved", stage=sd.name,
+                                    resolution=arguments["feedback_resolution"])
         reasoning_text = arguments.get("reasoning", "") if isinstance(arguments, dict) else ""
         _console(ctx, f"  [{WF_STATUS_SUCCESS}]{agent_label} → accept_quality[/{WF_STATUS_SUCCESS}]")
         if reasoning_text:
@@ -1725,10 +1967,15 @@ def _process_agent_decision(
                 quality_pass=False,
             ))
 
+        run = ctx.workflow_man.get_run(run_id)
+        if run is not None:
+            ctx.workflow_man.set_run_extra(run_id, "pending_quality_stages", [
+                name for name in run.extra.get("pending_quality_stages", []) if name != sd.name
+            ])
         return "accept"
 
     _console(ctx, f"  [{WF_STATUS_WARN}]{agent_label}: unknown decision '{decision}'[/{WF_STATUS_WARN}]")
-    return "accept"
+    raise WorkflowStopped("Agent did not provide a valid workflow decision.", evidence=str(agent_result))
 
 
 def _get_stage_param_table(stage_name: str):
@@ -1764,6 +2011,8 @@ def _spawn_agent_e(
 
     try:
         _spawn_agent_e_inner(ctx, run_id, stages, op_log, output_dir, preferences, failed, failed_stage, config_path)
+    except RequestLLMCancelled:
+        raise
     except Exception as e:
         sys_log.warning("Agent E spawn failed: %s", e)
         _console(ctx, f"  [bright_black]Agent E: could not spawn (context may be incomplete)[/bright_black]")

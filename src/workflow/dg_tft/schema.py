@@ -24,6 +24,7 @@ class WorkflowStatus(str, Enum):
     DONE = "DONE"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    NEEDS_INPUT = "NEEDS_INPUT"
 
 
 class StageName:

@@ -19,7 +19,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from src.context.agent_context import AgentContext
+from .control import WorkflowStopped, check_stop_decision
+from src.context.agent_context import AgentContext, RequestLLMCancelled
 from src.constants import PREPARER_AGENT_LABEL
 
 sys_log = logging.getLogger("logger")
@@ -211,7 +212,7 @@ I-t files:
    - Report file count
 5. After inspecting, call `report_verification` with your structured findings.
 
-**CRITICAL**: Call the `report_verification` tool exactly once at the end. Do not output free text. Inspect EVERY *_train.xlsx IV file individually — do not skip any. Check sheets and columns for each one.
+**CRITICAL**: For unresolved contradictions or missing measurement facts, call `stop_workflow`. Otherwise call `report_verification` exactly once; when downstream feedback is supplied, include `feedback_resolution` addressing that concern with evidence. Do not output free text. Inspect EVERY *_train.xlsx IV file individually — do not skip any. Check sheets and columns for each one.
 """
 
 
@@ -239,6 +240,8 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
             ctx, raw_dataset_dir, output_dir, SUBAGENT_TOOL_REPORT_VERIFICATION,
             handoff_history="",
         )
+    except (WorkflowStopped, RequestLLMCancelled):
+        raise
     except Exception as e:
         sys_log.error("Data prep %d failed: %s", prep_id, e)
         if console and not getattr(ctx, "subagent_mute", False):
@@ -293,6 +296,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         python_exe=python_exe,
         report_name=_PREP_WORKER_REPORT_NAME,
     )
+    prompt += "\nIf required measurement facts are missing or the task cannot be completed faithfully, call stop_workflow with evidence instead of fabricating data or retrying indefinitely."
     if handoff_history_text:
         prompt += f"\n\n**Previous attempt feedback** (use this to fix issues):\n{handoff_history_text}"
 
@@ -320,6 +324,7 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
     if agent.status.value == "done" and result:
         try:
             handoff = json.loads(result) if isinstance(result, str) else dict(result)
+            check_stop_decision(handoff)
         except (json.JSONDecodeError, TypeError, ValueError):
             sys_log.warning("Preparer returned non-JSON result: %s", str(result)[:200])
             handoff = {"observations": [], "actions": [str(result)[:500]], "output_manifest": {}}
@@ -390,7 +395,9 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
     if agent.status.value == "done" and result:
         sys_log.info("Verifier SubAgent completed: %s", result[:200] if result else "(empty)")
         try:
-            return json.loads(result) if isinstance(result, str) else dict(result)
+            decision = json.loads(result) if isinstance(result, str) else dict(result)
+            check_stop_decision(decision)
+            return decision
         except (json.JSONDecodeError, TypeError, ValueError):
             sys_log.warning("Verifier returned non-JSON result, using as summary: %s", str(result)[:200])
             return {"overall_ok": False, "summary": str(result)[:500]}
@@ -505,6 +512,8 @@ def run_data_preparation_with_retry(
                 handoff_history=handoff_history,
             )
             duration = time_mod.monotonic() - t_start
+        except (WorkflowStopped, RequestLLMCancelled):
+            raise
         except Exception as e:
             sys_log.error("Data prep attempt %d failed: %s", attempt, e)
             trigger = AttemptTrigger.INITIAL if attempt == 1 else AttemptTrigger.VERIFIER_FAIL
@@ -890,6 +899,8 @@ def run_preparer_stage(
 
     try:
         handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+    except (WorkflowStopped, RequestLLMCancelled):
+        raise
     except Exception as e:
         sys_log.error("Preparer stage failed: %s", e)
         return {"ok": False, "handoff": None, "error": str(e)}

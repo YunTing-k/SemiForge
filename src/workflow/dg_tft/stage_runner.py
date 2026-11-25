@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -191,6 +192,7 @@ def _run_stage_streaming(
             stderr=subprocess.PIPE,
             text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            start_new_session=(os.name != "nt"),
         )
     except FileNotFoundError:
         sys_log.error("Stage [%s] failed: executable not found", stage_name)
@@ -207,48 +209,59 @@ def _run_stage_streaming(
             error=str(e),
         )
 
+    # Drain both pipes concurrently so timeout/cancellation is not blocked by
+    # a silent engine waiting inside stdout iteration. Keep full attempt logs.
+    log_root = Path(cwd or RUN_MODEL_PATH.parent) / "stage_logs"
+    log_root.mkdir(parents=True, exist_ok=True)
+    stamp = f"{stage_name}_{time.time_ns()}"
+    stdout_path = log_root / f"{stamp}.stdout.log"
+    stderr_path = log_root / f"{stamp}.stderr.log"
+    stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
-    def _consume_stderr() -> None:
-        for line in process.stderr:
-            stderr_lines.append(line)
-            stripped = line.rstrip()
-            if c and not muted and stream_stderr and stripped:
-                c.print(f"    [bold red][engine] {escape(stripped)}[/bold red]")
+    def consume(pipe, destination, lines, enabled, style):
+        with destination.open("w", encoding="utf-8") as log:
+            for line in pipe:
+                lines.append(line.rstrip())
+                log.write(line)
+                log.flush()
+                if c and not muted and enabled and line.strip():
+                    c.print(f"    [{style}][engine] {escape(line.rstrip())}[/{style}]")
 
-    stderr_thread = threading.Thread(target=_consume_stderr, daemon=True)
-    stderr_thread.start()
-
-    stdout_lines: list[str] = []
-    try:
-        for line in process.stdout:
-            stripped = line.rstrip()
-            stdout_lines.append(stripped)
-            if c and not muted and stream_stdout and stripped:
-                c.print(f"    [bright_black][engine] {escape(stripped)}[/bright_black]")
-    except Exception:
-        pass
-
+    workers = [
+        threading.Thread(target=consume, args=(process.stdout, stdout_path, stdout_lines, stream_stdout, "bright_black"), daemon=True),
+        threading.Thread(target=consume, args=(process.stderr, stderr_path, stderr_lines, stream_stderr, "bold red"), daemon=True),
+    ]
+    for worker in workers:
+        worker.start()
+    outputs = {"stdout_log": str(stdout_path), "stderr_log": str(stderr_path)}
     try:
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        sys_log.error("Stage [%s] timed out after %s s", stage_name, timeout)
-        process.kill()
-        process.wait()
-        return StageResult(
-            ok=False,
-            stage=stage_name,
-            error=f"Timed out after {timeout} seconds",
-        )
-
-    stderr_thread.join()
-    stderr_text = "".join(stderr_lines)
+        _stop_process_tree(process)
+        return StageResult(ok=False, stage=stage_name, outputs=outputs,
+                           error=f"Timed out after {timeout} seconds")
+    except BaseException:
+        # run_model.py can itself spawn training subprocesses. Cancel the owned
+        # process tree before propagating the interrupt to the orchestrator.
+        try:
+            _stop_process_tree(process)
+        except Exception:
+            sys_log.exception("Stage [%s] cleanup failed during interruption", stage_name)
+        raise
+    finally:
+        for worker in workers:
+            worker.join(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+    stderr_text = "\n".join(stderr_lines)
 
     if returncode == 0:
         sys_log.info("Stage [%s] succeeded (rc=0)", stage_name)
         return StageResult(
             ok=True,
             stage=stage_name,
+            outputs=outputs,
             summary=stdout_lines[-5:] if stdout_lines else [],
             warnings=_extract_warnings(stderr_text),
         )
@@ -260,7 +273,27 @@ def _run_stage_streaming(
         return StageResult(
             ok=False,
             stage=stage_name,
+            outputs=outputs,
             summary=stdout_lines[-10:] if stdout_lines else [],
             error=f"Exit code {returncode}: {stderr_text[:2000]}" if stderr_text else f"Exit code {returncode}",
             warnings=_extract_warnings(stderr_text),
         )
+
+
+def _stop_process_tree(process) -> None:
+    """Terminate only this runner's child tree; never use name-based process kills."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           capture_output=True, timeout=15)
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        sys_log.exception("Could not terminate child tree for PID %s", process.pid)
+    finally:
+        # Still reap the direct child if the platform tree helper is unavailable.
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=15)

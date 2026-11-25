@@ -19,6 +19,7 @@ import openpyxl
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.workflow.dg_tft.control import WorkflowStopped
 from src.workflow.dg_tft.manager import WorkflowManager
 from src.workflow.dg_tft.operation_log import OperationLog, AttemptTrigger, StageAttemptLog
 from src.workflow.dg_tft.orchestrator import (
@@ -214,13 +215,13 @@ class TestProcessAgentDecision(unittest.TestCase):
         decision = _process_agent_decision(ctx, 1, sd, self.config_path, op_log, result, 2)
         self.assertEqual(decision, "fallback")
 
-    def test_error_falls_through_to_accept(self):
+    def test_invalid_decision_stops_instead_of_accepting(self):
         ctx = _make_mock_ctx()
         sd = self._make_sd()
         op_log = OperationLog(self.tmpdir)
         result = {"decision": "error", "arguments": {}, "reasoning": "could not parse"}
-        decision = _process_agent_decision(ctx, 1, sd, self.config_path, op_log, result, 0)
-        self.assertEqual(decision, "accept")
+        with self.assertRaises(WorkflowStopped):
+            _process_agent_decision(ctx, 1, sd, self.config_path, op_log, result, 0)
 
 
 # ======================================================================
@@ -505,7 +506,7 @@ class TestOrchestratorModelingAgentFlow(unittest.TestCase):
         rid = self._create_run(ctx)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
         self.assertIn("completed", summary)
         self.assertEqual(mock_run.call_count, 4)
 
@@ -521,13 +522,13 @@ class TestOrchestratorModelingAgentFlow(unittest.TestCase):
             StageResult(ok=True, stage="fit-physical", summary="ok but low quality"),
             StageResult(ok=True, stage="train-static", summary="OK"),
         ]
-        mock_q.return_value = (False, ["High RMS error"])  # quality fail triggers agent
+        mock_q.side_effect = lambda ctx, stage, *args: (stage == "check-data", [] if stage == "check-data" else ["High RMS error"])  # quality fail triggers agent
 
         ctx = _make_mock_ctx()
         rid = self._create_run(ctx)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
 
     @patch("src.agent.subagent.SubAgent")
     @patch("src.workflow.dg_tft.orchestrator.run_stage")
@@ -553,7 +554,7 @@ class TestOrchestratorModelingAgentFlow(unittest.TestCase):
             StageResult(ok=True, stage="fit-physical", summary="ok but low"),
             StageResult(ok=False, stage="check-data", error="still bad"),
         ]
-        mock_q.return_value = (False, ["High RMS"])
+        mock_q.side_effect = lambda ctx, stage, *args: (stage == "check-data", [] if stage == "check-data" else ["High RMS"])
 
         ctx = _make_mock_ctx()
         rid = self._create_run(ctx)
@@ -596,7 +597,7 @@ class TestOrchestratorTwoStageFallback(unittest.TestCase):
             st = kwargs.get("subagent_type", "")
             call_order.append(st)
             prompt = str(kwargs.get("prompt", ""))
-            if st == MODELING_AGENT_LABEL and "train-hysteresis" in prompt:
+            if st == MODELING_AGENT_LABEL and "train-hysteresis diagnostics" in prompt:
                 return _make_mock_subagent(json.dumps(
                     {"target": "train-static", "reason": "upstream data issue", "evidence": ""},
                 ))
@@ -631,7 +632,7 @@ class TestOrchestratorTwoStageFallback(unittest.TestCase):
         rid = self._create_run(ctx)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
 
 
 # ======================================================================
@@ -774,7 +775,7 @@ class TestRunAgentStage(unittest.TestCase):
         mock_prep.return_value = {"ok": True, "handoff": {"observations": ["processed"], "actions": ["merged sheets"]}, "error": ""}
         def verify_capture(*args, **kwargs):
             captured_handoff.append(kwargs.get("handoff"))
-            return {"ok": True, "feedback": {"overall_ok": True}, "issues": [], "worker_handoff": {}}
+            return {"ok": True, "feedback": {"overall_ok": True, "feedback_resolution": {"outcome": "not_applicable", "reason": "VG maps to VBG_V", "evidence": "long header contains VBG_V"}}, "issues": [], "worker_handoff": {}}
         mock_verify.side_effect = verify_capture
 
         ctx = _make_mock_ctx()
@@ -866,7 +867,7 @@ class TestOperationLogAgentEntries(unittest.TestCase):
         ctx.workflow_man.set_dataset_profile(rid, profile)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
         op_log_path = os.path.join(self.tmpdir, "output", "operation_log.json")
         self.assertTrue(Path(op_log_path).exists(), "operation_log.json should be written")
         with open(op_log_path, "r", encoding="utf-8") as f:
@@ -947,7 +948,7 @@ class TestFallbackHandoffChain(unittest.TestCase):
             st = kwargs.get("subagent_type", "")
             prompt = str(kwargs.get("prompt", ""))
             captured_prompts.append((st, prompt))
-            is_hyst_agent = st == MODELING_AGENT_LABEL and "agent d" in prompt.lower()
+            is_hyst_agent = st == MODELING_AGENT_LABEL and "train-hysteresis diagnostics" in prompt.lower()
             if is_hyst_agent:
                 return _make_mock_subagent(json.dumps({
                     "target": "train-static", "reason": "hysteresis needs better static base",
@@ -984,7 +985,7 @@ class TestFallbackHandoffChain(unittest.TestCase):
         ctx.workflow_man.set_dataset_profile(rid, profile)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
 
         # Verify train-static agent prompt names the downstream stage that fell back
         train_static_prompts = [p for st, p in captured_prompts
@@ -1030,7 +1031,7 @@ class TestFallbackHandoffChain(unittest.TestCase):
         ctx.workflow_man.set_dataset_profile(rid, profile)
         result, summary = run_workflow(ctx, rid, entry="check-data", dataset_dir="/data/test",
                                        config_path=self.config_path)
-        self.assertTrue(result)
+        self.assertTrue(result, summary)
 
         op_log_path = os.path.join(self.tmpdir, "output", "operation_log.json")
         self.assertTrue(Path(op_log_path).exists())

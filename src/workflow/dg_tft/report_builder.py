@@ -122,6 +122,7 @@ def _build_artifact_manifest(
             for key in keys:
                 full_path = artifact_path(output_dir, subdir, key)
                 exists = full_path.exists()
+                invalidated = stage_name in run_data.get("extra", {}).get("invalidated_stages", [])
                 items.append({
                     "stage": stage_name,
                     "artifact_key": key,
@@ -129,6 +130,7 @@ def _build_artifact_manifest(
                     "path": str(full_path),
                     "subdir": subdir,
                     "exists": exists,
+                    "current": not invalidated,
                     "size_bytes": full_path.stat().st_size if exists else 0,
                 })
 
@@ -230,6 +232,7 @@ def _build_json_summary(
     summary: dict[str, Any] = {
         "run_id": run_data.get("run_id"),
         "model_scope": _model_scope(run_data),
+        "termination": run_data.get("extra", {}).get("termination"),
         "status": status,
         "created_at": run_data.get("created_at"),
         "updated_at": run_data.get("updated_at"),
@@ -300,6 +303,14 @@ def _build_md_summary(
                 lines.append(f"  - [WARN] {iss}")
     lines.append(f"- **Hysteresis enabled**: {run_data.get('hysteresis_enabled', False)}")
     lines.append(f"- **Temperature enabled**: {run_data.get('temperature_enabled', False)}")
+    termination = run_data.get("extra", {}).get("termination")
+    if termination:
+        lines.append("")
+        lines.append("## Termination")
+        for key in ("reason", "evidence", "required_information"):
+            if termination.get(key):
+                lines.append(f"- **{key.replace('_', ' ').title()}**: {termination[key]}")
+
     scope = _model_scope(run_data)
     lines.append(f"- **Static modeling scope**: {scope['task_mode']}")
     if scope.get("limitation"):

@@ -54,6 +54,8 @@ SUBAGENT_TOOL_REPORT_VERIFICATION: str = "report_verification"
 SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE: str = "contribute_knowledge"
 SUBAGENT_TOOL_ACCEPT_QUALITY: str = "accept_quality"
 SUBAGENT_TOOL_SUBMIT_HANDOFF: str = "submit_handoff"
+SUBAGENT_TOOL_STOP_WORKFLOW: str = "stop_workflow"
+SUBAGENT_TOOL_RESOLVE_FEEDBACK: str = "resolve_feedback"
 
 __all__ = [
     "get_tools",
@@ -65,6 +67,8 @@ __all__ = [
     "SUBAGENT_TOOL_CONTRIBUTE_KNOWLEDGE",
     "SUBAGENT_TOOL_ACCEPT_QUALITY",
     "SUBAGENT_TOOL_SUBMIT_HANDOFF",
+    "SUBAGENT_TOOL_STOP_WORKFLOW",
+    "SUBAGENT_TOOL_RESOLVE_FEEDBACK",
 ]
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,42 @@ _FALLBACK_TO_PREVIOUS_SCHEMA: dict[str, Any] = {
     },
 }
 
+_STOP_WORKFLOW_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_STOP_WORKFLOW,
+        "description": "Stop this entire modeling run without accepting a model. Use for unresolved contradictions, missing measurement facts, or unrecoverable failure.",
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "outcome": {"type": "string", "enum": ["failed", "needs_input"]},
+                "reason": {"type": "string", "minLength": 1},
+                "evidence": {"type": "string", "minLength": 1},
+                "required_information": {"type": "string", "description": "Specific missing facts needed to continue; required for needs_input."},
+            },
+            "required": ["outcome", "reason", "evidence"],
+        },
+    },
+}
+
+_FEEDBACK_RESOLUTION_PROPERTIES = {
+    "outcome": {"type": "string", "enum": ["corrected", "not_applicable"]},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence": {"type": "string", "minLength": 1,
+                 "description": "Checks that specifically address the downstream concern; format validation alone does not resolve a physical inconsistency."},
+}
+
+_RESOLVE_FEEDBACK_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SUBAGENT_TOOL_RESOLVE_FEEDBACK,
+        "description": "Explicitly resolve a downstream concern after investigating it. Never use simply because structural validation passed. Otherwise fall back or stop_workflow.",
+        "parameters": {"type": "object", "additionalProperties": False,
+                       "properties": _FEEDBACK_RESOLUTION_PROPERTIES,
+                       "required": ["outcome", "reason", "evidence"]},
+    },
+}
+
 _REPORT_VERIFICATION_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -159,6 +199,11 @@ _REPORT_VERIFICATION_SCHEMA: dict[str, Any] = {
                 "overall_ok": {
                     "type": "boolean",
                     "description": "True if all critical checks pass."
+                },
+                "feedback_resolution": {
+                    "type": "object", "properties": _FEEDBACK_RESOLUTION_PROPERTIES,
+                    "required": ["outcome", "reason", "evidence"],
+                    "description": "Required when approving data after a downstream fallback. Explain how that particular concern was resolved.",
                 },
                 "iv_families": {
                     "type": "array",
@@ -207,11 +252,17 @@ _ACCEPT_QUALITY_SCHEMA: dict[str, Any] = {
         "description": (
             "Accept the current quality metrics and move on without further adjustments. "
             "Use this when quality is close to acceptable, user preferences deprioritize "
-            "the failing metric, or continued adjustments are unlikely to help."
+            "the failing metric. Inability to improve is not evidence of acceptable quality; "
+            "use stop_workflow for unresolved failure or missing information."
         ),
         "parameters": {
             "type": "object",
             "properties": {
+                "feedback_resolution": {
+                    "type": "object", "properties": _FEEDBACK_RESOLUTION_PROPERTIES,
+                    "required": ["outcome", "reason", "evidence"],
+                    "description": "Required when accepting after downstream fallback: specifically resolve the downstream concern with evidence.",
+                },
                 "reasoning": {
                     "type": "string",
                     "description": "Why accepting current quality is the right call.",
@@ -369,7 +420,7 @@ def _contribute_knowledge_handler(arguments: dict[str, Any], ctx) -> dict[str, A
 
 _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]]]] = {
     "data-prep": (
-        [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA],
+        [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA, _STOP_WORKFLOW_SCHEMA],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
     "fit-physical": (
@@ -378,6 +429,7 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
             _ADJUST_PARAMS_SCHEMA,
             _FALLBACK_TO_PREVIOUS_SCHEMA,
             _ACCEPT_QUALITY_SCHEMA,
+            _STOP_WORKFLOW_SCHEMA,
         ],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
@@ -387,6 +439,7 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
             _ADJUST_PARAMS_SCHEMA,
             _FALLBACK_TO_PREVIOUS_SCHEMA,
             _ACCEPT_QUALITY_SCHEMA,
+            _STOP_WORKFLOW_SCHEMA,
         ],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
@@ -396,11 +449,12 @@ _STAGE_TOOLS: dict[str, tuple[list[dict[str, Any]], dict[str, Callable[..., Any]
             _ADJUST_PARAMS_SCHEMA,
             _FALLBACK_TO_PREVIOUS_SCHEMA,
             _ACCEPT_QUALITY_SCHEMA,
+            _STOP_WORKFLOW_SCHEMA,
         ],
         {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
     ),
     "check-data": (
-        [_FALLBACK_TO_PREVIOUS_SCHEMA],
+        [_FALLBACK_TO_PREVIOUS_SCHEMA, _RESOLVE_FEEDBACK_SCHEMA, _STOP_WORKFLOW_SCHEMA],
         {},
     ),
     "final-interpret": (
@@ -451,22 +505,22 @@ from src.constants import VERIFIER_AGENT_LABEL, PREPARER_AGENT_LABEL, DIAGNOSTIC
 
 _AGENT_TYPE_CONFIG: dict[str, dict[str, Any]] = {
     PREPARER_AGENT_LABEL: {
-        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _SUBMIT_HANDOFF_SCHEMA],
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _SUBMIT_HANDOFF_SCHEMA, _STOP_WORKFLOW_SCHEMA],
         "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
         "stop_mode": "schema",
-        "stop_schemas": [SUBAGENT_TOOL_SUBMIT_HANDOFF],
+        "stop_schemas": [SUBAGENT_TOOL_SUBMIT_HANDOFF, SUBAGENT_TOOL_STOP_WORKFLOW],
     },
     VERIFIER_AGENT_LABEL: {
-        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA],
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _REPORT_VERIFICATION_SCHEMA, _STOP_WORKFLOW_SCHEMA],
         "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
         "stop_mode": "schema",
-        "stop_schemas": [SUBAGENT_TOOL_REPORT_VERIFICATION],
+        "stop_schemas": [SUBAGENT_TOOL_REPORT_VERIFICATION, SUBAGENT_TOOL_STOP_WORKFLOW],
     },
     DIAGNOSTIC_AGENT_LABEL: {
-        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _FALLBACK_TO_PREVIOUS_SCHEMA],
+        "tool_schemas": [_INSPECT_XLSX_SCHEMA, _FALLBACK_TO_PREVIOUS_SCHEMA, _RESOLVE_FEEDBACK_SCHEMA, _STOP_WORKFLOW_SCHEMA],
         "tool_handlers": {SUBAGENT_TOOL_INSPECT_XLSX: _inspect_xlsx_handler},
         "stop_mode": "schema",
-        "stop_schemas": [SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS],
+        "stop_schemas": [SUBAGENT_TOOL_FALLBACK_TO_PREVIOUS, SUBAGENT_TOOL_RESOLVE_FEEDBACK, SUBAGENT_TOOL_STOP_WORKFLOW],
     },
     INTERPRETER_AGENT_LABEL: {
         "tool_schemas": [_CONTRIBUTE_KNOWLEDGE_SCHEMA],

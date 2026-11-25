@@ -18,6 +18,7 @@ import json
 import threading
 import logging
 from datetime import datetime
+from typing import Any
 from pathlib import Path
 
 from .schema import (
@@ -191,6 +192,8 @@ class WorkflowManager:
             run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if stage_result is not None:
                 run.stage_results[stage_name] = stage_result
+                invalidated = run.extra.get("invalidated_stages", [])
+                run.extra["invalidated_stages"] = [name for name in invalidated if name != stage_name]
             self._runs[run_id] = run
             self._save_runs()
             return True
@@ -218,6 +221,34 @@ class WorkflowManager:
             self._runs[run_id] = run
             self._save_runs()
             return True
+
+    def invalidate_stages(self, run_id: int, stages: list[str], artifact_keys: set[str],
+                          feedback: dict | None = None) -> dict:
+        """Retire current results atomically, retaining their historical snapshot."""
+        with self._lock:
+            run = self._runs[run_id]
+            snapshot = {"stages": stages, "results": {
+                name: run.stage_results[name].to_dict()
+                for name in stages if name in run.stage_results
+            }, "artifacts": {k: v for k, v in run.artifacts.items() if k in artifact_keys},
+                "feedback": feedback, "timestamp": datetime.now().isoformat()}
+            run.extra.setdefault("invalidations", []).append(snapshot)
+            run.extra["invalidated_stages"] = sorted(set(run.extra.get("invalidated_stages", [])) | set(stages))
+            for name in stages:
+                run.stage_results.pop(name, None)
+            for key in artifact_keys:
+                run.artifacts.pop(key, None)
+            # Aggregate metrics are recomputed from current stage results at finalization.
+            run.metrics.clear()
+            run.extra["pending_feedback"] = feedback
+            run.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_runs()
+            return snapshot
+
+    def set_run_extra(self, run_id: int, key: str, value: Any) -> None:
+        with self._lock:
+            self._runs[run_id].extra[key] = value
+            self._save_runs()
 
     def attach_artifact(self, run_id: int, key: str, path: str) -> bool:
         with self._lock:

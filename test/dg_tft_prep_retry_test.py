@@ -117,7 +117,7 @@ class TestSubagentToolsDataPrep(unittest.TestCase):
     def test_data_prep_stage_has_tools(self):
         from src.tool.subagent_tools import get_tools, SUBAGENT_TOOL_INSPECT_XLSX, SUBAGENT_TOOL_REPORT_VERIFICATION
         schemas, handlers = get_tools("data-prep")
-        self.assertEqual(len(schemas), 2)
+        self.assertEqual(len(schemas), 3)
         names = [s["function"]["name"] for s in schemas]
         self.assertIn(SUBAGENT_TOOL_INSPECT_XLSX, names)
         self.assertIn(SUBAGENT_TOOL_REPORT_VERIFICATION, names)

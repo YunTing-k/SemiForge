@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.workflow.dg_tft.control import WorkflowStopped
 from src.workflow.dg_tft.schema import (
     WorkflowRun,
     WorkflowStatus,
@@ -559,7 +560,7 @@ class TestModelingAgentHelpers(unittest.TestCase):
         self.assertEqual(result, "fallback")
 
     def test_process_agent_decision_empty_adjustments(self):
-        """Empty adjustments → accept (no retry)."""
+        """Rejected adjustments must not implicitly accept an unresolved failure."""
         from src.workflow.dg_tft.orchestrator import _process_agent_decision
 
         ctx = MockContext()
@@ -574,8 +575,8 @@ class TestModelingAgentHelpers(unittest.TestCase):
             },
             "reasoning": "no changes",
         }
-        result = _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)
-        self.assertEqual(result, "accept")
+        with self.assertRaises(WorkflowStopped):
+            _process_agent_decision(ctx, 1, sd, "", None, agent_result, 0)
 
 
 # ======================================================================
