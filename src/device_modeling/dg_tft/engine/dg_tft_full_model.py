@@ -398,9 +398,8 @@ def select_cv_training_subset(series, mode: str):
     return selected
 
 
-def make_iv_tensors_v2(df: pd.DataFrame, device: torch.device, dtype: torch.dtype) -> dict[str, torch.Tensor]:
-    data = make_iv_tensors(df, device, dtype)
-    data["weight"] = tensor(iv_weight_v2(df), device, dtype)
+def _iv_temperature_values(df: pd.DataFrame) -> np.ndarray:
+    """Resolve measured temperature in kelvin; NaN denotes nominal temperature."""
     temp_k_col = next((c for c in ["temp_K", "temperature_K", "T_K", "TEMP_K"] if c in df.columns), None)
     temp_c_col = next((c for c in ["temp_C", "temperature_C", "T_C", "TEMP_C"] if c in df.columns), None)
     if temp_k_col is not None and len(df):
@@ -412,12 +411,33 @@ def make_iv_tensors_v2(df: pd.DataFrame, device: torch.device, dtype: torch.dtyp
         # model replaces NaN with p.Tnom, which avoids accidentally biasing a
         # non-300 K nominal extraction.
         temp_vals = np.full(len(df), np.nan, dtype=float)
+    return temp_vals
+
+
+def _iv_curve_groups(df: pd.DataFrame, columns: list[str], **kwargs):
+    """Keep each isothermal sweep separate in curve diagnostics and plots.
+
+    Missing temperatures retain a nominal-temperature group. A temporary column
+    avoids modifying exported measurements or interpreting Celsius as kelvin.
+    """
+    temperature = _iv_temperature_values(df)
+    kwargs.setdefault("dropna", False)
+    if np.isfinite(temperature).any():
+        df = df.assign(_iv_curve_temperature_K=temperature)
+        columns = [*columns, "_iv_curve_temperature_K"]
+    return df.groupby(columns, **kwargs)
+
+
+def make_iv_tensors_v2(df: pd.DataFrame, device: torch.device, dtype: torch.dtype) -> dict[str, torch.Tensor]:
+    data = make_iv_tensors(df, device, dtype)
+    data["weight"] = tensor(iv_weight_v2(df), device, dtype)
+    temp_vals = _iv_temperature_values(df)
     data["temp_K"] = tensor(temp_vals, device, dtype)
     fam = df["family"].map({"IDVBG": 0, "IDVTG": 1, "IDVD": 2}).fillna(3).to_numpy(int)
     data["family"] = torch.as_tensor(fam, dtype=torch.long, device=device)
     if len(df):
         curve_key = []
-        for _, r in df.iterrows():
+        for temperature, (_, r) in zip(temp_vals, df.iterrows()):
             family = str(r["family"])
             source = str(r["source_file"])
             if family == "IDVBG":
@@ -426,6 +446,11 @@ def make_iv_tensors_v2(df: pd.DataFrame, device: torch.device, dtype: torch.dtyp
                 curve_key.append(f"{family}|{source}|VBG={float(r['VBG_V']):.6g}|VDS={float(r['VDS_V']):.6g}")
             else:
                 curve_key.append(f"{family}|{source}|VBG={float(r['VBG_V']):.6g}|VTG={float(r['VTG_V']):.6g}")
+            # Temperature is a fixed sweep condition, not another point along
+            # the voltage axis. Preserve legacy ordering for single-temperature
+            # inputs while splitting multitemperature files into real curves.
+            if np.isfinite(temperature):
+                curve_key[-1] += f"|T_K={temperature:.12g}"
         _, curve_code = np.unique(np.asarray(curve_key), return_inverse=True)
     else:
         curve_code = np.array([], dtype=int)
@@ -442,7 +467,7 @@ def iv_cross_condition_holdout(
     if df is None or len(df) == 0:
         return df.copy(), {"enabled": False, "reason": "empty_iv_dataframe"}
     keys = []
-    for _, row in df.iterrows():
+    for temperature, (_, row) in zip(_iv_temperature_values(df), df.iterrows()):
         family = str(row["family"])
         source = str(row["source_file"])
         if family == "IDVBG":
@@ -466,6 +491,8 @@ def iv_cross_condition_holdout(
                 round(float(row["VBG_V"]), 8),
                 round(float(row["VTG_V"]), 8),
             )
+        if np.isfinite(temperature):
+            key += (f"T_K={temperature:.12g}",)
         keys.append(key)
     key_series = pd.Series(keys, index=df.index, dtype=object)
     selected: set[tuple] = set()
@@ -2721,7 +2748,7 @@ def plot_iv_family(iv_df: pd.DataFrame, family: str, out: Path):
         family, ["source_file"]
     )
     fig, ax = plt.subplots(figsize=(7.0, 5.6))
-    for idx, (_, g) in enumerate(data.groupby(group_cols, sort=True)):
+    for idx, (_, g) in enumerate(_iv_curve_groups(data, group_cols, sort=True)):
         if idx >= 80:
             break
         g = g.sort_values(xcol)
@@ -2767,7 +2794,7 @@ def plot_iv_comparison_family(iv_df: pd.DataFrame, family: str, out: Path):
         family, ["source_file"]
     )
     fig, ax = plt.subplots(figsize=(7.2, 5.7))
-    for idx, (_, g) in enumerate(data.groupby(group_cols, sort=True)):
+    for idx, (_, g) in enumerate(_iv_curve_groups(data, group_cols, sort=True)):
         if idx >= 55:
             break
         g = g.sort_values(xcol)
@@ -2873,7 +2900,7 @@ def extrapolation_shape_diagnostics(iv_df: pd.DataFrame, cv_df: pd.DataFrame) ->
     }
     for family, (xcol, group_cols) in iv_group_specs.items():
         sub = iv_df[iv_df["family"] == family]
-        for key, g in sub.groupby(group_cols, dropna=False):
+        for key, g in _iv_curve_groups(sub, group_cols, dropna=False):
             key_map = dict(zip(group_cols, key if isinstance(key, tuple) else (key,)))
             vds = float(key_map.get("VDS_V", np.nan))
             vtg = float(key_map.get("VTG_V", np.nan))
@@ -2955,7 +2982,7 @@ def plot_extrapolation_iv(iv_df: pd.DataFrame, out: Path):
     for family, xcol, ax in specs:
         sub = iv_df[iv_df["family"] == family]
         group_cols = {"IDVBG": ["VDS_V", "VTG_V"], "IDVTG": ["VDS_V", "VBG_V"], "IDVD": ["VBG_V", "VTG_V"]}[family]
-        for idx, (_, g) in enumerate(sub.groupby(group_cols, sort=True)):
+        for idx, (_, g) in enumerate(_iv_curve_groups(sub, group_cols, sort=True)):
             if idx >= 18:
                 break
             g = g.sort_values(xcol)
@@ -8876,6 +8903,13 @@ def _base_iv_accuracy(
             "iv_on_rms": rms(on),
             "iv_high_rms": rms(high),
         }
+        # Coverage is determined by measurements, never by prediction validity.
+        for key, mask in {
+            "iv_nonzero_rms": nonzero, "iv_nonzero_p95_abs": nonzero,
+            "iv_off_rms": off, "iv_subthreshold_rms": subthreshold,
+            "iv_transition_rms": transition, "iv_on_rms": on, "iv_high_rms": high,
+        }.items():
+            metrics[f"{key}_count"] = int(mask.sum().item())
         for code, name in {0: "idvbg", 1: "idvtg", 2: "idvd"}.items():
             family = data["family"] == code
             metrics[f"{name}_on_rms"] = rms(family & on)
@@ -8883,17 +8917,63 @@ def _base_iv_accuracy(
     return metrics
 
 
-def _base_iv_selection_score(metrics: dict[str, float]) -> float:
-    """Balanced whole-curve score used for deterministic restart selection."""
+def _iv_metric_not_applicable(metrics: dict, key: str) -> bool:
+    """Only explicit zero coverage excludes a metric; NaN alone never does.
 
-    return float(
-        0.24 * metrics.get("iv_nonzero_rms", float("inf"))
-        + 0.10 * metrics.get("iv_off_rms", float("inf"))
-        + 0.22 * metrics.get("iv_subthreshold_rms", float("inf"))
-        + 0.20 * metrics.get("iv_transition_rms", float("inf"))
-        + 0.14 * metrics.get("iv_on_rms", float("inf"))
-        + 0.10 * metrics.get("iv_high_rms", float("inf"))
+    The overall nonzero-VDS accuracy and tail remain mandatory. Older reports
+    without counts retain strict validation rather than hiding numerical errors.
+    """
+    mandatory = key.endswith(("iv_nonzero_rms", "iv_nonzero_p95_abs", "iv_rms"))
+    return not mandatory and metrics.get(f"{key}_count") == 0
+
+
+def _iv_metric_limit_check(metrics: dict, key: str, limit: float) -> dict:
+    """Describe applicability separately from the aggregate acceptance result."""
+    absent = _iv_metric_not_applicable(metrics, key)
+    value = float(metrics.get(key, float("nan")))
+    passed = bool(np.isfinite(value) and np.isfinite(limit) and value <= limit)
+    return {
+        "value": value, "limit": float(limit),
+        "count": metrics.get(f"{key}_count"),
+        "status": "not_applicable" if absent else ("pass" if passed else "fail"),
+        "pass": absent or passed,
+    }
+
+
+def _iv_region_comparison(base: dict, candidate: dict, key: str, slack: float) -> dict:
+    """Compare only equally supported regions and reject nonfinite predictions."""
+    base_value = float(base.get(key, float("nan")))
+    result = _iv_metric_limit_check(candidate, key, base_value + slack)
+    both_absent = _iv_metric_not_applicable(base, key) and _iv_metric_not_applicable(candidate, key)
+    result["pass"] = bool(both_absent or (
+        not _iv_metric_not_applicable(base, key)
+        and not _iv_metric_not_applicable(candidate, key)
+        and np.isfinite(base_value) and result["pass"]
+    ))
+    result["status"] = "not_applicable" if both_absent else ("pass" if result["pass"] else "fail")
+    result.update(base=base_value, residual=result["value"], max_allowed=result["limit"])
+    return result
+
+
+def _base_iv_selection_score(metrics: dict[str, float]) -> float:
+    """Balanced score with weights normalized over measured regions only."""
+    weights = (
+        ("iv_nonzero_rms", 0.24), ("iv_off_rms", 0.10),
+        ("iv_subthreshold_rms", 0.22), ("iv_transition_rms", 0.20),
+        ("iv_on_rms", 0.14), ("iv_high_rms", 0.10),
     )
+    score, weight_sum, used = 0.0, 0.0, 0
+    for key, weight in weights:
+        if _iv_metric_not_applicable(metrics, key):
+            continue
+        value = float(metrics.get(key, float("inf")))
+        if not np.isfinite(value):
+            return float("inf")
+        score += weight * value
+        weight_sum += weight
+        used += 1
+    # Preserve the original arithmetic when all six regions are available.
+    return float(score if used == len(weights) else score / weight_sum) if weight_sum else float("inf")
 
 
 def _base_iv_precision_gate(metrics: dict[str, float], args) -> tuple[bool, dict[str, dict[str, float | bool]]]:
@@ -8910,12 +8990,7 @@ def _base_iv_precision_gate(metrics: dict[str, float], args) -> tuple[bool, dict
     }
     checks = {}
     for key, limit in limits.items():
-        value = float(metrics.get(key, float("inf")))
-        checks[key] = {
-            "value": value,
-            "limit": limit,
-            "pass": bool(np.isfinite(value) and value <= limit),
-        }
+        checks[key] = _iv_metric_limit_check(metrics, key, limit)
     return all(item["pass"] for item in checks.values()), checks
 
 
@@ -8949,6 +9024,8 @@ def _iv_residual_accuracy(
             return float(torch.sqrt(torch.mean(err[mask] ** 2)).detach().cpu())
 
         metrics = {key: rms(mask) for key, mask in masks.items()}
+        metrics.update({f"{key}_count": int(mask.sum().item()) for key, mask in masks.items()})
+        metrics["iv_nonzero_p95_abs_count"] = int(nonzero.sum().item())
         metrics["iv_rms"] = float(torch.sqrt(torch.mean(err * err)).detach().cpu())
         metrics["iv_nonzero_median_abs"] = float(
             torch.median(torch.abs(err[nonzero])).detach().cpu()
@@ -8981,6 +9058,8 @@ def _iv_residual_accuracy(
                 slope_error.extend(
                     (((torch.diff(p) - torch.diff(t)) / dx)[valid]).detach().cpu().tolist()
                 )
+        metrics["iv_slope_rmse_dec_per_v_count"] = len(slope_error)
+        metrics["iv_curve_rms_p95_count"] = len(curve_rms)
         if slope_error:
             slope_array = np.asarray(slope_error, dtype=float)
             metrics["iv_slope_rmse_dec_per_v"] = float(
@@ -9124,7 +9203,7 @@ def train_current_device_iv_residual(
                     "iv_curve_rms_p95",
                 ]
                 candidate_safe = all(
-                    float(metrics[key]) <= float(base_val[key]) + region_slack
+                    _iv_region_comparison(base_val, metrics, key, region_slack)["pass"]
                     for key in protected
                 )
                 if (
@@ -9202,12 +9281,7 @@ def train_current_device_iv_residual(
         "iv_curve_rms_p95",
     ]
     region_checks = {
-        key: {
-            "base": float(base_val[key]),
-            "residual": float(selected_val[key]),
-            "max_allowed": float(base_val[key]) + region_slack,
-            "pass": bool(float(selected_val[key]) <= float(base_val[key]) + region_slack),
-        }
+        key: _iv_region_comparison(base_val, selected_val, key, region_slack)
         for key in protected
     }
     if "iv_slope_rmse_dec_per_v" in base_val and "iv_slope_rmse_dec_per_v" in selected_val:
@@ -9438,6 +9512,11 @@ def train_current_device_base_iv_pkan(
                     numeric_score
                     + float(args.base_iv_top1_selection_weight) * eval_top1_compat
                 )
+                if not np.isfinite(score):
+                    raise RuntimeError(
+                        "Base IV-PKAN selection score is nonfinite for a required or "
+                        "measured region; refusing to select the initial checkpoint."
+                    )
                 history.append(
                     {
                         "restart": restart,
@@ -9503,6 +9582,8 @@ def train_current_device_base_iv_pkan(
             )
             break
 
+    if best["epoch"] == 0 or not np.isfinite(best["score"]):
+        raise RuntimeError("Base IV-PKAN produced no valid evaluated checkpoint.")
     base.load_state_dict(best["state"], strict=True)
     base.kan.assert_valid_grids("selected independent base IV-PKAN checkpoint")
     selected_metrics = _base_iv_accuracy(base, iv_train, base_scale)
@@ -10870,10 +10951,19 @@ def summarize(iv, cv):
         out[f"{prefix}_iv_transition_rms"] = float(np.sqrt(np.mean(e[transition] ** 2))) if transition.any() else float("nan")
         out[f"{prefix}_iv_on_rms"] = float(np.sqrt(np.mean(e[on] ** 2))) if on.any() else float("nan")
         out[f"{prefix}_iv_high_rms"] = float(np.sqrt(np.mean(e[high] ** 2))) if high.any() else float("nan")
-        out[f"{prefix}_idvtg_1_4_rms"] = float(np.sqrt(np.mean(e[idvtg] ** 2)))
+        for key, mask in {
+            "iv_nonzero_rms": nz, "iv_nonzero_p95_abs": nz,
+            "iv_off_rms": off, "iv_subthreshold_rms": subthreshold,
+            "iv_transition_rms": transition, "iv_on_rms": on,
+            "iv_high_rms": high, "idvtg_1_4_rms": idvtg,
+        }.items():
+            out[f"{prefix}_{key}_count"] = int(mask.sum())
+        out[f"{prefix}_idvtg_1_4_rms"] = float(np.sqrt(np.mean(e[idvtg] ** 2))) if idvtg.any() else float("nan")
         for family in ["IDVBG", "IDVTG", "IDVD"]:
             family_mask = iv["family"].eq(family).to_numpy()
             key = family.lower()
+            out[f"{prefix}_{key}_on_rms_count"] = int((family_mask & on).sum())
+            out[f"{prefix}_{key}_high_rms_count"] = int((family_mask & high).sum())
             out[f"{prefix}_{key}_on_rms"] = (
                 float(np.sqrt(np.mean(e[family_mask & on] ** 2)))
                 if (family_mask & on).any()
@@ -10919,7 +11009,7 @@ def summarize(iv, cv):
             gcols = group_columns.get(family)
             if xcol is None or gcols is None:
                 continue
-            for _, group in family_frame.groupby(gcols, sort=False):
+            for _, group in _iv_curve_groups(family_frame, gcols, sort=False):
                 if len(group) < 3:
                     continue
                 group = group.sort_values(xcol)
@@ -10986,6 +11076,8 @@ def summarize(iv, cv):
                     second_diff = np.abs(np.diff(pred_log, n=2))
                     plateau = x[1:-1] >= plateau_start[family]
                     jump_by_family[family].extend(second_diff[plateau].tolist())
+        out[f"{prefix}_iv_slope_rmse_dec_per_v_count"] = len(slope_error)
+        out[f"{prefix}_iv_curve_rms_p95_count"] = len(curve_rms)
         if slope_error:
             slope_error_np = np.asarray(slope_error, dtype=float)
             out[f"{prefix}_iv_slope_rmse_dec_per_v"] = float(np.sqrt(np.mean(slope_error_np**2)))
@@ -10996,6 +11088,7 @@ def summarize(iv, cv):
             out[f"{prefix}_iv_curve_rms_p95"] = float(np.quantile(curve_rms, 0.95))
             out[f"{prefix}_iv_curve_rms_max"] = float(np.max(curve_rms))
         for family, values in jump_by_family.items():
+            out[f"{prefix}_{family.lower()}_plateau_jump_max_dec_count"] = len(values)
             if values:
                 arr = np.asarray(values, dtype=float)
                 key = family.lower()
@@ -11229,7 +11322,7 @@ def plot_diag(iv, cv, out_dir: Path):
     fig, ax = plt.subplots(figsize=(6.5, 4.8))
     for fam, xcol in [("IDVTG", "VTG_V")]:
         sub = iv[iv["family"] == fam]
-        for idx, (_, g) in enumerate(sub.groupby(["source_file", "VDS_V", "VBG_V"])):
+        for idx, (_, g) in enumerate(_iv_curve_groups(sub, ["source_file", "VDS_V", "VBG_V"])):
             if idx >= 70:
                 break
             g = g.sort_values(xcol)
@@ -11277,7 +11370,7 @@ def _plot_iv_stage(iv: pd.DataFrame, pred_col: str, label: str, out: Path) -> No
             ax.set_visible(False)
             continue
         group_cols = {"IDVBG": ["source_file", "VDS_V", "VTG_V"], "IDVTG": ["source_file", "VDS_V", "VBG_V"], "IDVD": ["source_file", "VBG_V", "VTG_V"]}[family]
-        for idx, (_, g) in enumerate(sub.groupby(group_cols, sort=True)):
+        for idx, (_, g) in enumerate(_iv_curve_groups(sub, group_cols, sort=True)):
             if idx >= 50:
                 break
             g = g.sort_values(xcol)
@@ -12000,14 +12093,10 @@ def choose_safe_residual_scales(
             best_cv_ext_shape = ext_shape
 
     def balanced_iv_score(metrics: dict, prefix: str) -> float:
-        return float(
-            0.24 * metrics.get(f"{prefix}_iv_nonzero_rms", 1.0e9)
-            + 0.10 * metrics.get(f"{prefix}_iv_off_rms", 1.0e9)
-            + 0.22 * metrics.get(f"{prefix}_iv_subthreshold_rms", 1.0e9)
-            + 0.20 * metrics.get(f"{prefix}_iv_transition_rms", 1.0e9)
-            + 0.14 * metrics.get(f"{prefix}_iv_on_rms", 1.0e9)
-            + 0.10 * metrics.get(f"{prefix}_iv_high_rms", 1.0e9)
-        )
+        return _base_iv_selection_score({
+            key.removeprefix(f"{prefix}_"): value
+            for key, value in metrics.items() if key.startswith(f"{prefix}_iv_")
+        })
 
     base_iv_metrics = summarize(base_iv_out, base_cv_out)
     base_iv_balanced_score = balanced_iv_score(base_iv_metrics, "base")
@@ -12055,7 +12144,7 @@ def choose_safe_residual_scales(
                 **metrics,
             }
         )
-        if train_bad == 0 and ext_bad <= base_ext_iv_bad and ext_worse == 0 and residual_useful and (
+        if np.isfinite(score) and train_bad == 0 and ext_bad <= base_ext_iv_bad and ext_worse == 0 and residual_useful and (
             score < best_iv_score * (1.0 - args.safe_score_tie_tol)
             or (abs(score - best_iv_score) <= best_iv_score * args.safe_score_tie_tol and iv_scale < best_iv)
         ):
@@ -14112,26 +14201,18 @@ def _symbolic_iv_measured_curve_report(
         student_value = float(student_metrics.get(key, float("inf")))
         allowance = 0.030 if key == "iv_curve_rms_p95" else allowed_region_degradation
         checks[key] = {
+            **_iv_region_comparison(teacher_metrics, student_metrics, key, allowance),
             "teacher": teacher_value,
             "student": student_value,
             "max_allowed": teacher_value + allowance,
-            "pass": bool(
-                np.isfinite(teacher_value)
-                and np.isfinite(student_value)
-                and student_value <= teacher_value + allowance
-            ),
         }
     slope_teacher = float(teacher_metrics.get("iv_slope_rmse_dec_per_v", float("inf")))
     slope_student = float(student_metrics.get("iv_slope_rmse_dec_per_v", float("inf")))
     checks["iv_slope_rmse_dec_per_v"] = {
+        **_iv_region_comparison(teacher_metrics, student_metrics, "iv_slope_rmse_dec_per_v", 0.40),
         "teacher": slope_teacher,
         "student": slope_student,
         "max_allowed": slope_teacher + 0.40,
-        "pass": bool(
-            np.isfinite(slope_teacher)
-            and np.isfinite(slope_student)
-            and slope_student <= slope_teacher + 0.40
-        ),
     }
     equivalence_pass = bool(
         equivalence["nonzero_rms_dec"]
@@ -15018,9 +15099,11 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
     cv_neg = float(pd.to_numeric(cv_ext.get("negative_steps_gt_2pct_span", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if len(cv_ext) else 999.0
     cv_jump = float(pd.to_numeric(cv_ext.get("jumps_gt_12pct_span", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if len(cv_ext) else 999.0
 
+    metric_checks = {}
+
     def below_if_present(key: str, limit: float) -> bool:
-        value = float(metrics.get(key, float("nan")))
-        return not np.isfinite(value) or value <= float(limit)
+        metric_checks[key] = _iv_metric_limit_check(metrics, key, float(limit))
+        return metric_checks[key]["pass"]
 
     checks = {
         "safe_scale_valid": safe_scale >= 0.0 and safe_cv_scale >= 0.0,
@@ -15055,7 +15138,11 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
         "extrap_shape_pass": ext_bad <= base_ext_bad and ext_worse == 0,
         "cv_extrap_no_negative_or_jump": cv_neg == 0.0 and cv_jump == 0.0,
         "cv_strict_negative_steps_improved": strict_policy_pass,
-        "idvtg_open_not_worse": metrics.get("residual_idvtg_1_4_rms", 1e9) <= metrics.get("base_idvtg_1_4_rms", 0.0) * 1.005 + 1e-12,
+        "idvtg_open_not_worse": _iv_region_comparison(
+            {key.removeprefix("base_"): value for key, value in metrics.items() if key.startswith("base_")},
+            {key.removeprefix("residual_"): value for key, value in metrics.items() if key.startswith("residual_")},
+            "idvtg_1_4_rms", float(metrics.get("base_idvtg_1_4_rms", 0.0)) * 0.005 + 1e-12,
+        )["pass"],
         "cv_not_worse": metrics.get("residual_cv_rms", 1e9) <= metrics.get("base_cv_rms", 0.0) * 1.005 + 1e-12,
         # Absolute measured-data gates prevent a degraded base model from
         # passing merely because its residual is a small relative improvement.
@@ -15173,6 +15260,7 @@ def _release_pass_fail(safe_scan: pd.DataFrame, safe_shape: pd.DataFrame, metric
         "pass": all(checks.values()),
         "checks": checks,
         "not_applicable_checks": skipped_checks,
+        "iv_metric_checks": metric_checks,
         "fit_bad": fit_bad,
         "extrap_bad": ext_bad,
         "extrap_worse": ext_worse,

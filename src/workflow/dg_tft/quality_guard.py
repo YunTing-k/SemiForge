@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import math
 from pathlib import Path
 
 from .schema import StageName
@@ -663,11 +664,17 @@ def validate_agent_adjustments(
         expected_type = _get_type_str(pdef)
         try:
             value = _coerce_value(raw_value, expected_type)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             warnings.append(
                 f"[{label}] Type mismatch for '{key}': "
                 f"expected {expected_type}, got {type(raw_value).__name__} ({raw_value!r}); dropped."
             )
+            continue
+
+        # NaN bypasses both bounds comparisons; infinities are not meaningful
+        # training parameters. Reject them before clamping or INI serialization.
+        if isinstance(value, float) and not math.isfinite(value):
+            warnings.append(f"[{label}] Non-finite value for '{key}'; dropped.")
             continue
 
         # --- Step 3: Enum validation ----------------------------------
@@ -762,6 +769,8 @@ def _coerce_value(raw_value: object, expected_type: str) -> int | float | bool |
         if isinstance(raw_value, str):
             try:
                 fv = float(raw_value)
+                if not math.isfinite(fv) or not fv.is_integer():
+                    raise ValueError("integer parameter requires a finite integral value")
                 return int(fv)
             except (ValueError, TypeError):
                 raise

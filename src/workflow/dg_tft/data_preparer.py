@@ -270,7 +270,8 @@ def run_data_preparation(ctx: AgentContext, raw_dataset_dir: str, output_dir: st
     sys_log.info("Data prep %d done: ok=%s issues=%s", prep_id, ok, issues)
 
 
-def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_history_text: str = "") -> dict[str, Any] | None:
+def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_history_text: str = "",
+                preferences: str = "") -> dict[str, Any] | None:
     """Launch a preparer subagent to process raw data into standardized format.
 
     The preparer uses ``stop_mode="schema"`` with ``submit_handoff`` as its
@@ -297,6 +298,13 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
         report_name=_PREP_WORKER_REPORT_NAME,
     )
     prompt += "\nIf required measurement facts are missing or the task cannot be completed faithfully, call stop_workflow with evidence instead of fabricating data or retrying indefinitely."
+    # Data provenance is part of the task contract, including on retries.
+    prompt += (f"\nMeasurement source root: {raw_dir}. Use measurements only from this root and its "
+               "subdirectories unless the user explicitly authorizes another source. Do not import "
+               "missing IV, CV or I-t measurements from sibling folders, repository testdata or prior runs. "
+               "Reading implementation documentation does not authorize using its example data.")
+    if preferences:
+        prompt += f"\n\n**User task and constraints (apply throughout preparation):**\n{preferences}"
     if handoff_history_text:
         prompt += f"\n\n**Previous attempt feedback** (use this to fix issues):\n{handoff_history_text}"
 
@@ -344,7 +352,8 @@ def _run_worker(ctx: AgentContext, raw_dir: str, output_dir: str, handoff_histor
 
 def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
                           report_verification_tool_name: str = "report_verification",
-                          handoff: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                          handoff: dict[str, Any] | None = None,
+                          preferences: str = "", raw_dataset_dir: str = "") -> dict[str, Any] | None:
     """Run a SubAgent-based verifier to inspect prepared data and report findings.
 
     The verifier type (``VERIFIER_AGENT_LABEL``) auto-resolves its tools
@@ -367,6 +376,13 @@ def _run_verifier_subagent(ctx: AgentContext, output_dir: str,
         iv_columns=", ".join(_PREP_REQUIRED_IV_COLUMNS),
         cv_sheets=", ".join(_PREP_CV_EXPECTED_SHEETS),
     )
+    if preferences:
+        prompt += f"\n\n**User task and constraints:**\n{preferences}"
+    if raw_dataset_dir:
+        prompt += (f"\nAuthorized measurement source root: {raw_dataset_dir}. Check the preparation "
+                   "handoff and file provenance against this root. Importing measurements from "
+                   "outside this root without explicit user authorization is a verification failure, "
+                   "even if the imported files pass format checks or appear to describe the same device.")
     if handoff:
         handoff_text = json.dumps(handoff, ensure_ascii=False, indent=2)
         prompt += f"\n\n**Preparer handoff** (what the worker found and did — use this to focus your checks):\n```json\n{handoff_text}\n```"
@@ -414,6 +430,7 @@ def _run_worker_and_verifier(
     output_dir: str,
     report_verification_tool_name: str,
     handoff_history: str = "",
+    preferences: str = "",
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, list[str]]:
     """Run a single worker→verifier→check cycle.
 
@@ -429,7 +446,8 @@ def _run_worker_and_verifier(
 
     if console and not muted:
         console.print("  [bold]Preparer[/bold] [bright_black]SubAgent processing raw files ...[/bright_black]")
-    handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+    handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history,
+                         preferences=preferences)
     if console and not muted:
         iv_count = handoff.get("output_manifest", {}).get("iv_files", 0) if handoff else 0
         cv_ok = "✓" if (handoff.get("output_manifest", {}).get("cv_files", 0) if handoff else 0) else "✗"
@@ -437,7 +455,8 @@ def _run_worker_and_verifier(
 
     if console and not muted:
         console.print("  [bold]Verifier[/bold] [bright_black]SubAgent checking output structure ...[/bright_black]")
-    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff)
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff,
+                                              preferences=preferences, raw_dataset_dir=raw_dataset_dir)
     _write_verifier_result(output_dir, verifier_feedback)
     if console and not muted:
         vf_ok = verifier_feedback.get("overall_ok", False) if verifier_feedback else False
@@ -510,6 +529,7 @@ def run_data_preparation_with_retry(
                 ctx, raw_dataset_dir, attempt_dir,
                 SUBAGENT_TOOL_REPORT_VERIFICATION,
                 handoff_history=handoff_history,
+                preferences=preferences,
             )
             duration = time_mod.monotonic() - t_start
         except (WorkflowStopped, RequestLLMCancelled):
@@ -886,6 +906,7 @@ def run_preparer_stage(
     raw_dataset_dir: str,
     output_dir: str,
     handoff_history: str = "",
+    preferences: str = "",
 ) -> dict[str, Any]:
     """Run the Preparer (worker) stage as a standalone pipeline step.
 
@@ -898,7 +919,8 @@ def run_preparer_stage(
     from .schema import PrepHandoff
 
     try:
-        handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history)
+        handoff = _run_worker(ctx, raw_dataset_dir, output_dir, handoff_history_text=handoff_history,
+                             preferences=preferences)
     except (WorkflowStopped, RequestLLMCancelled):
         raise
     except Exception as e:
@@ -914,6 +936,8 @@ def run_verifier_stage(
     output_dir: str,
     report_verification_tool_name: str = "report_verification",
     handoff: dict[str, Any] | None = None,
+    preferences: str = "",
+    raw_dataset_dir: str = "",
 ) -> dict[str, Any]:
     """Run the Verifier stage as a standalone pipeline step.
 
@@ -929,7 +953,8 @@ def run_verifier_stage(
     Returns:
         {"ok": bool, "feedback": dict | None, "issues": list[str]}
     """
-    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff)
+    verifier_feedback = _run_verifier_subagent(ctx, output_dir, report_verification_tool_name, handoff=handoff,
+                                              preferences=preferences, raw_dataset_dir=raw_dataset_dir)
     _write_verifier_result(output_dir, verifier_feedback)
 
     programmatic_ok, issues = _check_output(output_dir)

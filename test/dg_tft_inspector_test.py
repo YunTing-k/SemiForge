@@ -294,6 +294,22 @@ class TestInspectDatasetMocked(unittest.TestCase):
         }
         return ctx
 
+    def test_real_child_preserves_unicode_json_under_windows_locale(self):
+        # Exercise the actual subprocess boundary, not a pre-decoded mock.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "温敏数据"
+            data_dir.mkdir()
+            script = root / "validator.py"
+            script.write_text(
+                "import json\nprint(json.dumps({'data_dir': '温敏数据', "
+                "'iv': [], 'cv': {}, 'ok_static': True}, ensure_ascii=False))\n",
+                encoding="utf-8",
+            )
+            with patch("src.workflow.dg_tft.dataset_inspector._VALIDATE_SCRIPT", script):
+                _, raw = inspect_dataset(self._make_ctx(), str(data_dir))
+            self.assertEqual(raw["data_dir"], "温敏数据")
+
     @patch("src.workflow.dg_tft.dataset_inspector.subprocess.run")
     def test_successful_inspection(self, mock_run):
         mock_result = MagicMock()

@@ -8,6 +8,7 @@ class, training loop, or checkpoint writer.
 """
 
 import math
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,9 @@ class Normalizer:
 
 
 def set_seed(seed: int) -> None:
+    # Configure cuBLAS before the first CUDA context/handle is created. Seeds
+    # alone do not control the floating-point workspace/reduction algorithm.
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

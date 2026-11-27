@@ -159,6 +159,62 @@ class SymbolicBackwardRunner:
         return loss
 
 
+class _GatherColumns(torch.autograd.Function):
+    """Column gather with a fixed-order transpose instead of CUDA atomic adds."""
+
+    @staticmethod
+    def forward(ctx, values, indices, groups):
+        ctx.indices, ctx.groups = indices, groups
+        return values.index_select(1, indices)
+
+    @staticmethod
+    def backward(ctx, gradient):
+        return _SumColumns.apply(gradient, ctx.indices, ctx.groups), None, None
+
+
+class _SumColumns(torch.autograd.Function):
+    """Sum disjoint column groups; the backward is the exact gather transpose.
+
+    Explicit paired autograd functions preserve higher-order derivatives used
+    by charge/capacitance objectives. Each output owns its reduction, so neither
+    direction scatters multiple floating-point updates into the same location.
+    """
+
+    @staticmethod
+    def forward(ctx, values, indices, groups):
+        ctx.indices, ctx.groups = indices, groups
+        return torch.stack([
+            values.index_select(1, group).sum(dim=1) if group.numel()
+            else values.new_zeros(values.shape[0])
+            for group in groups
+        ], dim=1)
+
+    @staticmethod
+    def backward(ctx, gradient):
+        return _GatherColumns.apply(gradient, ctx.indices, ctx.groups), None, None
+
+
+class _ColumnRouting(nn.Module):
+    """Static incidence map shared by deterministic gather and sum operations."""
+
+    def __init__(self, columns, width, device):
+        super().__init__()
+        self.width = width
+        self.register_buffer("indices", torch.tensor(columns, device=device, dtype=torch.long))
+        for column in range(width):
+            positions = [i for i, value in enumerate(columns) if value == column]
+            self.register_buffer(f"group_{column}", torch.tensor(positions, device=device, dtype=torch.long))
+
+    def _groups(self):
+        return tuple(getattr(self, f"group_{i}") for i in range(self.width))
+
+    def gather(self, values):
+        return _GatherColumns.apply(values, self.indices, self._groups())
+
+    def sum(self, values):
+        return _SumColumns.apply(values, self.indices, self._groups())
+
+
 class PackedSymbolicLayer(nn.Module):
     """Evaluate active edges grouped by analytic function, without scalar reads."""
 
@@ -173,7 +229,11 @@ class PackedSymbolicLayer(nn.Module):
             torch.stack([source.edges[j][i].bias.detach() for j, i in self.edge_indices])
             if self.edge_indices else source.bias.new_empty(0)
         )
-        self.register_buffer("bias_outputs", torch.tensor([j for j, _ in self.edge_indices], device=device, dtype=torch.long))
+        # Repeated input columns also need a deterministic backward: ordinary
+        # index_select accumulates their CUDA gradients using atomic additions.
+        self.bias_routing = _ColumnRouting([j for j, _ in self.edge_indices], source.out_dim, device)
+        self.input_routing = nn.ModuleList()
+        self.output_routing = nn.ModuleList()
         self.groups = []
         self.coefficients = nn.ParameterList()
         for k, name in enumerate(source.symbol_names):
@@ -187,8 +247,8 @@ class PackedSymbolicLayer(nn.Module):
                 continue
             group = len(self.groups)
             self.groups.append((name, terms))
-            self.register_buffer(f"inputs_{group}", torch.tensor([i for _, i, _ in terms], device=device))
-            self.register_buffer(f"outputs_{group}", torch.tensor([j for j, _, _ in terms], device=device))
+            self.input_routing.append(_ColumnRouting([i for _, i, _ in terms], source.in_dim, device))
+            self.output_routing.append(_ColumnRouting([j for j, _, _ in terms], source.out_dim, device))
             self.coefficients.append(nn.Parameter(torch.stack([
                 torch.stack([getattr(source.edges[j][i], field)[k].detach() for j, i, k in terms])
                 for field in ("a", "b", "c")
@@ -196,11 +256,11 @@ class PackedSymbolicLayer(nn.Module):
 
     def forward(self, x):
         result = self.bias.unsqueeze(0).expand(x.shape[0], -1).clone()
-        result = result.index_add(1, self.bias_outputs, self.edge_bias.unsqueeze(0).expand(x.shape[0], -1))
+        result = result + self.bias_routing.sum(self.edge_bias.unsqueeze(0).expand(x.shape[0], -1))
         for group, (name, _) in enumerate(self.groups):
             a, b, c = self.coefficients[group].unbind(0)
-            z = x.index_select(1, getattr(self, f"inputs_{group}")) * b + c
-            result = result.index_add(1, getattr(self, f"outputs_{group}"), a * self.symbolic_func(name, z))
+            z = self.input_routing[group].gather(x) * b + c
+            result = result + self.output_routing[group].sum(a * self.symbolic_func(name, z))
         return result
 
     @torch.no_grad()
@@ -224,6 +284,23 @@ class PackedSymbolicNet(nn.Sequential):
 
 
 @contextmanager
+def _deterministic_symbolic_execution():
+    """Constrain CUDA algorithm choices for one student, then restore the caller.
+
+    The engine's set_seed configures the cuBLAS workspace before CUDA startup.
+    Strict mode also covers differentiable indexing in the physical objective;
+    an unsupported nondeterministic operation must not silently enter a run.
+    """
+    enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+
+
+@contextmanager
 def symbolic_student(diag, base_layers, residual_layers, symbolic_func, scale):
     """Install a student temporarily; restore the numeric teacher even on failure."""
     base = PackedSymbolicNet(base_layers, symbolic_func)
@@ -238,7 +315,8 @@ def symbolic_student(diag, base_layers, residual_layers, symbolic_func, scale):
     for p, _ in flags:
         p.requires_grad_(id(p) in trainable)
     try:
-        yield base, residual, params
+        with _deterministic_symbolic_execution():
+            yield base, residual, params
         base.copy_to(base_layers)
         residual.copy_to(residual_layers)
     finally:

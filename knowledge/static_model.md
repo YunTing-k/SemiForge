@@ -77,13 +77,7 @@ schedule (`staged_loss_schedule=True`) evolves the IV/CV weight ratio across tra
 phases: early epochs emphasize IV shape quality, middle epochs introduce CV with
 increasing weight, and late epochs balance both.
 
-**Symbolic optimization:** After training, the KAN edges are replaced with Top-1 symbolic
-formulas from a library of primitive functions (sin, exp, tanh, abs, polynomial basis, etc.).
-This edgewise symbolic replacement (`EdgewiseSymbolicKANNet`) converts the numeric KAN
-into a Verilog-A-compatible analytic formula. A hard precision gate
-(`base_iv_max_top1_compatibility`, default 0.015 MSE) ensures only edges whose symbolic
-approximation error is below a strict threshold are deployed. Failure gates at the
-numeric→symbolic boundary can trigger Agent C to adjust symbolic weights.
+**Symbolic optimization:** KAN edges are fitted with analytic primitives and refined as a complete symbolic network. The engine then calibrates terminal currents/slopes against the numerical teacher and refines measured-curve accuracy. Base IV acceptance uses complete-curve current criteria; `base_iv_max_top1_compatibility` is a diagnostic reference. Symbolic acceptance uses terminal fidelity and measured-region checks. Adaptive Top-2 fits selected IV edges when their Top-1 MSE exceeds a positive threshold and the two-term fit improves MSE by more than 10%.
 
 **Temperature-dependent modeling:** If the dataset spans ≥ `minimum_span_K` (default 20K),
 a separate `temperature_kan` network is enabled (mode="auto"). This network learns how
@@ -144,7 +138,7 @@ All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage 
 | `finetune_base_pkan` | bool | False | — | Whether to fine-tune the base IV-PKAN weights during joint training. INI default is `False` (the pipeline always passes this explicitly: `--finetune-base-pkan` if INI says True else `--no-finetune-base-pkan`). Note: the engine's standalone argparse default is `True`, but this is overridden in pipeline context by the INI-supplied value. When **False**: freeze the base PKAN weights only, but continue to train `phys_delta` (29 physical micro-delta parameters, see below), `cv_pair_cpar`, `cgg_common`, `cgg_tail`, `cv_gate_coupling_raw`, and the IV/CV residual KANs. When **True**: the base PKAN splines also train alongside. **In warm-start mode** (resume from prior fit, `reset_base_from_physical_fit=False`): uses `warm_start_base_pkan_lr_mult=0.035` instead of `base_pkan_lr_mult=1.0` — a 29× smaller learning rate to protect the pretrained PKAN from early destruction when CV loss is introduced. |
 | `early_stop_patience` | int | 5 | [2, 30] | Number of consecutive epochs with no validation loss improvement before early stopping activates. **Increase to 10-15 if**: the loss curve shows slow but steady decline that patience=5 would prematurely cut off. **Decrease to 2-3 if**: runtime is a bottleneck and convergence is fast. |
 | `early_stop_min_epochs` | int | 220 | [50, 500] | Minimum epochs before early stopping is allowed to trigger. This ensures the model has a baseline of training regardless of loss trajectory. The staged loss schedule needs time to ramp through its phases. **Increase if**: model is under-trained at epoch 220 (check if loss is still declining steeply). **Decrease if**: loss plateaus by epoch 100 and runtime matters. |
-| `symbolic_training_weight` | float | 0.05 | [0.0, 0.1] | Weight for the symbolic training loss term, which regularizes KAN edges toward deploying Top-1 symbolic formulas. Higher values push KAN edges to learn functions that can be replaced by analytic primitives (sin, exp, tanh, polynomial) without degrading accuracy. **Increase to 0.08-0.10 if**: symbolic equivalence gate fails (edge MSE > `base_iv_max_top1_compatibility` after training). **Decrease to 0.0 if**: symbolic export is not required for this run. |
+| `symbolic_training_weight` | float | 0.05 | [0.0, 0.1] | Symbolic-compatibility regularization weight during static numerical training. It trades numerical flexibility against analytic representability. **Increase if**: persistent export error is traced to numerical edge functions that remain difficult to approximate after export optimization. Recheck numerical current and symbolic terminal metrics after retraining. |
 | `print_every` | int | 10 | [1, 200] | Print training loss and metrics to stdout every N epochs. Larger values reduce log noise. Set to 1 for full visibility during debugging. |
 | `eval_every` | int | 40 | [5, 200] | Evaluate full model metrics (IV/CV RMS, shape quality, symbolic compatibility) every N epochs. Evaluation requires a forward pass over all validation data — larger values reduce this overhead. **Decrease to 20 if**: you need finer progress tracking for tuning. |
 | `staged_loss_schedule` | bool | True | — | Enable staged loss-weight evolution across training phases. When True, loss weights for IV shape, CV fitting, and symbolic regularization evolve according to `shape_early_period` / `shape_middle_period` / `shape_eval_period`. **Disable only for debugging** — the staged schedule is essential for the model to learn IV shape quality before introducing the destabilizing CV derivative loss. |
@@ -160,14 +154,14 @@ All parameters below are from `FULL_MODEL_PARAMS` in `param_defs.py`. The stage 
 
 | Parameter | Type | Default | Bounds | Description |
 |-----------|------|---------|--------|-------------|
-| `base_iv_epochs` | int | 700 | [100, 5000] | Epochs for the dedicated base IV-PKAN training phase. This trains the IV parameter KAN on the current device's IV data before any CV or residual training. The base IV PKAN has its own precision gate (`base_iv_max_top1_compatibility`) that must pass before proceeding. **Increase if**: base IV PKAN precision gate fails (MSE > 0.015). **Decrease if**: the device is similar to the pre-trained checkpoint and fewer epochs suffice. **Note**: Engine standalone argparse default is 540, and run_model.py fallback uses `'540'`. The INI default (from param_defs) is 700. If the INI key is accidentally missing, the effective default drops to 540 epochs. |
-| `base_iv_restarts` | int | 1 | [1, 10] | Number of random restarts for base IV PKAN training. Each restart uses a different random seed and the best result (lowest Top-1 compatibility loss) is kept. **Increase to 3-5 if**: training converges to poor local minima (the Top-1 symbolic edge MSE varies significantly between runs). Each restart costs `base_iv_epochs` of training time. |
+| `base_iv_epochs` | int | 700 | [100, 5000] | Budget for current-device base IV-PKAN training before residual training. **Increase if**: complete-curve current errors are still improving at the epoch limit. Inspect selected epoch, regional errors, and learning rate. |
+| `base_iv_restarts` | int | 1 | [1, 10] | Number of base IV training restarts with distinct seeds. The engine selects the best checkpoint using its current-curve and symbolic-compatibility score. **Increase if**: repeated optimization reaches materially different solutions. |
 | `base_iv_learning_rate` | float | 0.002 | [0.0001, 0.01] | Learning rate for base IV PKAN training (separate from the joint training `learning_rate`). **Decrease if**: base IV loss oscillates. **Increase if**: base IV loss plateaus at high values (>0.05 RMS). |
 | `base_iv_eval_every` | int | 20 | [5, 100] | Evaluation frequency during base IV training. Every N epochs, the PKAN is evaluated for Top-1 symbolic compatibility and RMS error. **Decrease to 10 if**: you want finer tracking to debug the precision gate. |
-| `base_iv_top1_symbolic_weight` | float | 0.35 | [0.0, 1.0] | Weight for the Top-1 symbolic regularization loss during base IV training. Controls how strongly the PKAN is pushed toward deploying Top-1 symbolic edges. **Increase if**: edgewise symbolic replacement fails the precision gate (MSE > 0.015). **Decrease if**: the symbolic prior distorts the base IV fit (RMS too high). |
+| `base_iv_top1_symbolic_weight` | float | 0.35 | [0.0, 1.0] | Top-1 compatibility regularization weight during numerical base IV training. **Increase if**: export diagnostics support retraining for better representability. **Decrease if**: the regularizer degrades current-curve fitting. Compare numerical accuracy and subsequent terminal fidelity. |
 | `base_iv_top1_sparsity_weight` | float | 0.001 | [0.0, 0.1] | Sparsity penalty for Top-1 edge selection. Higher values push toward fewer active symbolic edges, producing simpler exported equations. **Increase if**: exported formulas are too complex (many terms per edge). |
-| `base_iv_top1_selection_weight` | float | 0.08 | [0.0, 0.5] | Tie-breaker weight when selecting base IV checkpoints. Higher values prefer simpler edge libraries over slightly lower error. |
-| `base_iv_max_top1_compatibility` | float | 0.015 | [0.0, 0.1] | **Hard precision gate**: maximum MSE per edge for Top-1 symbolic replacement. If any edge exceeds this threshold, the base IV PKAN training is considered failed and the pipeline cannot proceed. **Relax to 0.03 if**: the current device requires flexible symbolic forms that the Top-1 library cannot capture at 0.015. **Tighten to 0.005 if**: deployment requires extremely precise symbolic equivalence. This is a critical gate parameter — adjusting it changes whether the stage succeeds at all. |
+| `base_iv_top1_selection_weight` | float | 0.08 | [0.0, 0.5] | Checkpoint selection weight: `score = numeric_score + weight * top1_compatibility_loss`. Increasing it favors lower compatibility loss when selecting the numerical base model. |
+| `base_iv_max_top1_compatibility` | float | 0.015 | [0.0, 0.1] | Diagnostic reference for base IV symbolic compatibility. The training report marks this check `diagnostic_only`; complete-curve current metrics determine acceptance. |
 
 ### [full_model] — IV Residual Stage (held-out IV correction)
 
@@ -223,15 +217,15 @@ These parameters control the symbolic optimization pipeline that converts traine
 
 | Parameter | Type | Default | Bounds | Description |
 |-----------|------|---------|--------|-------------|
-| `edge_steps` | int | 180 | [10, 2000] | Optimization steps for edgewise symbolic replacement. More steps allow finer symbolic fitting. **Increase if**: Top-1 compatibility gate fails (MSE > threshold). |
-| `edge_topk` | int | 1 | [1, 3] | Top-K symbolic edge replacement (1=strict, 2=relaxed). Top-2 applies to CV/temperature edges; IV edges promote when `iv_adaptive_top2_mse > 0`. |
-| `iv_edge_topk` | int | 1 | [1, 3] | Top-K symbolic replacement for IV edges specifically. When >1, edges above `iv_adaptive_top2_mse` use Top-2. **Increase if**: IV symbolic edges fail precision gate. |
-| `iv_adaptive_top2_mse` | float | 0.0015 | [0.0, 0.1] | MSE threshold for adaptively promoting IV edges to Top-2. Set 0.0 for strict Top-1. **Increase to 0.005-0.01 if**: IV device has unusual transfer characteristics. |
-| `iv_calibration_max_terms` | int | 24 | [1, 100] | Max calibration terms in IV symbolic optimization. Higher = more fine-tuning terms in Verilog-A. **Increase if**: deployment fidelity targets are not met post-export. |
-| `edge_finetune_steps` | int | 80 | [10, 2000] | Steps for per-edge symbolic fine-tuning. **Increase if**: edge MSE marginally above `base_iv_max_top1_compatibility`. |
+| `edge_steps` | int | 180 | [10, 2000] | Optimization budget for edgewise symbolic fitting. **Increase if**: edge fitting remains under-optimized at the step limit. Evaluate the resulting terminal and measured-region accuracy. |
+| `edge_topk` | int | 1 | schema [1, 3]; CLI {1} | Initial symbolic edge multiplicity. Use 1 for the current engine. IV promotion is controlled by `iv_adaptive_top2_mse`. |
+| `iv_edge_topk` | int | 1 | schema [1, 3]; CLI {1} | Initial IV symbolic edge multiplicity. Use 1 for the current engine. The adaptive path fits eligible IV edges with two terms. |
+| `iv_adaptive_top2_mse` | float | 0.0015 | [0.0, 0.1] | Top-1 edge MSE threshold for attempting a Top-2 fit. Zero disables promotion. Lower positive values admit more candidates. Adopt a candidate when `Top-2 MSE < 0.90 * Top-1 MSE`. Read `iv_top2_edge_count` for the realized topology. |
+| `iv_calibration_max_terms` | int | 24 | schema [1, 100]; effective [2, 24] | Upper bound on terminal calibration terms. The current basis has 24 terms; the engine selects the smallest candidate within 3% of the best validation score. **Increase if**: the active cap is below 24 and higher-count candidates improve held-out accuracy. Read `candidate_scores` and `selected_terms`. |
+| `edge_finetune_steps` | int | 80 | [10, 2000] | Fine-tuning budget for fitted edge formulas. **Increase if**: edge optimization remains incomplete; verify terminal fidelity after refinement. |
 | `network_finetune_steps` | int | 360 | [10, 5000] | Steps for full-network symbolic joint fine-tuning. **Increase if**: network-level observables degrade after edgewise replacement. |
-| `device_iv_finetune_steps` | int | 3000 | [100, 10000] | Steps for device-specific IV calibration against measured data. **Increase if**: device-level IV predictions show systematic errors post-export. |
-| `device_iv_measured_steps` | int | 5000 | [100, 20000] | Steps for measured-data IV symbolic calibration. Fine-tunes formulas against actual measurement curves. **Increase for**: stubborn IV prediction errors. |
+| `device_iv_finetune_steps` | int | 3000 | [100, 10000] | Budget for symbolic current and slope calibration against the numerical teacher. **Increase if**: validation improves up to the limit and the selected checkpoint is near that limit. |
+| `device_iv_measured_steps` | int | 5000 | [100, 20000] | Budget for measured-curve symbolic refinement with fidelity-aware checkpoint selection. **Increase if**: validation improves at the step limit. An early selected checkpoint followed by worsening scores calls for diagnosis of representation and objective balance. |
 | `device_cv_finetune_steps` | int | 650 | [10, 5000] | Steps for CV symbolic calibration. **Increase if**: exported CV predictions have systematic shape errors. |
 
 ### [validation] — Safety/Quality Scan Parameters
@@ -255,6 +249,24 @@ When quality fails and no Agent decision is made (retry loop), the auto-adjustme
 These are `quality_guard.py` strategies, applied only when no modeling agent is available.
 
 ## 4. Quality Metrics
+
+### Numerical, Symbolic, and Diagnostic Reports
+
+| Evidence | Object | Decision use |
+|----------|--------|--------------|
+| `v93_base_iv_training_report.json` / `precision_gate` | Numerical base IV model | Complete-curve current acceptance; entries marked `diagnostic_only` describe latent compatibility. |
+| `v93_safe_residual_metrics.json` | Numerical model with accepted residual | Locate numerical fitting and held-out correction errors. |
+| `v92_top1_symbolic_residual_surrogates.*` | Low-dimensional diagnostic proxy | Summarize a residual trend; `basis=tanh(VDS_V)` names the proxy basis. |
+| `v92_edgewise_symbolic_residual_info.json` / `iv_terminal_observable` | Exported symbolic model versus numerical teacher | Current, slope, and on-region fidelity. |
+| Same file / `iv_measured_full_curve` | Exported symbolic model versus measurements | Regional errors, teacher-relative limits, and curve/slope fidelity. |
+| Same file / `iv_top2_edge_count`, `complexity_selection` | Realized expression topology | Promoted edge count, candidate scores, selected calibration terms. |
+| HSPICE equivalence reports | Simulator execution of the exported model | Simulator-level agreement for the evaluated conditions. |
+
+**Decision sequence**: identify the failing comparison and region, inspect the corresponding optimization history, adjust active controls, then re-evaluate every task criterion. Keep the acceptance criteria fixed across retries.
+
+**Symbolic early stopping**: each stage retains its selected checkpoint. Budget exhaustion with continuing improvement supports more steps. Small improvements near the stopping threshold call for inspection of `min_delta` and patience. An early optimum followed by worsening validation calls for representation/objective diagnosis. `patience` counts evaluation checks; `eval_period` determines their spacing.
+
+**Borderline results**: repeat an unchanged configuration and record error range, dispersion, pass count, selected checkpoints, and calibration term counts. Compare numerical variation with the distance to the acceptance limit.
 
 ### residual_iv_rms
 
@@ -403,9 +415,9 @@ The base IV-PKAN is trained independently on the current device's IV data, with 
 - Optimizes with AdamW, CosineAnnealingLR scheduler
 - Evaluates Top-1 symbolic compatibility, real-parameter RMS, transfer curve shape quality
 - Has its own early-stopping (patience=8, min_epochs=260)
-- The best restart (lowest Top-1 compatibility loss) is kept
+- The checkpoint with the lowest current-curve and weighted symbolic-compatibility selection score is kept
 
-The base IV precision gate checks: if any edge's Top-1 symbolic MSE > `base_iv_max_top1_compatibility` (default 0.015), the training fails with a RuntimeError.
+The base IV precision gate evaluates complete-curve current errors. The Top-1 compatibility entry is marked `diagnostic_only`; its reference value is `base_iv_max_top1_compatibility`.
 
 If `--base-iv-only`: the pipeline exits after this phase (used for iterative base KAN development).
 
@@ -556,7 +568,7 @@ The engine emits specific RuntimeError messages at different failure points. Age
 
 | Error Message | Root Cause Gate | Recovery | Agent Action |
 |---------------|----------------|----------|--------------|
-| `Top-1 compatibility MSE {x} > {threshold}` | `base_iv_max_top1_compatibility` — symbolic edge too inaccurate | Adjustable | `adjust_params`: relax `base_iv_max_top1_compatibility` or increase `base_iv_epochs`/`base_iv_top1_symbolic_weight` |
+| Top-1 compatibility diagnostic above reference | Latent approximation difficulty | Diagnostic | Inspect current-curve gates and terminal fidelity; select controls for the failing representation. |
 | `iv_nonzero_rms {x} > {threshold}` | Base IV region precision gate — nonzero region RMS | Adjustable | `adjust_params`: increase `base_iv_epochs` / `base_iv_restarts` |
 | `iv_on_rms {x} > {threshold}` | Base IV region gate — on-region RMS | Adjustable | `adjust_params`: increase `base_iv_epochs` / `base_iv_restarts` |
 | `iv_off_rms {x} > {threshold}` | Base IV region gate — off-region RMS (hardest) | Adjustable | `adjust_params`: increase `base_iv_epochs` significantly; if persistent, `fallback` |
@@ -567,19 +579,19 @@ The engine emits specific RuntimeError messages at different failure points. Age
 | `CV charge sum exceeds tolerance` / `charge conservation` | Charge conservation gate | Hard to fix | `adjust_params`: reduce `cv_weight` or `cv_residual_level`; if persistent, `fallback` |
 | `negative capacitance` / `passivity violation` | CV passivity gate | Adjustable | `adjust_params`: reduce `cv_residual_level` to 1 or 0, or increase `safe_scale_steps` |
 | `CUDA out of memory` / `OOM` | Hardware resource | Adjustable | `adjust_params`: reduce `batch_iv`/`batch_cv`, reduce `kan_hidden` (needs checkpoint rebuild) |
-| `NaN` / `inf` in loss | Numerical instability | Adjustable | `adjust_params`: reduce `learning_rate`, increase `grad_clip` (tighter), reduce `cv_weight` |
+| `NaN` / `inf` in loss | Numerical instability | Adjustable | `adjust_params`: reduce `learning_rate`, decrease `grad_clip` for tighter clipping, inspect competing loss terms |
 | `FileNotFoundError: data_dir` / `No such file` | Missing upstream data | **Unrecoverable** | `fallback_to_previous` — data integrity issue, not a parameter problem |
 | `CV gate orientation swap` | CV terminal misidentification | Adjustable if caught | Engine auto-corrects; if it fails, `fallback_to_previous` |
 
 ### Agent C Decision Framework
 
-Agent C has four tools and must call EXACTLY ONE:
+Agent C submits one decision. Inspection tools provide evidence before that decision:
 
 | Tool | When to Use | Consequences |
 |------|-------------|--------------|
-| `adjust_params` | Parameter tuning can fix the problem. Use when: (1) quality is close to threshold (e.g., residual_iv_rms = 0.40 vs threshold 0.35), (2) the base IV precision gate failed (Top-1 MSE > 0.015) and you can relax the gate or increase training budget, (3) CV RMS is high but not catastrophic (>0.06 but <0.15), (4) training appeared to converge but quality is borderline — increase epochs or adjust cv_weight. Make incremental changes: +25% epochs, not ×5; +50% cv_weight, not ×10. | INI is updated, stage re-runs with new parameters. Costs a retry slot. |
+| `adjust_params` | A failed task criterion has an actionable cause in the current stage. Use base-training controls for base current failures, residual controls for residual failures, and export controls for symbolic terminal/region failures. Match budget and early-stopping changes to the validation trajectory. | Writes the requested configuration and retries the stage. |
 | `fallback_to_previous` | The upstream outputs are the problem. Use when: (1) the physical kernel (fit-physical) produced poor parameters — Vth values are at bounds, mobility is 10× off expected, or the fit history shows rejected stages, (2) the fitted_params.json is missing or corrupted, (3) multiple parameter adjustments on train-static have yielded no improvement, suggesting the physical kernel fundamentally cannot model this device, (4) CV orientation was diagnosed as wrong but cannot be corrected by the engine's auto-orientation. | Stage re-runs from fit-physical, which regenerates the physical kernel. Costs the most time (fit-physical + train-static rerun). |
-| `accept_quality` | Current quality is acceptable despite being above threshold. Use when: (1) residual_iv_rms is close to 0.35 (e.g., 0.37) and the IV plots look good qualitatively, (2) residual_cv_rms is only slightly above 0.06 (e.g., 0.07) and CV plots match well, (3) the base IV precision gate barely failed (Top-1 MSE = 0.017 vs 0.015) and you judge the symbolic quality acceptable, (4) all adjustment attempts have been exhausted. | Pipeline moves to train-hysteresis. Quality warning is recorded but does not block progress. |
+| `accept_quality` | The result satisfies the task acceptance policy, including any explicitly permitted tolerance. Record evaluated criteria, remaining diagnostics, and deliverable scope. | Continues the workflow with the recorded quality decision. |
 | `inspect_xlsx` | Investigation only — use freely to examine file structure before deciding. Does not consume a decision. Returns `{"status": "success"\|"fail", "sheet_count": N, "sheets": {"Name": {"columns": [...]}}}`. |
 
 ### Diagnostic Tools Available to Agent C

@@ -35,21 +35,58 @@
 
 ---
 
-### Symbolic Distillation: Budget and Parameter Tuning
+### Symbolic Distillation: Locate the Failing Representation
 
-**Diagnostic**: HSPICE validation shows large errors (12.94% max relative) despite good numeric IV RMS. Edge-local Top-1 compatibility gate passes but terminal-level current accuracy is much worse.
+**Diagnostic**: The numerical model passes current-curve criteria; the exported symbolic model fails terminal fidelity or measured-region criteria.
 
-**Agent Impact**: **Partial.** Agent C controls symbolic budget parameters (edge_steps, network_finetune_steps, device_iv_finetune_steps, device_iv_measured_steps) but not the edge-local vs terminal validation approach.
+**Agent Impact**: Agent C controls symbolic fitting budgets, IV Top-2 candidate selection, terminal calibration complexity, and early stopping.
 
 **Correct Actions**:
-1. Use default symbolic budget (`edge_steps`=180, `network_finetune_steps`=360, `device_iv_finetune_steps`=3000). Do NOT reduce below these.
-2. Set `device_iv_measured_steps=0` — the extra 1600-step measured-only phase causes HSPICE error increase (4.886%→0.956% when removed).
-3. Restore IV residual stage defaults if drifted: `iv_residual_stage_linear_weight`=0.25, `iv_residual_stage_deriv_curves`=36, `iv_residual_stage_shape_period`=3.
-4. Increase `base_iv_top1_symbolic_weight` above the default 0.35 (up to 0.5–1.0) if edge-level symbolic compatibility is poor.
-5. Relax `base_iv_max_top1_compatibility` to 0.02-0.03 if terminal accuracy is borderline — but only AFTER restoring symbolic budget to defaults.
-6. If HSPICE errors persist after all above → `accept_quality` with documentation. The numeric model is accurate; deployment errors may be acceptable for some use cases.
+1. Read `network_equivalence.iv_terminal_observable` and `iv_measured_full_curve`. Identify the failing metric, its limit, and its bias region.
+2. Compare teacher-to-measurement, student-to-teacher, and student-to-measurement errors. Repair the numerical model when the teacher fails its task criteria; repair export when a qualified teacher loses accuracy during symbolic conversion.
+3. Use `v92_edgewise_symbolic_residual_info.json` and the edgewise formula files to inspect the deployed representation. `v92_top1_symbolic_residual_surrogates.*` contains separate low-dimensional diagnostic proxies. A `basis=tanh(VDS_V)` entry describes that proxy.
+4. Use latent edge errors to locate approximation difficulty; use terminal and measured-region criteria to evaluate the proposed repair. Internal parameter corrections interact through the device current equation.
+5. Preserve the numerical checkpoint when adjusting export parameters. Verify the failing region and all remaining task criteria after execution. Evaluate HSPICE equivalence from the HSPICE result.
 
-**Evidence**: Using default symbolic+IV residual parameters reduced HSPICE IV error from 4.886% → 0.956%. Edge-local gate passed (all <0.015) but terminal accuracy was 0.122 dex vs numeric 0.082 dex.
+**Evidence**: The engine exports legacy residual proxies and edgewise symbolic networks through separate functions. Its `network_equivalence` report separates terminal observables, measured curves, and latent mapping diagnostics.
+
+### Adaptive Top-2: Candidate Threshold and Realized Topology
+
+**Diagnostic**: Strict Top-1 export loses terminal accuracy and individual edge fits show substantial residual MSE.
+
+**Correct Actions**:
+1. Set `iv_adaptive_top2_mse` to a positive value to enable candidate fitting. Use the observed edge MSE scale to choose the threshold. Lower positive thresholds admit more candidates; zero selects strict Top-1.
+2. Keep `edge_topk=1` and `iv_edge_topk=1`, matching the current engine CLI. The adaptive path fits a second term for eligible IV edges.
+3. A Top-2 candidate is adopted when its fitted MSE is below `0.90 * Top-1 MSE`. Read `iv_top2_edge_count` after execution to establish the realized topology.
+4. Compare terminal fidelity, measured-region errors, and expression complexity after promotion. Allocate additional edge/network fitting steps when the new representation requires further optimization.
+
+**Evidence**: `symbolize_compact_kan` first tests `edge_loss > adaptive_top2_mse`, then applies the 10% improvement criterion to the fitted candidate.
+
+### Terminal Calibration: Effective Capacity and Model Selection
+
+**Diagnostic**: The symbolic student retains regional current error after edge and network refinement.
+
+**Correct Actions**:
+1. Read `iv_symbolic_deployment_calibration.complexity_selection`: candidate scores, `selected_terms`, and the selection rule.
+2. The current basis contains 24 terms. The effective `iv_calibration_max_terms` range is 2–24. Increase an active lower cap when larger existing candidates improve held-out scores.
+3. The engine selects the smallest candidate whose score is within 3% of the best. When the cap already covers the basis, use edge fitting or terminal optimization controls to improve accuracy.
+4. For repeated outcomes near an acceptance limit, compare candidate-score margins and selected term counts. A candidate crossing the 3% boundary can change the selected model abruptly.
+
+**Evidence**: The calibration constructs two sigmoid terms for each of 12 terminal-derived features, then ranks and selects candidate subsets using held-out scores.
+
+### Symbolic Optimization: Budget, Early Stopping, and Checkpoints
+
+**Diagnostic**: Export accuracy remains insufficient after a completed optimization stage.
+
+**Correct Actions**:
+1. If validation improves up to the maximum step count and the selected checkpoint is near that limit, increase the budget for that stage.
+2. If small improvements continue when patience expires, inspect `min_delta`, `patience`, and `eval_period`. Patience counts validation checks; its nominal observation window is `patience * eval_period` steps.
+3. If the selected checkpoint is at the start and later validation scores worsen, inspect the starting symbolic representation and the teacher-versus-measurement objective balance. Preserve the selected checkpoint while repairing that cause.
+4. If promising minima fall between widely spaced checks, reduce `eval_period`. Set `min_steps` from the observed optimization trajectory.
+5. `device_iv_finetune_steps` fits teacher currents and slopes; `device_iv_measured_steps` fits measured curves with fidelity-aware selection. Match each adjustment to the failing comparison.
+6. Quantify borderline outcomes with repeated execution at fixed data, checkpoint, parameters, and seed. Record regional error distributions, pass counts, selected steps, and calibration term counts.
+
+**Evidence**: The two symbolic IV stages retain their selected checkpoints independently. Validation schedules, early stopping, and discrete calibration selection jointly determine the final exported model.
 
 ---
 

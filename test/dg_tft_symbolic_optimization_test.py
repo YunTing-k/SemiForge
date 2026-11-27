@@ -16,7 +16,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/device_modeling/dg_tft/engine"))
 import dg_tft_full_model as engine
-from symbolic_optimization import EarlyStop, PackedSymbolicNet, evaluate_groups, symbolic_student
+from symbolic_optimization import EarlyStop, PackedSymbolicNet, SymbolicBackwardRunner, _deterministic_symbolic_execution, evaluate_groups, symbolic_student
 
 
 def layers(device="cpu"):
@@ -40,6 +40,73 @@ def layers(device="cpu"):
 
 
 class TestPackedSymbolic(unittest.TestCase):
+    def test_deterministic_execution_restores_caller_on_success_and_error(self):
+        original = (torch.are_deterministic_algorithms_enabled(),
+                    torch.is_deterministic_algorithms_warn_only_enabled())
+        try:
+            for enabled, warn_only in ((False, False), (True, True), (True, False)):
+                torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+                with _deterministic_symbolic_execution():
+                    self.assertTrue(torch.are_deterministic_algorithms_enabled())
+                    self.assertFalse(torch.is_deterministic_algorithms_warn_only_enabled())
+                self.assertEqual(torch.are_deterministic_algorithms_enabled(), enabled)
+                self.assertEqual(torch.is_deterministic_algorithms_warn_only_enabled(), warn_only)
+                with self.assertRaisesRegex(RuntimeError, "intentional"):
+                    with _deterministic_symbolic_execution():
+                        raise RuntimeError("intentional")
+                self.assertEqual(torch.are_deterministic_algorithms_enabled(), enabled)
+                self.assertEqual(torch.is_deterministic_algorithms_warn_only_enabled(), warn_only)
+        finally:
+            torch.use_deterministic_algorithms(original[0], warn_only=original[1])
+
+    def test_input_second_derivatives_match_unpacked_model(self):
+        # Charge-derived observables differentiate the network before forming
+        # their training loss, so routing must preserve second derivatives.
+        torch.manual_seed(215)
+        source = layers()
+        reference = engine.EdgewiseSymbolicKANNet(source)
+        packed = PackedSymbolicNet(source, engine.symbolic_func)
+        x = (torch.rand(7, 3, dtype=torch.float64) + .3).requires_grad_()
+        xx = x.detach().clone().requires_grad_()
+        first = torch.autograd.grad(reference(x).square().sum(), x, create_graph=True)[0]
+        other = torch.autograd.grad(packed(xx).square().sum(), xx, create_graph=True)[0]
+        second = torch.autograd.grad(first.square().sum(), x)[0]
+        other_second = torch.autograd.grad(other.square().sum(), xx)[0]
+        torch.testing.assert_close(first, other, atol=1e-10, rtol=1e-10)
+        torch.testing.assert_close(second, other_second, atol=1e-9, rtol=1e-9)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_repeated_input_routes_have_identical_gradients_and_cuda_replay(self):
+        torch.manual_seed(8107)
+        source = layers("cuda").to(dtype=torch.float32)
+        packed = PackedSymbolicNet(source, engine.symbolic_func)
+        x = torch.randn(1536, 3, device="cuda", requires_grad=True)
+        weight = torch.randn(1536, 2, device="cuda")
+        params = [x, *packed.parameters()]
+        expected = None
+        for _ in range(20):
+            y = packed(x)
+            gradients = torch.autograd.grad((y * weight).sum(), params)
+            if expected is None:
+                expected = [y.detach().clone(), *[g.detach().clone() for g in gradients]]
+            for value, baseline in zip([y, *gradients], expected):
+                torch.testing.assert_close(value, baseline, atol=0, rtol=0)
+
+        # Calibration builds a fresh packed student before side-stream capture.
+        # Keep the eager-gradient probe's autograd stream history separate.
+        replay_model = copy.deepcopy(packed)
+
+        def objective(batch, target):
+            return (replay_model(batch["x"]) * target["weight"]).sum()
+
+        runner = SymbolicBackwardRunner(objective, replay_model.parameters())
+        batch, target = {"x": x.detach()}, {"weight": weight}
+        for _ in range(3):
+            runner.backward(batch, target)
+            for param, baseline in zip(replay_model.parameters(), expected[2:]):
+                torch.testing.assert_close(param.grad, baseline, atol=1e-5, rtol=1e-5)
+        self.assertEqual(runner.replays, 3, runner.fallback_reason)
+
     def test_outputs_gradients_adam_and_export_roundtrip(self):
         for device in (["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]):
             with self.subTest(device=device):

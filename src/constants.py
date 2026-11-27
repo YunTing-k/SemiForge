@@ -23,7 +23,7 @@ MCP params, and more.
 """SemiForge version"""
 SEMIFORGE_AGENT_MAJOR_VERSION: int = 1
 SEMIFORGE_AGENT_MINOR_VERSION: int = 6
-SEMIFORGE_AGENT_UPDATE_VERSION: int = 3
+SEMIFORGE_AGENT_UPDATE_VERSION: int = 4
 """Basic configs"""
 # basic files
 LOG_PATH: str = "./log"

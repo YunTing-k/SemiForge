@@ -316,9 +316,8 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "default": 0.35,
         "section": "full_model",
         "desc": (
-            "Top-1 symbolic weight for the base IV PKAN. "
-            "Controls how strongly the symbolic edge replacement is weighted. "
-            "Higher values favor symbolic edges over numeric KAN outputs."
+            "Weight of the Top-1 compatibility regularizer during numerical base IV training. "
+            "Higher values favor symbolically representable edge functions in the learned numerical model."
         ),
     },
     "base_iv_top1_sparsity_weight": {
@@ -340,9 +339,8 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "default": 0.08,
         "section": "full_model",
         "desc": (
-            "Selection weight for base IV Top-1 symbolic edge replacement. "
-            "Controls the trade-off between symbolic accuracy and expression simplicity. "
-            "Increase to prefer simpler expressions."
+            "Weight of Top-1 compatibility in numerical base IV checkpoint selection. "
+            "The selection score is numeric_score plus this weight times compatibility loss."
         ),
     },
     "base_iv_max_top1_compatibility": {
@@ -352,10 +350,9 @@ FULL_MODEL_PARAMS: dict[str, ParamDef] = {
         "default": 0.015,
         "section": "full_model",
         "desc": (
-            "Hard precision gate for base IV Top-1 symbolic replacement. "
-            "Only edges with MSE below this threshold pass the gate. "
-            "Relax (increase) if current device requires more flexible symbols; "
-            "tighten (decrease) for stricter acceptance."
+            "Diagnostic reference for base IV Top-1 compatibility loss. "
+            "The base training report marks this check diagnostic_only. "
+            "Complete-curve current metrics determine base IV acceptance."
         ),
     },
 
@@ -861,7 +858,7 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "desc": (
             "Number of optimization steps for edgewise symbolic replacement. "
             "More steps allow finer symbolic formula fitting. "
-            "Increase if Top-1 compatibility gate fails."
+            "Increase when edge fitting remains under-optimized at the step limit."
         ),
     },
     "edge_topk": {
@@ -871,10 +868,8 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "default": 1,
         "section": "symbolic",
         "desc": (
-            "Top-K symbolic edge replacement (K=1 for strict, K=2 for relaxed). "
-            "Top-2 is applied to CV and temperature edges; IV edges also promote when "
-            "iv_adaptive_top2_mse > 0. "
-            "Increase to 2 for devices with complex transfer curves."
+            "Initial symbolic edge multiplicity. The current engine CLI accepts 1. "
+            "IV candidate promotion is controlled by iv_adaptive_top2_mse."
         ),
     },
     "iv_edge_topk": {
@@ -884,9 +879,8 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "default": 1,
         "section": "symbolic",
         "desc": (
-            "Top-K symbolic replacement specifically for IV edges. "
-            "When > 1, edges above iv_adaptive_top2_mse threshold use Top-2 instead of Top-1. "
-            "Increase if IV symbolic edges fail precision gate."
+            "Initial symbolic edge multiplicity for IV. The current engine CLI accepts 1. "
+            "IV candidate promotion is controlled by iv_adaptive_top2_mse."
         ),
     },
     "iv_adaptive_top2_mse": {
@@ -896,10 +890,10 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "default": 0.0015,
         "section": "symbolic",
         "desc": (
-            "MSE threshold for adaptively promoting IV edges from Top-1 to Top-2. "
-            "Edges with Top-1 MSE above this value use Top-2 replacement. "
-            "Set 0.0 to keep all edges strict Top-1. "
-            "Increase to allow more edges to fall back to Top-2."
+            "Top-1 edge MSE threshold for attempting an IV Top-2 fit. "
+            "Zero disables promotion. Among positive thresholds, lower values admit more candidates. "
+            "A candidate is adopted when its Top-2 MSE is below 0.90 times its Top-1 MSE. "
+            "The export report records the actual promoted edge count."
         ),
     },
     "iv_calibration_max_terms": {
@@ -909,9 +903,10 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "default": 24,
         "section": "symbolic",
         "desc": (
-            "Maximum number of calibration terms for IV symbolic optimization. "
-            "Higher values allow more fine-tuning terms in the exported Verilog-A. "
-            "Increase if symbolic observables fail deployment fidelity targets."
+            "Upper bound on IV terminal calibration terms. The current basis has 24 terms; "
+            "the effective bound is clamped to 2 through 24. "
+            "The engine selects the smallest candidate within 3 percent of the best validation score. "
+            "The export report records candidate scores and selected_terms."
         ),
     },
     "edge_finetune_steps": {
@@ -959,7 +954,7 @@ SYMBOLIC_PARAMS: dict[str, ParamDef] = {
         "desc": (
             "Training steps for measured-data IV symbolic calibration. "
             "Fine-tunes symbolic formulas directly against measured IV curves. "
-            "Increase if the exported model shows systematic IV prediction errors."
+            "Increase when measured-curve refinement is still improving at the step limit."
         ),
     },
     # Independent stopping policies for the two IV symbolic stages.

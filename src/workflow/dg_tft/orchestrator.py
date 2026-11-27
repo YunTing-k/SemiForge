@@ -53,6 +53,7 @@ from .quality_guard import (
 from .operation_log import OperationLog, StageAttemptLog, AttemptTrigger
 from src.context.agent_context import RequestLLMCancelled
 from src.constants import (
+    FAIL_LABEL,
     MAJOR_COLOR2,
     WF_STATUS_ERROR,
     WF_STATUS_SUCCESS,
@@ -194,9 +195,10 @@ def _record_termination(ctx, run_id, status, details, board=None):
     if board is not None:
         # Do not leave stage tasks in progress after an interrupted run.
         prefix = f"[DG-TFT, ID: {run_id}]"
-        for tid, task in list(board._tasks.items()):
-            if str(task.subject).startswith(prefix) and str(getattr(task.status, "value", task.status)) in ("in_progress", "pending"):
-                _resolve_task(board, ctx.agent_id, tid, completed=False)
+        for task in board.list_unresolved_tasks():
+            # Scoreboard Task is a TypedDict, including after session restore.
+            if str(task["subject"]).startswith(prefix):
+                _resolve_task(board, ctx.agent_id, task["task_id"], completed=False)
 
 
 def _feedback_payload(context):
@@ -518,6 +520,8 @@ def _run_workflow_impl(
             from src.workflow.dg_tft.config_builder import build_runtime_config
             build_result = build_runtime_config(ctx, profile, prep_output_dir,
                                                  run_id=run_id,
+                                                 work_dir=output_dir,
+                                                 run_output_dir=output_dir,
                                                  overrides=overrides)
             config_path = build_result["config_path"]
             _console(ctx, f"  [bright_black]Config: {config_path}[/bright_black]")
@@ -921,6 +925,7 @@ def _run_agent_stage(
         prep_result = run_preparer_stage(
             ctx, raw_dataset_dir, attempt_dir,
             handoff_history=handoff_history,
+            preferences=preferences,
         )
         prep_ok = prep_result.get("ok", False)
         handoff = prep_result.get("handoff")
@@ -976,7 +981,8 @@ def _run_agent_stage(
             else:
                 prep_handoff = {"agent_a_fallback": agent_a_handoff}
 
-        verify_result = run_verifier_stage(ctx, attempt_dir, handoff=prep_handoff)
+        verify_result = run_verifier_stage(ctx, attempt_dir, handoff=prep_handoff,
+                                          preferences=preferences, raw_dataset_dir=raw_dataset_dir)
         verify_ok = verify_result.get("ok", False)
         feedback = verify_result.get("feedback")
         issues = verify_result.get("issues", [])
@@ -1759,14 +1765,21 @@ def _spawn_modeling_agent_inner(
 
     def _adjust_params_handler(arguments: dict, _ctx) -> dict:
         if not isinstance(arguments, dict):
-            return {"status": "fail", "reason": "adjust_params arguments must be a dict"}
+            return {"status": FAIL_LABEL, "reason": "adjust_params arguments must be a dict"}
         reasoning = arguments.get("reasoning", "") if isinstance(arguments, dict) else ""
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return {"status": FAIL_LABEL, "reason": "A non-empty reasoning string is required."}
         raw = {k: v for k, v in arguments.items() if k != "reasoning"}
         if not raw:
-            return {"status": "fail", "reason": "no parameter values provided (only 'reasoning' found)"}
+            return {"status": FAIL_LABEL, "reason": "no parameter values provided (only 'reasoning' found)"}
         sanitized, warnings = validate_agent_adjustments(raw, param_table, sections, sd.name)
-        if not sanitized:
-            return {"status": "fail", "reason": f"All {len(warnings)} params rejected: {'; '.join(warnings[:3])}"}
+        rejected = [key for key in raw if key not in sanitized]
+        if rejected:
+            # A partial write can silently lose part of the requested adjustment.
+            # Return the complete diagnostics for repair before writing any key;
+            # safe coercion and bounds clamping remain accepted by the guard.
+            return {"status": FAIL_LABEL, "reason": "Parameters rejected; no changes applied.",
+                    "rejected": rejected, "warnings": warnings}
         primary_section = sections[0]
         snapshot = apply_agent_adjustments(config_path, sanitized, primary_section, param_table)
         applied_str = ", ".join(f"{k}={v}" for k, v in sanitized.items())

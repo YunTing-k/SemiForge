@@ -51,6 +51,7 @@ truncation, and highlight-then-split wrapping; (5) edit permission TUI with prev
 visibility; (6) read-only path checking; (7) session saving utility.
 """
 import os
+import shutil
 import math
 import time
 import json
@@ -704,7 +705,7 @@ def fill_str_line(input_line: str, offset: int) -> tuple[str, list[str]]:
     CJK full-width characters are accounted for (2 display cells each).
     """
     _fill = '\u00A0'
-    width = os.get_terminal_size().columns - offset - 1
+    width = shutil.get_terminal_size(fallback=(120, 24)).columns - offset - 1
     if width < 1:
         width = 1
 
@@ -772,7 +773,7 @@ def _render_normal_block(body: Text, lines: list[str], start_idx: int, budget: i
         offset = len(prefix1) + len(prefix2) + 3
         body.append(prefix1 + prefix2 + "   ", style=f"bright_black on {EDIT_VIEW_NORMAL_BG}")
         if lexer:
-            width = os.get_terminal_size().columns - offset - 1
+            width = shutil.get_terminal_size(fallback=(120, 24)).columns - offset - 1
             if width < 1:
                 width = 1
             first_chunk, cont_chunks = _highlight_and_wrap_edit(line, lexer, width, strip_bg=False)
@@ -823,7 +824,7 @@ def _render_diff_block(body: Text, lines: list[str], start_idx: int, budget: int
         body.append(prefix2, style=f"bright_black {line_bg}")
         body.append(symbol, style=f"{symbol_color} {line_bg}")
         if lexer:
-            width = os.get_terminal_size().columns - offset - 1
+            width = shutil.get_terminal_size(fallback=(120, 24)).columns - offset - 1
             if width < 1:
                 width = 1
             first_chunk, cont_chunks = _highlight_and_wrap_edit(line, lexer, width, strip_bg=True)
@@ -880,7 +881,7 @@ def get_write_render(path: str, content: str) -> Text:
 
     budget = math.floor(math.log10(max(len(lines), 1))) + 1
     gutter_width = EDIT_VIEW_LEFT_SPACE_MARGIN + budget + EDIT_VIEW_LINE_SPACE_MARGIN + 1
-    max_width = os.get_terminal_size().columns - gutter_width - 1
+    max_width = shutil.get_terminal_size(fallback=(120, 24)).columns - gutter_width - 1
     if max_width < 1:
         max_width = 1
     _pad_label = lambda txt: " " * (gutter_width - len(txt)) + txt

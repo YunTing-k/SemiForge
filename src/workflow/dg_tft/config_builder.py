@@ -42,6 +42,7 @@ def build_runtime_config(
     dataset_dir: str,
     *,
     output_root: str | None = None,
+    run_output_dir: str | None = None,
     run_id: int | None = None,
     work_dir: str | None = None,
     overrides: dict[str, str] | None = None,
@@ -56,6 +57,8 @@ def build_runtime_config(
         profile: DatasetProfile from dataset_inspector.
         dataset_dir: Absolute path to the dataset being modeled.
         output_root: Override for output root directory (default: session/<uuid>/runs/).
+        run_output_dir: Exact existing run output directory, preserved when
+                       rebuilding a config after upstream data preparation.
         run_id: Optional run ID for generating a unique output subdirectory.
         work_dir: If given, write config files inside this directory.
                    Otherwise uses runs_base/run_<run_id>/.
@@ -83,7 +86,7 @@ def build_runtime_config(
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    output_dir = str((runs_base / run_tag).resolve())
+    output_dir = str(Path(run_output_dir).resolve() if run_output_dir else (runs_base / run_tag).resolve())
     resolution = _build_resolution(ctx, profile, data_path, output_dir)
 
     runtime_config_path = config_dir / "model_config.ini"

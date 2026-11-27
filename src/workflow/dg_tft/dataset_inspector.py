@@ -63,7 +63,9 @@ def inspect_dataset(
 
     it_dir = _discover_it_dir(data_path, hysteresis_dir)
 
-    cmd = [modeling_python, str(_VALIDATE_SCRIPT), "--data-dir", str(data_path)]
+    # Match the child's output encoding explicitly. Windows' locale default
+    # can be GBK even when the modeling process emits UTF-8 (Chinese paths).
+    cmd = [modeling_python, "-X", "utf8", str(_VALIDATE_SCRIPT), "--data-dir", str(data_path)]
     if json_out_path:
         out_path = Path(json_out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +78,7 @@ def inspect_dataset(
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=str(data_path.parent),
     )
 

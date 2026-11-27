@@ -104,6 +104,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn("resolution", self.log()["events"][-1]["reason"])
 
     def test_missing_measurement_facts_stop_with_actionable_report(self):
+        from src.tool.scoreboard import Scoreboard
+        # A real board stores TypedDicts; mocks hid the exit-path attribute bug.
+        board = Scoreboard()
+        board.create_task("Unrelated user task", "Must remain pending")
         from src.constants import FINAL_INTERPRETATION_FILENAME
         (self.output / FINAL_INTERPRETATION_FILENAME).write_text("Previous successful model")
         agent = _make_mock_subagent(json.dumps({
@@ -114,8 +118,13 @@ class RecoveryTests(unittest.TestCase):
         }))
         with patch("src.workflow.dg_tft.orchestrator._spawn_modeling_agent", side_effect=self.fallback), \
              patch("src.agent.subagent.SubAgent", return_value=agent):
-            ok, _ = self.execute()
+            ok, _ = run_workflow(
+                self.ctx, self.rid, entry="check-data", config_path=self.config,
+                dataset_dir="/data", board=board,
+            )
         self.assertFalse(ok)
+        unresolved = board.list_unresolved_tasks()
+        self.assertEqual([t["subject"] for t in unresolved], ["Unrelated user task"])
         self.assertNotIn("train-static", self.calls)
         self.assertEqual(self.ctx.workflow_man.get_run(self.rid).status, WorkflowStatus.NEEDS_INPUT)
         self.assertEqual(self.log()["final_status"], "needs_input")

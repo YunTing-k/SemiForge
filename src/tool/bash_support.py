@@ -41,6 +41,7 @@ import re
 import shlex
 import math
 import os
+import shutil
 import unicodedata
 
 from rich.text import Text
@@ -1107,7 +1108,8 @@ def get_bash_render(commands: str) -> Text:
     lines = commands.strip('\n').split('\n')
     budget = math.floor(math.log10(max(len(lines), 1))) + 1
     gutter_width = EDIT_VIEW_LEFT_SPACE_MARGIN + budget + EDIT_VIEW_LINE_SPACE_MARGIN + 1
-    max_width = os.get_terminal_size().columns - gutter_width - 1
+    # Background agents and redirected runs may have no console handle.
+    max_width = shutil.get_terminal_size(fallback=(120, 24)).columns - gutter_width - 1
     if max_width < 1:
         max_width = 1
     _pad_label = lambda txt: " " * (gutter_width - len(txt)) + txt
@@ -1169,7 +1171,8 @@ def get_bash_result_render(stdout: str, stderr: str = "") -> Text:
         lines = lines[:BASH_RESULT_MAX_LINES]
         truncated = True
 
-    budget = math.floor(math.log10(max(len(lines), 1))) + 1
+    # The truncation notice is numbered too (e.g. nine output lines plus line 10).
+    budget = math.floor(math.log10(max(len(lines) + int(truncated), 1))) + 1
     gutter_width = EDIT_VIEW_LEFT_SPACE_MARGIN + budget + EDIT_VIEW_LINE_SPACE_MARGIN + 1
     _pad_label = lambda txt: " " * (gutter_width - len(txt)) + txt
     content_style = Style(bgcolor=BASH_RESULT_CONTENT_BG)

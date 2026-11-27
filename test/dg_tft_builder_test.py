@@ -150,6 +150,24 @@ class TestBuildRuntimeConfig(unittest.TestCase):
         cfg.read(result["config_path"], encoding="utf-8")
         self.assertEqual(cfg.get("deployment", "run_hspice"), "no")
 
+    def test_rebuilt_config_preserves_existing_run_output_and_settings(self):
+        ctx, _ = _make_ctx(self.tmpdir)
+        run_output = self.tmpdir / "custom_trial_output"
+        data = run_output / "data_prep" / "attempt_2"
+        result = build_runtime_config(
+            ctx, _make_profile(cv_ok=False), str(data), run_id=7,
+            work_dir=str(run_output), run_output_dir=str(run_output),
+            overrides={"full_model.epochs": "123"},
+        )
+        cfg = configparser.ConfigParser()
+        cfg.read(result["config_path"], encoding="utf-8")
+        self.assertEqual(Path(result["config_path"]).parent, run_output)
+        self.assertEqual(Path(cfg.get("paths", "output_dir")), run_output)
+        self.assertEqual(Path(cfg.get("paths", "data_dir")), data)
+        self.assertEqual(result["resolution"]["output_dir"], str(run_output))
+        self.assertEqual(cfg.getint("full_model", "epochs"), 123)
+        self.assertEqual(cfg.get("runtime", "static_task_mode"), "iv_only")
+
     def test_output_dir_contains_run_tag(self):
         ctx, template = _make_ctx(self.tmpdir, hspice_path=str(self.tmpdir / "hspice.exe"))
         profile = _make_profile()

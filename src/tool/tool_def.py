@@ -996,6 +996,7 @@ def bash(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> di
         progress.console.print(f"{func_name}: {description} start", style="bright_black")
         try:
             proc = subprocess.Popen([ctx.agent_configs["BASH_PATH"], "-c", command],
+                                    stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         except UnicodeEncodeError:
@@ -1009,6 +1010,7 @@ def bash(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> di
             tmp.close()
             _tmp_script_paths.append(tmp.name)
             proc = subprocess.Popen([ctx.agent_configs["BASH_PATH"], _tmp_script_paths[-1]],
+                                    stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         try:
@@ -1070,6 +1072,7 @@ def bash(arguments: dict[str, Any], ctx: AgentContext, progress: Progress) -> di
                 tmp.close()
                 _tmp_script_paths.append(tmp.name)
                 proc = subprocess.Popen([ctx.agent_configs["BASH_PATH"], _tmp_script_paths[-1]],
+                                        stdin=subprocess.DEVNULL,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                         env={**os.environ, "PYTHONIOENCODING": "utf-8"})
                 try:
@@ -2313,6 +2316,10 @@ def tool_dg_tft_run_def() -> dict[str, Any]:
                         "type": "string",
                         "description": "Optional. Absolute path to the I-t (hysteresis) data directory.",
                     },
+                    "preferences": {
+                        "type": "string",
+                        "description": "User task requirements and constraints, including permitted measurement sources. Preserve these verbatim when possible; they apply to preparation, verification and modeling.",
+                    },
                     "device_name": {
                         "type": "string",
                         "description": "Optional. A human-readable label for this run.",
@@ -2374,6 +2381,16 @@ def dg_tft_run(arguments: dict[str, Any], ctx: AgentContext, progress: Progress,
         direct = arguments.get("direct", False)
         entry = arguments.get("entry", "full")
         preferences = arguments.get("preferences", "")
+        # Preserve the human request even when the caller omits the optional
+        # field. Internal reminders are not user requirements.
+        if not preferences:
+            for message in reversed(ctx.messages):
+                content = message.get("content")
+                if (message.get("role") == "user" and isinstance(content, str)
+                        and not content.lstrip().startswith((SYS_REMINDER_START_LABEL,
+                            SUBAGENT_START_LABEL, SKILL_START_LABEL, CRON_START_LABEL))):
+                    preferences = content
+                    break
 
         from src.workflow.dg_tft.manager import WorkflowManager
         from src.workflow.dg_tft.orchestrator import run_workflow
